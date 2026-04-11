@@ -107,27 +107,76 @@ struct AiMoveResult {
 
 static gboolean on_ai_anim_tick(GtkWidget* widget, GdkFrameClock*, gpointer data);
 
+static bool is_legal_ai_move(GameState& gs, int fc, int fr, int tc, int tr) {
+    // Check source has a black piece
+    int idx = gs.grid[fr][fc];
+    if (idx < 0 || gs.pieces[idx].is_white) return false;
+
+    // Check destination is in the legal moves list
+    auto legal = generate_legal_moves(gs, fc, fr);
+    for (const auto& [mc, mr] : legal) {
+        if (mc == tc && mr == tr) return true;
+    }
+    return false;
+}
+
 static gboolean on_ai_move_ready(gpointer data) {
     auto* result = static_cast<AiMoveResult*>(data);
     auto& gs = g_state;
 
+    bool accepted = false;
     if (result->valid) {
-        std::printf("AI plays: %s\n",
-                    move_to_uci(result->from_col, result->from_row,
-                                result->to_col, result->to_row).c_str());
-        gs.ai_from_col = result->from_col;
-        gs.ai_from_row = result->from_row;
-        gs.ai_to_col = result->to_col;
-        gs.ai_to_row = result->to_row;
-        gs.ai_animating = true;
-        gs.ai_anim_start = g_get_monotonic_time();
-        gs.ai_anim_tick = gtk_widget_add_tick_callback(
-            result->gl_area, on_ai_anim_tick, result->window, nullptr);
-    } else {
-        std::fprintf(stderr, "AI returned invalid move, skipping turn\n");
-        gs.white_turn = true;
-        gs.ai_thinking = false;
-        game_update_title(result->window);
+        if (is_legal_ai_move(gs, result->from_col, result->from_row,
+                             result->to_col, result->to_row)) {
+            std::printf("AI plays: %s (legal)\n",
+                        move_to_uci(result->from_col, result->from_row,
+                                    result->to_col, result->to_row).c_str());
+            gs.ai_from_col = result->from_col;
+            gs.ai_from_row = result->from_row;
+            gs.ai_to_col = result->to_col;
+            gs.ai_to_row = result->to_row;
+            gs.ai_animating = true;
+            gs.ai_anim_start = g_get_monotonic_time();
+            gs.ai_anim_tick = gtk_widget_add_tick_callback(
+                result->gl_area, on_ai_anim_tick, result->window, nullptr);
+            accepted = true;
+        } else {
+            std::fprintf(stderr, "AI move %s is illegal, retrying...\n",
+                         move_to_uci(result->from_col, result->from_row,
+                                     result->to_col, result->to_row).c_str());
+        }
+    }
+
+    if (!accepted) {
+        // Retry: pick a random legal move for black
+        std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>> all_legal;
+        for (const auto& p : gs.pieces) {
+            if (!p.alive || p.is_white) continue;
+            auto moves = generate_legal_moves(gs, p.col, p.row);
+            for (const auto& [tc, tr] : moves)
+                all_legal.push_back({{p.col, p.row}, {tc, tr}});
+        }
+
+        if (!all_legal.empty()) {
+            // Pick a random legal move
+            int idx = static_cast<int>(g_get_monotonic_time() % all_legal.size());
+            auto& [from, to] = all_legal[idx];
+            std::printf("AI fallback: %s\n",
+                        move_to_uci(from.first, from.second,
+                                    to.first, to.second).c_str());
+            gs.ai_from_col = from.first;
+            gs.ai_from_row = from.second;
+            gs.ai_to_col = to.first;
+            gs.ai_to_row = to.second;
+            gs.ai_animating = true;
+            gs.ai_anim_start = g_get_monotonic_time();
+            gs.ai_anim_tick = gtk_widget_add_tick_callback(
+                result->gl_area, on_ai_anim_tick, result->window, nullptr);
+        } else {
+            // No legal moves at all
+            gs.ai_thinking = false;
+            game_update_title(result->window);
+        }
     }
 
     gtk_widget_queue_draw(result->gl_area);

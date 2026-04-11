@@ -479,8 +479,8 @@ void renderer_draw(GameState& gs, int width, int height,
             int& cnt = bp.is_white ? wc : bc;
             int ri = cnt / 2, ci = cnt % 2;
             float px, pz;
-            if (bp.is_white) { px = 4.5f + ci*0.7f; pz = 3.5f - ri*0.7f; }
-            else { px = -4.5f - ci*0.7f; pz = -3.5f + ri*0.7f; }
+            if (bp.is_white) { px = 5.2f + ci*0.7f; pz = 3.5f - ri*0.7f; }
+            else { px = -5.2f - ci*0.7f; pz = -3.5f + ri*0.7f; }
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
             if (bp.is_white) set_material(g_program, 0.7f,0.65f,0.55f, 0,0.4f,0.7f, 0);
             else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.45f,0.7f, 0);
