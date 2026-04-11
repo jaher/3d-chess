@@ -28,10 +28,10 @@ inline std::string board_to_fen(const BoardSquare board[8][8], bool white_turn,
                                bool bra_moved = false, bool brh_moved = false) {
     std::string fen;
 
-    // Ranks 8 to 1 (row 7 to 0)
+    // Ranks 8 to 1 (row 7 to 0), files a-h (internal col 7 to 0)
     for (int row = 7; row >= 0; row--) {
         int empty = 0;
-        for (int col = 0; col < 8; col++) {
+        for (int col = 7; col >= 0; col--) { // a-file (col 7) to h-file (col 0)
             if (board[row][col].piece_type < 0) {
                 empty++;
             } else {
@@ -64,8 +64,13 @@ inline std::string board_to_fen(const BoardSquare board[8][8], bool white_turn,
 // ---------------------------------------------------------------------------
 // UCI move helpers
 // ---------------------------------------------------------------------------
+// Internal col 0 = h-file, col 7 = a-file (reversed for camera orientation)
+inline int internal_col_to_file(int col) { return 7 - col; } // 0->7(h), 7->0(a)
+inline int file_to_internal_col(int file) { return 7 - file; } // 0(a)->7, 7(h)->0
+
 inline std::string square_to_uci(int col, int row) {
-    return std::string(1, static_cast<char>('a' + col)) +
+    int file = internal_col_to_file(col);
+    return std::string(1, static_cast<char>('a' + file)) +
            std::string(1, static_cast<char>('1' + row));
 }
 
@@ -77,9 +82,9 @@ inline bool parse_uci_move(const std::string& move, int& from_col, int& from_row
                            int& to_col, int& to_row) {
     if (move.size() < 4) return false;
 
-    from_col = move[0] - 'a';
+    from_col = file_to_internal_col(move[0] - 'a');
     from_row = move[1] - '1';
-    to_col   = move[2] - 'a';
+    to_col   = file_to_internal_col(move[2] - 'a');
     to_row   = move[3] - '1';
 
     return from_col >= 0 && from_col < 8 &&

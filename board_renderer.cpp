@@ -304,7 +304,7 @@ static void build_label_mesh() {
     for (int col = 0; col < 8; col++) {
         float cx, cz_unused;
         square_center(col, 0, cx, cz_unused);
-        char letter = 'a' + (7 - col); // 'a' at col 7 (+X = screen left)
+        char letter = 'a' + (7 - col); // screen-left (+X, col 7) = 'a', screen-right (-X, col 0) = 'h'
         add_quad(cx, -4.0f * SQ - margin, letter);
         add_quad(cx,  4.0f * SQ + margin, letter);
     }

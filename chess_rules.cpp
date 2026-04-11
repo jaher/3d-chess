@@ -195,23 +195,26 @@ std::vector<std::pair<int,int>> generate_moves(const GameState& gs, int col, int
         bool king_moved = w ? gs.castling.white_king_moved : gs.castling.black_king_moved;
         int home_row = w ? 0 : 7;
 
-        if (!king_moved && col == 4 && row == home_row) {
+        // King starts at col 3 (e-file). Kingside = toward col 0 (h-file), queenside = toward col 7 (a-file)
+        if (!king_moved && col == 3 && row == home_row) {
+            // Kingside: king to col 1 (g-file), rook h (col 0) to col 2 (f-file)
             bool rook_h = w ? gs.castling.white_rook_h_moved : gs.castling.black_rook_h_moved;
             if (!rook_h &&
-                gs.grid[home_row][5] == -1 && gs.grid[home_row][6] == -1 &&
-                !is_square_attacked(gs, 4, home_row, !w) &&
-                !is_square_attacked(gs, 5, home_row, !w) &&
-                !is_square_attacked(gs, 6, home_row, !w)) {
-                moves.push_back({6, home_row});
+                gs.grid[home_row][2] == -1 && gs.grid[home_row][1] == -1 &&
+                !is_square_attacked(gs, 3, home_row, !w) &&
+                !is_square_attacked(gs, 2, home_row, !w) &&
+                !is_square_attacked(gs, 1, home_row, !w)) {
+                moves.push_back({1, home_row});
             }
+            // Queenside: king to col 5 (c-file), rook a (col 7) to col 4 (d-file)
             bool rook_a = w ? gs.castling.white_rook_a_moved : gs.castling.black_rook_a_moved;
             if (!rook_a &&
-                gs.grid[home_row][1] == -1 && gs.grid[home_row][2] == -1 &&
-                gs.grid[home_row][3] == -1 &&
-                !is_square_attacked(gs, 4, home_row, !w) &&
+                gs.grid[home_row][4] == -1 && gs.grid[home_row][5] == -1 &&
+                gs.grid[home_row][6] == -1 &&
                 !is_square_attacked(gs, 3, home_row, !w) &&
-                !is_square_attacked(gs, 2, home_row, !w)) {
-                moves.push_back({2, home_row});
+                !is_square_attacked(gs, 4, home_row, !w) &&
+                !is_square_attacked(gs, 5, home_row, !w)) {
+                moves.push_back({5, home_row});
             }
         }
         break;
@@ -329,8 +332,10 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
         else gs.castling.black_king_moved = true;
 
         if (std::abs(to_col - from_col) == 2) {
-            int rook_from = (to_col == 6) ? 7 : 0;
-            int rook_to = (to_col == 6) ? 5 : 3;
+            // Kingside: king to col 1, rook from col 0 to col 2
+            // Queenside: king to col 5, rook from col 7 to col 4
+            int rook_from = (to_col == 1) ? 0 : 7;
+            int rook_to = (to_col == 1) ? 2 : 4;
             int rook_idx = gs.grid[from_row][rook_from];
             if (rook_idx >= 0) {
                 gs.pieces[rook_idx].col = rook_to;
@@ -338,19 +343,21 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
             }
         }
     }
+    // h-rook at col 0, a-rook at col 7 (reversed board)
     if (gs.pieces[src_idx].type == ROOK) {
         if (is_white) {
-            if (from_col == 0 && from_row == 0) gs.castling.white_rook_a_moved = true;
-            if (from_col == 7 && from_row == 0) gs.castling.white_rook_h_moved = true;
+            if (from_col == 7 && from_row == 0) gs.castling.white_rook_a_moved = true;
+            if (from_col == 0 && from_row == 0) gs.castling.white_rook_h_moved = true;
         } else {
-            if (from_col == 0 && from_row == 7) gs.castling.black_rook_a_moved = true;
-            if (from_col == 7 && from_row == 7) gs.castling.black_rook_h_moved = true;
+            if (from_col == 7 && from_row == 7) gs.castling.black_rook_a_moved = true;
+            if (from_col == 0 && from_row == 7) gs.castling.black_rook_h_moved = true;
         }
     }
-    if (to_col == 0 && to_row == 0) gs.castling.white_rook_a_moved = true;
-    if (to_col == 7 && to_row == 0) gs.castling.white_rook_h_moved = true;
-    if (to_col == 0 && to_row == 7) gs.castling.black_rook_a_moved = true;
-    if (to_col == 7 && to_row == 7) gs.castling.black_rook_h_moved = true;
+    // Lose castling if rook captured on its home square
+    if (to_col == 7 && to_row == 0) gs.castling.white_rook_a_moved = true;
+    if (to_col == 0 && to_row == 0) gs.castling.white_rook_h_moved = true;
+    if (to_col == 7 && to_row == 7) gs.castling.black_rook_a_moved = true;
+    if (to_col == 0 && to_row == 7) gs.castling.black_rook_h_moved = true;
 
     gs.pieces[src_idx].col = to_col;
     gs.pieces[src_idx].row = to_row;
@@ -375,7 +382,8 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
 // ---------------------------------------------------------------------------
 std::vector<BoardPiece> build_starting_position() {
     std::vector<BoardPiece> pieces;
-    PieceType back_rank[8] = {ROOK, KNIGHT, BISHOP, QUEEN, KING, BISHOP, KNIGHT, ROOK};
+    // Reversed so col 7 = a-file (screen-left with rot_y=180), col 0 = h-file
+    PieceType back_rank[8] = {ROOK, KNIGHT, BISHOP, KING, QUEEN, BISHOP, KNIGHT, ROOK};
     for (int c = 0; c < 8; c++) {
         pieces.push_back({back_rank[c], true, c, 0, true});
         pieces.push_back({PAWN, true, c, 1, true});
@@ -393,34 +401,42 @@ std::vector<BoardPiece> build_starting_position() {
 std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci) {
     if (uci.size() < 4) return uci;
 
-    int fc = uci[0] - 'a', fr = uci[1] - '1';
-    int tc = uci[2] - 'a', tr = uci[3] - '1';
+    // UCI uses standard files (a=0..h=7), convert to internal cols (a=7..h=0)
+    int fc_internal = 7 - (uci[0] - 'a');
+    int fr = uci[1] - '1';
+    int tc_internal = 7 - (uci[2] - 'a');
+    int tr = uci[3] - '1';
 
-    if (!in_bounds(fc, fr) || !in_bounds(tc, tr)) return uci;
+    // Standard file indices for display
+    int fc_file = uci[0] - 'a'; // 0=a, 7=h
+    int tc_file = uci[2] - 'a';
 
-    // Find piece at source
+    if (!in_bounds(fc_internal, fr) || !in_bounds(tc_internal, tr)) return uci;
+
+    // Find piece at source (using internal col)
     const BoardPiece* src = nullptr;
     for (const auto& p : before.pieces) {
-        if (p.alive && p.col == fc && p.row == fr) { src = &p; break; }
+        if (p.alive && p.col == fc_internal && p.row == fr) { src = &p; break; }
     }
     if (!src) return uci;
 
     // Castling
-    if (src->type == KING && std::abs(tc - fc) == 2) {
-        return (tc == 6) ? "O-O" : "O-O-O";
+    if (src->type == KING && std::abs(tc_internal - fc_internal) == 2) {
+        // Kingside = toward h-file (col 0), queenside = toward a-file (col 7)
+        return (tc_internal < fc_internal) ? "O-O" : "O-O-O";
     }
 
-    // Is it a capture?
+    // Is it a capture? (use internal cols for piece lookup)
     bool capture = false;
     for (const auto& p : before.pieces) {
-        if (p.alive && p.col == tc && p.row == tr && p.is_white != src->is_white) {
+        if (p.alive && p.col == tc_internal && p.row == tr && p.is_white != src->is_white) {
             capture = true; break;
         }
     }
 
     std::string result;
-    char file_from = 'a' + fc;
-    char file_to = 'a' + tc;
+    char file_from = 'a' + fc_file;
+    char file_to = 'a' + tc_file;
     char rank_to = '1' + tr;
 
     const char* piece_chars = "KQBNR";
@@ -447,23 +463,20 @@ std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci
         for (const auto& p : before.pieces) {
             if (!p.alive || &p == src) continue;
             if (p.type != src->type || p.is_white != src->is_white) continue;
-            if (p.col == tc && p.row == tr) continue; // same dest doesn't count
-            // Check if this other piece could also move to (tc, tr) - simplified check
-            // For full correctness we'd need legal move gen, but this is for display only
+            if (p.col == tc_internal && p.row == tr) continue;
             bool can_reach = false;
-            // Quick distance check by piece type
             if (p.type == KNIGHT) {
-                int dx = std::abs(p.col - tc), dy = std::abs(p.row - tr);
+                int dx = std::abs(p.col - tc_internal), dy = std::abs(p.row - tr);
                 can_reach = (dx == 1 && dy == 2) || (dx == 2 && dy == 1);
             } else if (p.type == ROOK || p.type == QUEEN) {
-                can_reach = (p.col == tc || p.row == tr);
+                can_reach = (p.col == tc_internal || p.row == tr);
             }
             if (p.type == BISHOP || p.type == QUEEN) {
-                if (std::abs(p.col - tc) == std::abs(p.row - tr))
+                if (std::abs(p.col - tc_internal) == std::abs(p.row - tr))
                     can_reach = true;
             }
             if (can_reach) {
-                if (p.col != fc) need_file = true;
+                if (p.col != fc_internal) need_file = true;
                 else need_rank = true;
             }
         }
