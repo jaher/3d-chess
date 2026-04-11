@@ -23,3 +23,6 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
 
 // Starting position
 std::vector<BoardPiece> build_starting_position();
+
+// Convert a UCI move + snapshot context to algebraic notation (e.g. "Nf3", "exd5", "O-O")
+std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci);

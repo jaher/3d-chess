@@ -386,3 +386,98 @@ std::vector<BoardPiece> build_starting_position() {
     }
     return pieces;
 }
+
+// ---------------------------------------------------------------------------
+// UCI to algebraic notation
+// ---------------------------------------------------------------------------
+std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci) {
+    if (uci.size() < 4) return uci;
+
+    int fc = uci[0] - 'a', fr = uci[1] - '1';
+    int tc = uci[2] - 'a', tr = uci[3] - '1';
+
+    if (!in_bounds(fc, fr) || !in_bounds(tc, tr)) return uci;
+
+    // Find piece at source
+    const BoardPiece* src = nullptr;
+    for (const auto& p : before.pieces) {
+        if (p.alive && p.col == fc && p.row == fr) { src = &p; break; }
+    }
+    if (!src) return uci;
+
+    // Castling
+    if (src->type == KING && std::abs(tc - fc) == 2) {
+        return (tc == 6) ? "O-O" : "O-O-O";
+    }
+
+    // Is it a capture?
+    bool capture = false;
+    for (const auto& p : before.pieces) {
+        if (p.alive && p.col == tc && p.row == tr && p.is_white != src->is_white) {
+            capture = true; break;
+        }
+    }
+
+    std::string result;
+    char file_from = 'a' + fc;
+    char file_to = 'a' + tc;
+    char rank_to = '1' + tr;
+
+    const char* piece_chars = "KQBNR";
+
+    if (src->type == PAWN) {
+        if (capture) {
+            result += file_from;
+            result += 'x';
+        }
+        result += file_to;
+        result += rank_to;
+        // Promotion
+        if (uci.size() >= 5) {
+            result += '=';
+            result += static_cast<char>(std::toupper(uci[4]));
+        } else if ((src->is_white && tr == 7) || (!src->is_white && tr == 0)) {
+            result += "=Q";
+        }
+    } else {
+        result += piece_chars[src->type]; // K=0,Q=1,B=2,N=3,R=4
+
+        // Disambiguation: check if another piece of same type can reach same square
+        bool need_file = false, need_rank = false;
+        for (const auto& p : before.pieces) {
+            if (!p.alive || &p == src) continue;
+            if (p.type != src->type || p.is_white != src->is_white) continue;
+            if (p.col == tc && p.row == tr) continue; // same dest doesn't count
+            // Check if this other piece could also move to (tc, tr) - simplified check
+            // For full correctness we'd need legal move gen, but this is for display only
+            bool can_reach = false;
+            // Quick distance check by piece type
+            if (p.type == KNIGHT) {
+                int dx = std::abs(p.col - tc), dy = std::abs(p.row - tr);
+                can_reach = (dx == 1 && dy == 2) || (dx == 2 && dy == 1);
+            } else if (p.type == ROOK || p.type == QUEEN) {
+                can_reach = (p.col == tc || p.row == tr);
+            }
+            if (p.type == BISHOP || p.type == QUEEN) {
+                if (std::abs(p.col - tc) == std::abs(p.row - tr))
+                    can_reach = true;
+            }
+            if (can_reach) {
+                if (p.col != fc) need_file = true;
+                else need_rank = true;
+            }
+        }
+        if (need_file) result += file_from;
+        if (need_rank) result += static_cast<char>('1' + fr);
+
+        if (capture) result += 'x';
+        result += file_to;
+        result += rank_to;
+    }
+
+    // Check / checkmate suffix — look at the "after" state
+    // We'd need the post-move snapshot, but we can approximate by checking
+    // if the destination attacks the enemy king. Skip for simplicity.
+
+    return result;
+}

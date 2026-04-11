@@ -1,4 +1,5 @@
 #include "board_renderer.h"
+#include "chess_rules.h"
 #include "mat4.h"
 #include "shader.h"
 
@@ -162,38 +163,39 @@ static Mat4 piece_model_matrix(float wx, float wz, float s, bool is_white, float
 // Init
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Font atlas: renders "a"-"h" and "1"-"8" into a single-channel texture
-// Layout: 16 cells in a row, each CELL_SIZE x CELL_SIZE
-// Index 0-7 = 'a'-'h', 8-15 = '1'-'8'
+// Font atlas: full ASCII printable range (32-126) = 95 characters
 // ---------------------------------------------------------------------------
-static constexpr int CELL_SIZE = 64;
-static constexpr int ATLAS_W = 16 * CELL_SIZE; // 1024
-static constexpr int ATLAS_H = CELL_SIZE;       // 64
+static constexpr int CELL_SIZE = 48;
+static constexpr int ATLAS_COLS = 16;
+static constexpr int ATLAS_ROWS = 6; // ceil(95/16)
+static constexpr int ATLAS_W = ATLAS_COLS * CELL_SIZE;
+static constexpr int ATLAS_H = ATLAS_ROWS * CELL_SIZE;
+static constexpr int ATLAS_FIRST_CHAR = 32; // space
 
 static void build_font_atlas() {
     cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8, ATLAS_W, ATLAS_H);
     cairo_t* cr = cairo_create(surface);
 
-    // Clear to transparent
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
     cairo_paint(cr);
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
-    PangoFontDescription* font = pango_font_description_from_string("Sans Bold 38");
+    PangoFontDescription* font = pango_font_description_from_string("Sans Bold 28");
     pango_layout_set_font_description(layout, font);
-    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
 
     cairo_set_source_rgba(cr, 1, 1, 1, 1);
 
-    const char* labels[16] = {"a","b","c","d","e","f","g","h","1","2","3","4","5","6","7","8"};
-
-    for (int i = 0; i < 16; i++) {
-        pango_layout_set_text(layout, labels[i], -1);
+    for (int i = 0; i < 95; i++) {
+        char ch = static_cast<char>(ATLAS_FIRST_CHAR + i);
+        char str[2] = {ch, 0};
+        pango_layout_set_text(layout, str, 1);
         int pw, ph;
         pango_layout_get_pixel_size(layout, &pw, &ph);
-        float ox = i * CELL_SIZE + (CELL_SIZE - pw) * 0.5f;
-        float oy = (CELL_SIZE - ph) * 0.5f;
+        int col = i % ATLAS_COLS;
+        int row = i / ATLAS_COLS;
+        float ox = col * CELL_SIZE + (CELL_SIZE - pw) * 0.5f;
+        float oy = row * CELL_SIZE + (CELL_SIZE - ph) * 0.5f;
         cairo_move_to(cr, ox, oy);
         pango_cairo_show_layout(cr, layout);
     }
@@ -204,7 +206,16 @@ static void build_font_atlas() {
     glGenTextures(1, &g_font_tex);
     glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, data);
+    // Cairo A8 stride may differ from width
+    int stride = cairo_image_surface_get_stride(surface);
+    if (stride == ATLAS_W) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, data);
+    } else {
+        // Copy row by row to handle stride mismatch
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        for (int y = 0; y < ATLAS_H; y++)
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, ATLAS_W, 1, GL_RED, GL_UNSIGNED_BYTE, data + y * stride);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -214,6 +225,42 @@ static void build_font_atlas() {
     g_object_unref(layout);
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
+}
+
+// Get UV coords for a character from the atlas
+static void char_uvs(char ch, float& u0, float& v0, float& u1, float& v1) {
+    int idx = static_cast<int>(ch) - ATLAS_FIRST_CHAR;
+    if (idx < 0 || idx >= 95) idx = 0; // space for unknown
+    int col = idx % ATLAS_COLS;
+    int row = idx / ATLAS_COLS;
+    u0 = static_cast<float>(col) / ATLAS_COLS;
+    v0 = static_cast<float>(row) / ATLAS_ROWS;
+    u1 = static_cast<float>(col + 1) / ATLAS_COLS;
+    v1 = static_cast<float>(row + 1) / ATLAS_ROWS;
+}
+
+// Add a textured quad for a character in NDC (2D screen space)
+static void add_screen_char(std::vector<float>& verts, float x, float y,
+                            float w, float h, char ch) {
+    float u0, v0, u1, v1;
+    char_uvs(ch, u0, v0, u1, v1);
+    // Two triangles: BL, BR, TR, BL, TR, TL
+    verts.insert(verts.end(), {x, y-h, 0, u0, v1});
+    verts.insert(verts.end(), {x+w, y-h, 0, u1, v1});
+    verts.insert(verts.end(), {x+w, y, 0, u1, v0});
+    verts.insert(verts.end(), {x, y-h, 0, u0, v1});
+    verts.insert(verts.end(), {x+w, y, 0, u1, v0});
+    verts.insert(verts.end(), {x, y, 0, u0, v0});
+}
+
+// Add a string of characters in NDC, returns x advance
+static float add_screen_string(std::vector<float>& verts, float x, float y,
+                               float char_w, float char_h, const std::string& str) {
+    for (char ch : str) {
+        add_screen_char(verts, x, y, char_w, char_h, ch);
+        x += char_w * 0.7f; // tighter spacing
+    }
+    return x;
 }
 
 // Build textured quads for all board labels
@@ -230,25 +277,22 @@ static void build_label_mesh() {
     float rx = -1, rz = 0;
     float ux = 0,  uz = 1;
 
-    auto add_quad = [&](float cx, float cz, int atlas_idx) {
-        float u0 = static_cast<float>(atlas_idx) / 16.0f;
-        float u1 = static_cast<float>(atlas_idx + 1) / 16.0f;
+    auto add_quad = [&](float cx, float cz, char ch) {
+        float u0, v0, u1, v1;
+        char_uvs(ch, u0, v0, u1, v1);
         float hw = char_w * 0.5f, hh = char_h * 0.5f;
 
-        // 4 corners in local (right, up) coords: BL, BR, TR, TL
         float lx[4] = {-hw,  hw,  hw, -hw};
         float ly[4] = {-hh, -hh,  hh,  hh};
         float wu[4] = {u0, u1, u1, u0};
-        float wv[4] = {1,  1,  0,  0}; // v=1 at bottom, v=0 at top
+        float wv[4] = {v1, v1, v0, v0};
 
-        // World positions
         float wx[4], wz[4];
         for (int i = 0; i < 4; i++) {
             wx[i] = cx + lx[i] * rx + ly[i] * ux;
             wz[i] = cz + lx[i] * rz + ly[i] * uz;
         }
 
-        // Two triangles: BL-BR-TR, BL-TR-TL
         int idx[6] = {0,1,2, 0,2,3};
         for (int i = 0; i < 6; i++) {
             int j = idx[i];
@@ -260,18 +304,18 @@ static void build_label_mesh() {
     for (int col = 0; col < 8; col++) {
         float cx, cz_unused;
         square_center(col, 0, cx, cz_unused);
-        int letter_idx = 7 - col; // 'a' at col 7 (+X = screen left)
-        add_quad(cx, -4.0f * SQ - margin, letter_idx);
-        add_quad(cx,  4.0f * SQ + margin, letter_idx);
+        char letter = 'a' + (7 - col); // 'a' at col 7 (+X = screen left)
+        add_quad(cx, -4.0f * SQ - margin, letter);
+        add_quad(cx,  4.0f * SQ + margin, letter);
     }
 
     // Rank numbers (1-8) along both edges
     for (int row = 0; row < 8; row++) {
         float cx_unused, cz;
         square_center(0, row, cx_unused, cz);
-        int num_idx = 8 + row; // '1' at index 8, '8' at index 15
-        add_quad( 4.0f * SQ + margin, cz, num_idx);
-        add_quad(-4.0f * SQ - margin, cz, num_idx);
+        char digit = '1' + row;
+        add_quad( 4.0f * SQ + margin, cz, digit);
+        add_quad(-4.0f * SQ - margin, cz, digit);
     }
 
     g_label_vertex_count = static_cast<int>(verts.size() / 5);
@@ -596,20 +640,48 @@ void renderer_draw(GameState& gs, int width, int height,
         for (float s : gs.score_history) if (std::abs(s) > max_s) max_s = std::abs(s);
         max_s = std::ceil(max_s);
 
-        std::vector<float> gv;
-        gv.insert(gv.end(), {gx0,gy0,0, gx1,gy0,0, gx1,gy1,0, gx0,gy0,0, gx1,gy1,0, gx0,gy1,0});
-        int bgc = 6;
-        float zy = gy0 + gh*0.5f;
-        gv.insert(gv.end(), {gx0,zy,0, gx1,zy,0});
-        int zc = 2;
-        int ls = bgc + zc;
         int n = static_cast<int>(gs.score_history.size());
+
+        // Compute Y positions for each score point
+        std::vector<float> score_y(n);
+        for (int i = 0; i < n; i++)
+            score_y[i] = std::max(gy0, std::min(gy1, gy0 + gh*0.5f + (gs.score_history[i]/max_s)*gh*0.45f));
+
+        std::vector<float> gv;
+
+        // White fill: from score line DOWN to graph bottom (white advantage area)
+        int white_fill_start = 0;
         for (int i = 0; i < n-1; i++) {
             float t0 = float(i)/(n-1), t1 = float(i+1)/(n-1);
             float x0 = gx0+t0*gw, x1 = gx0+t1*gw;
-            float y0 = std::max(gy0, std::min(gy1, gy0+gh*0.5f+(gs.score_history[i]/max_s)*gh*0.45f));
-            float y1 = std::max(gy0, std::min(gy1, gy0+gh*0.5f+(gs.score_history[i+1]/max_s)*gh*0.45f));
-            gv.insert(gv.end(), {x0,y0,0, x1,y1,0});
+            // Two triangles: score_line to bottom
+            gv.insert(gv.end(), {x0,score_y[i],0, x1,score_y[i+1],0, x1,gy0,0});
+            gv.insert(gv.end(), {x0,score_y[i],0, x1,gy0,0, x0,gy0,0});
+        }
+        int white_fill_count = static_cast<int>(gv.size()/3) - white_fill_start;
+
+        // Black fill: from score line UP to graph top (black advantage area)
+        int black_fill_start = static_cast<int>(gv.size()/3);
+        for (int i = 0; i < n-1; i++) {
+            float t0 = float(i)/(n-1), t1 = float(i+1)/(n-1);
+            float x0 = gx0+t0*gw, x1 = gx0+t1*gw;
+            gv.insert(gv.end(), {x0,gy1,0, x1,gy1,0, x1,score_y[i+1],0});
+            gv.insert(gv.end(), {x0,gy1,0, x1,score_y[i+1],0, x0,score_y[i],0});
+        }
+        int black_fill_count = static_cast<int>(gv.size()/3) - black_fill_start;
+
+        // Center line
+        int zl_start = static_cast<int>(gv.size()/3);
+        float zy = gy0 + gh*0.5f;
+        gv.insert(gv.end(), {gx0,zy,0, gx1,zy,0});
+        int zc = 2;
+
+        // Score line
+        int ls = static_cast<int>(gv.size()/3);
+        for (int i = 0; i < n-1; i++) {
+            float t0 = float(i)/(n-1), t1 = float(i+1)/(n-1);
+            float x0 = gx0+t0*gw, x1 = gx0+t1*gw;
+            gv.insert(gv.end(), {x0,score_y[i],0, x1,score_y[i+1],0});
         }
         int lc = (n-1)*2;
 
@@ -626,10 +698,20 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
         glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
         glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0,0,0,0.6f);
-        glDrawArrays(GL_TRIANGLES, 0, bgc);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.5f,0.5f,0.5f);
-        glLineWidth(1); glDrawArrays(GL_LINES, bgc, zc);
+
+        // White area (below line)
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.85f,0.85f,0.85f,0.8f);
+        glDrawArrays(GL_TRIANGLES, white_fill_start, white_fill_count);
+
+        // Black area (above line)
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.12f,0.12f,0.12f,0.8f);
+        glDrawArrays(GL_TRIANGLES, black_fill_start, black_fill_count);
+
+        // Center line
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.5f,0.5f,0.4f);
+        glLineWidth(1); glDrawArrays(GL_LINES, zl_start, zc);
+
+        // Score line (green)
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.3f,0.8f,0.3f,0.9f);
         glLineWidth(2); glDrawArrays(GL_LINES, ls, lc);
 
@@ -653,53 +735,185 @@ void renderer_draw(GameState& gs, int width, int height,
 
         glBindVertexArray(0); glDeleteBuffers(1, &gvbo); glDeleteVertexArrays(1, &gvao);
 
-        // Win percentage text
+        // Win percentage text (using font atlas)
         float cur = gs.score_history.back();
-        float wp = 1.0f/(1.0f+std::exp(-cur*0.5f));
-        int wpct = static_cast<int>(std::round(wp*100)); int bpct = 100-wpct;
+        float wp_val = 1.0f/(1.0f+std::exp(-cur*0.5f));
+        int wpct = static_cast<int>(std::round(wp_val*100)); int bpct = 100-wpct;
 
-        auto add_digit = [](std::vector<float>& v, float cx, float cy, float w, float h, char ch) {
-            float hw=w*0.5f, hh=h*0.5f;
-            float segs[7][4] = {{-hw,hh,hw,hh},{hw,hh,hw,0},{hw,0,hw,-hh},{-hw,-hh,hw,-hh},{-hw,-hh,-hw,0},{-hw,0,-hw,hh},{-hw,0,hw,0}};
-            int pat[11][7] = {{1,1,1,1,1,1,0},{0,1,1,0,0,0,0},{1,1,0,1,1,0,1},{1,1,1,1,0,0,1},{0,1,1,0,0,1,1},{1,0,1,1,0,1,1},{1,0,1,1,1,1,1},{1,1,1,0,0,0,0},{1,1,1,1,1,1,1},{1,1,1,1,0,1,1},{0,0,0,0,0,0,1}};
-            int idx = (ch>='0'&&ch<='9') ? ch-'0' : (ch=='-'?10:-1);
-            if (idx<0) return;
-            for (int s=0;s<7;s++) if (pat[idx][s]) { v.push_back(cx+segs[s][0]);v.push_back(cy+segs[s][1]);v.push_back(0); v.push_back(cx+segs[s][2]);v.push_back(cy+segs[s][3]);v.push_back(0); }
-        };
-        auto add_pct = [](std::vector<float>& v, float cx, float cy, float w, float h) {
-            float hw=w*0.4f,hh=h*0.4f,r=w*0.15f;
-            v.insert(v.end(),{cx-hw,cy-hh,0, cx+hw,cy+hh,0});
-            for (float ox : {cx-hw*0.6f, cx+hw*0.6f}) { float oy = (ox<cx)?cy+hh*0.6f:cy-hh*0.6f;
-                v.insert(v.end(),{ox-r,oy-r,0,ox+r,oy-r,0, ox+r,oy-r,0,ox+r,oy+r,0, ox+r,oy+r,0,ox-r,oy+r,0, ox-r,oy+r,0,ox-r,oy-r,0}); }
-        };
+        char ps[32];
+        std::snprintf(ps, sizeof(ps), "%d%%", wpct); std::string ws = ps;
+        std::snprintf(ps, sizeof(ps), "%d%%", bpct); std::string bs = ps;
 
-        char ps[32]; std::snprintf(ps,sizeof(ps),"%d",wpct); std::string ws=ps;
-        std::snprintf(ps,sizeof(ps),"%d",bpct); std::string bs=ps;
-        std::vector<float> tv; float dw=0.018f,dh=0.028f,sp=0.024f,ty=gy1+0.025f;
-        float txp = gx0+0.01f;
-        for (char c : ws) { add_digit(tv,txp,ty,dw,dh,c); txp+=sp; }
-        add_pct(tv,txp,ty,dw,dh);
-        int wtl = static_cast<int>(tv.size()/3)/2;
-        txp = gx1-0.01f-(float(bs.size())+1)*sp;
-        int bts = static_cast<int>(tv.size()/3);
-        for (char c : bs) { add_digit(tv,txp,ty,dw,dh,c); txp+=sp; }
-        add_pct(tv,txp,ty,dw,dh);
-        int btl = (static_cast<int>(tv.size()/3)-bts)/2;
+        std::vector<float> tv;
+        float pch_w = 0.022f, pch_h = 0.032f;
+        float pty = gy1 + 0.025f;
 
-        if (!tv.empty()) {
+        // White percentage (left)
+        add_screen_string(tv, gx0 + 0.01f, pty, pch_w, pch_h, ws);
+        int white_verts = static_cast<int>(tv.size() / 5);
+
+        // Black percentage (right-aligned)
+        float bw = bs.size() * pch_w * 0.7f;
+        add_screen_string(tv, gx1 - bw - 0.01f, pty, pch_w, pch_h, bs);
+        int total_verts = static_cast<int>(tv.size() / 5);
+
+        if (total_verts > 0) {
             GLuint tvao, tvbo;
-            glGenVertexArrays(1,&tvao); glGenBuffers(1,&tvbo);
-            glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER,tvbo);
-            glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(tv.size()*sizeof(float)),tv.data(),GL_STREAM_DRAW);
-            glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
+            glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+            glBindVertexArray(tvao);
+            glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
+                         tv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
             glEnableVertexAttribArray(0);
-            glLineWidth(1.5f);
-            glUniform4f(glGetUniformLocation(g_highlight_program,"uColor"),1,1,1,0.9f);
-            glDrawArrays(GL_LINES,0,wtl*2);
-            glUniform4f(glGetUniformLocation(g_highlight_program,"uColor"),0.7f,0.7f,0.7f,0.9f);
-            glDrawArrays(GL_LINES,bts,btl*2);
-            glBindVertexArray(0); glDeleteBuffers(1,&tvbo); glDeleteVertexArrays(1,&tvao);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            glUseProgram(g_text_program);
+            Mat4 id = mat4_identity();
+            glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_font_tex);
+            glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+            // White text
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1, 1, 1, 0.9f);
+            glDrawArrays(GL_TRIANGLES, 0, white_verts);
+            // Black text
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f, 0.7f, 0.7f, 0.9f);
+            glDrawArrays(GL_TRIANGLES, white_verts, total_verts - white_verts);
+
+            glBindVertexArray(0); glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
         }
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+    }
+
+    // --- Move list below graph ---
+    if (gs.snapshots.size() > 1) {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Graph bottom edge as reference
+        float gx0 = 0.55f, gx1 = 0.95f;
+        float graph_bottom = 0.55f;
+        float ml_center = (gx0 + gx1) * 0.5f;
+
+        float ch_w = 0.020f, ch_h = 0.030f;
+        float line_h = 0.034f;
+        float num_w = 0.055f;
+        float col_gap = 0.01f;
+        float half_row_w = 0.08f; // approx half-width of one move column
+
+        int total_moves = static_cast<int>(gs.snapshots.size()) - 1;
+        int total_full_moves = (total_moves + 1) / 2;
+        int max_lines = 12;
+        int first_move = 0;
+        if (total_full_moves > max_lines)
+            first_move = total_full_moves - max_lines;
+        int visible_lines = std::min(total_full_moves - first_move, max_lines);
+
+        // Start from graph bottom, grow downward
+        float ml_top = graph_bottom - 0.015f;
+        // Center the columns: num | white_col | gap | black_col
+        float row_w = num_w + half_row_w * 2 + col_gap;
+        float ml_x0 = ml_center - row_w * 0.5f;
+
+        // Build move text in segments: normal verts, then highlighted verts
+        struct MoveEntry {
+            std::vector<float> verts;
+            int snapshot_idx; // which snapshot this move corresponds to (1-based)
+        };
+        std::vector<MoveEntry> normal_entries;
+        std::vector<MoveEntry> highlight_entries;
+
+        float y = ml_top;
+        for (int move_num = first_move; move_num < first_move + visible_lines; move_num++) {
+            int white_snap = move_num * 2 + 1; // snapshot after white's move
+            int black_snap = move_num * 2 + 2; // snapshot after black's move
+
+            // Move number — always normal color
+            std::string num_str = std::to_string(move_num + 1) + ".";
+            MoveEntry num_entry; num_entry.snapshot_idx = -1;
+            add_screen_string(num_entry.verts, ml_x0, y, ch_w, ch_h, num_str);
+            normal_entries.push_back(num_entry);
+
+            // White's move
+            if (white_snap <= total_moves && white_snap < static_cast<int>(gs.snapshots.size())) {
+                std::string alg = uci_to_algebraic(gs.snapshots[white_snap - 1],
+                                                    gs.snapshots[white_snap].last_move);
+                MoveEntry entry; entry.snapshot_idx = white_snap;
+                add_screen_string(entry.verts, ml_x0 + num_w, y, ch_w, ch_h, alg);
+                if (gs.analysis_mode && gs.analysis_index == white_snap)
+                    highlight_entries.push_back(entry);
+                else
+                    normal_entries.push_back(entry);
+            }
+
+            // Black's move
+            if (black_snap <= total_moves && black_snap < static_cast<int>(gs.snapshots.size())) {
+                std::string alg = uci_to_algebraic(gs.snapshots[black_snap - 1],
+                                                    gs.snapshots[black_snap].last_move);
+                MoveEntry entry; entry.snapshot_idx = black_snap;
+                add_screen_string(entry.verts, ml_x0 + num_w + half_row_w + col_gap, y, ch_w, ch_h, alg);
+                if (gs.analysis_mode && gs.analysis_index == black_snap)
+                    highlight_entries.push_back(entry);
+                else
+                    normal_entries.push_back(entry);
+            }
+
+            y -= line_h;
+        }
+
+        // Merge normal verts
+        std::vector<float> normal_verts, hl_verts;
+        for (auto& e : normal_entries)
+            normal_verts.insert(normal_verts.end(), e.verts.begin(), e.verts.end());
+        for (auto& e : highlight_entries)
+            hl_verts.insert(hl_verts.end(), e.verts.begin(), e.verts.end());
+
+        // Combine for single upload
+        std::vector<float> all_verts;
+        all_verts.insert(all_verts.end(), normal_verts.begin(), normal_verts.end());
+        int normal_count = static_cast<int>(normal_verts.size() / 5);
+        all_verts.insert(all_verts.end(), hl_verts.begin(), hl_verts.end());
+        int hl_count = static_cast<int>(hl_verts.size() / 5);
+        int total_count = normal_count + hl_count;
+
+        if (total_count > 0) {
+            GLuint mvao, mvbo;
+            glGenVertexArrays(1, &mvao); glGenBuffers(1, &mvbo);
+            glBindVertexArray(mvao);
+            glBindBuffer(GL_ARRAY_BUFFER, mvbo);
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(all_verts.size() * sizeof(float)),
+                         all_verts.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            glUseProgram(g_text_program);
+            Mat4 id = mat4_identity();
+            glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_font_tex);
+            glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+            // Normal moves in light gray
+            if (normal_count > 0) {
+                glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.80f, 0.80f, 0.80f, 0.9f);
+                glDrawArrays(GL_TRIANGLES, 0, normal_count);
+            }
+
+            // Highlighted move in yellow
+            if (hl_count > 0) {
+                glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.2f, 1.0f);
+                glDrawArrays(GL_TRIANGLES, normal_count, hl_count);
+            }
+
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &mvbo); glDeleteVertexArrays(1, &mvao);
+        }
+
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
     }
 }
