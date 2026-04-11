@@ -27,6 +27,17 @@ static StlModel g_loaded_models[PIECE_COUNT];
 static GtkWidget* g_window = nullptr;
 static GtkWidget* g_gl_area = nullptr;
 
+// Menu state
+static GameMode g_mode = MODE_MENU;
+static std::vector<PhysicsPiece> g_menu_pieces;
+static gint64 g_menu_start_time = 0;
+static guint g_menu_tick_id = 0;
+static gint64 g_menu_last_update = 0;
+static int g_menu_hover = 0;
+
+static void start_menu();
+static void start_game();
+
 // ---------------------------------------------------------------------------
 // Screen-to-board picking
 // ---------------------------------------------------------------------------
@@ -193,14 +204,28 @@ static gboolean on_button_press(GtkWidget*, GdkEventButton* event, gpointer) {
 static gboolean on_button_release(GtkWidget*, GdkEventButton* event, gpointer gl_area) {
     if (event->button == 1) {
         g_dragging = FALSE;
-        double dx = event->x - g_press_x, dy = event->y - g_press_y;
-        if (dx*dx + dy*dy < 25.0)
-            handle_board_click(event->x, event->y, GTK_WIDGET(gl_area));
+        if (g_mode == MODE_MENU) {
+            int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
+            int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
+            int btn = menu_hit_test(event->x, event->y, w, h);
+            if (btn == 1) start_game();
+            else if (btn == 2) gtk_main_quit();
+        } else {
+            double dx = event->x - g_press_x, dy = event->y - g_press_y;
+            if (dx*dx + dy*dy < 25.0)
+                handle_board_click(event->x, event->y, GTK_WIDGET(gl_area));
+        }
     }
     return TRUE;
 }
 
 static gboolean on_motion(GtkWidget*, GdkEventMotion* event, gpointer gl_area) {
+    if (g_mode == MODE_MENU) {
+        int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
+        int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
+        g_menu_hover = menu_hit_test(event->x, event->y, w, h);
+        return TRUE;
+    }
     if (g_dragging) {
         g_rot_y += static_cast<float>(event->x - g_last_mouse_x) * 0.3f;
         g_rot_x += static_cast<float>(event->y - g_last_mouse_y) * 0.3f;
@@ -228,6 +253,42 @@ static gboolean on_scroll(GtkWidget*, GdkEventScroll* event, gpointer gl_area) {
 // ---------------------------------------------------------------------------
 // GL callbacks
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
+static gboolean on_menu_tick(GtkWidget* widget, GdkFrameClock*, gpointer) {
+    gint64 now = g_get_monotonic_time();
+    float dt = static_cast<float>(now - g_menu_last_update) / 1000000.0f;
+    g_menu_last_update = now;
+    if (dt > 0.05f) dt = 0.05f; // clamp for stability
+    menu_update_physics(g_menu_pieces, dt);
+    gtk_widget_queue_draw(widget);
+    return G_SOURCE_CONTINUE;
+}
+
+static void start_menu() {
+    g_mode = MODE_MENU;
+    menu_init_physics(g_menu_pieces);
+    g_menu_start_time = g_get_monotonic_time();
+    g_menu_last_update = g_menu_start_time;
+    if (g_menu_tick_id == 0)
+        g_menu_tick_id = gtk_widget_add_tick_callback(g_gl_area, on_menu_tick, nullptr, nullptr);
+    gtk_window_set_title(GTK_WINDOW(g_window), "3D Chess");
+}
+
+static void start_game() {
+    g_mode = MODE_PLAYING;
+    if (g_menu_tick_id != 0) {
+        gtk_widget_remove_tick_callback(g_gl_area, g_menu_tick_id);
+        g_menu_tick_id = 0;
+    }
+    game_update_title(g_window);
+    gtk_widget_queue_draw(g_gl_area);
+}
+
+// ---------------------------------------------------------------------------
+// GL callbacks
+// ---------------------------------------------------------------------------
 static void on_realize(GtkGLArea* area) {
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area) != nullptr) return;
@@ -237,7 +298,13 @@ static void on_realize(GtkGLArea* area) {
 static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
     int w = gtk_widget_get_allocated_width(GTK_WIDGET(area));
     int h = gtk_widget_get_allocated_height(GTK_WIDGET(area));
-    renderer_draw(game_get_state(), w, h, g_rot_x, g_rot_y, g_zoom);
+
+    if (g_mode == MODE_MENU) {
+        float t = static_cast<float>(g_get_monotonic_time() - g_menu_start_time) / 1000000.0f;
+        renderer_draw_menu(g_menu_pieces, w, h, t, g_menu_hover);
+    } else {
+        renderer_draw(game_get_state(), w, h, g_rot_x, g_rot_y, g_zoom);
+    }
     return TRUE;
 }
 
@@ -287,9 +354,11 @@ int main(int argc, char* argv[]) {
     g_signal_connect(g_gl_area, "scroll-event", G_CALLBACK(on_scroll), g_gl_area);
     g_signal_connect(g_window, "key-press-event", G_CALLBACK(on_key_press), nullptr);
 
-    game_update_title(g_window);
-
     gtk_widget_show_all(g_window);
+
+    // Start in menu mode
+    start_menu();
+
     gtk_main();
 
     return 0;

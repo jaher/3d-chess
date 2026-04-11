@@ -917,3 +917,291 @@ void renderer_draw(GameState& gs, int width, int height,
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
     }
 }
+
+// ===========================================================================
+// Menu screen
+// ===========================================================================
+void menu_init_physics(std::vector<PhysicsPiece>& pieces) {
+    pieces.clear();
+    // Spawn 12 pieces at random positions above the scene
+    PieceType types[12] = {KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN,
+                           KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN};
+    for (int i = 0; i < 12; i++) {
+        PhysicsPiece p;
+        p.type = types[i];
+        // Spread across the area, varying heights
+        float angle = static_cast<float>(i) / 12.0f * 6.28f;
+        float radius = 2.0f + static_cast<float>(i % 5) * 0.8f;
+        p.x = std::cos(angle) * radius;
+        p.z = std::sin(angle) * radius;
+        p.y = 3.0f + static_cast<float>(i) * 1.5f; // stagger heights
+        p.vx = std::sin(angle * 3.7f) * 1.5f;
+        p.vy = 0.0f;
+        p.vz = std::cos(angle * 2.3f) * 1.5f;
+        p.rot_x = static_cast<float>(i * 47 % 360);
+        p.rot_y = static_cast<float>(i * 73 % 360);
+        p.rot_z = static_cast<float>(i * 31 % 360);
+        p.spin_x = (static_cast<float>(i % 3) - 1.0f) * 60.0f;
+        p.spin_y = (static_cast<float>(i % 5) - 2.0f) * 40.0f;
+        p.spin_z = (static_cast<float>(i % 4) - 1.5f) * 30.0f;
+        p.scale = 0.35f + static_cast<float>(i % 3) * 0.1f;
+        pieces.push_back(p);
+    }
+}
+
+void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
+    const float gravity = -9.8f;
+    const float floor_y = -2.0f;
+    const float bounce = 0.6f;
+    const float wall = 6.0f;
+    const float damping = 0.998f;
+
+    for (auto& p : pieces) {
+        p.vy += gravity * dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
+
+        p.rot_x += p.spin_x * dt;
+        p.rot_y += p.spin_y * dt;
+        p.rot_z += p.spin_z * dt;
+
+        // Floor bounce
+        if (p.y < floor_y) {
+            p.y = floor_y;
+            p.vy = std::abs(p.vy) * bounce;
+            p.spin_x *= 0.8f;
+            p.spin_y *= 0.8f;
+            p.spin_z *= 0.8f;
+            // Add some random spin on bounce
+            p.spin_x += (p.vx > 0 ? 1 : -1) * 20.0f;
+        }
+
+        // Wall bounce
+        if (p.x < -wall) { p.x = -wall; p.vx = std::abs(p.vx) * bounce; }
+        if (p.x >  wall) { p.x =  wall; p.vx = -std::abs(p.vx) * bounce; }
+        if (p.z < -wall) { p.z = -wall; p.vz = std::abs(p.vz) * bounce; }
+        if (p.z >  wall) { p.z =  wall; p.vz = -std::abs(p.vz) * bounce; }
+
+        p.vx *= damping;
+        p.vz *= damping;
+    }
+}
+
+// Button layout in NDC
+static const float BTN_W = 0.35f, BTN_H = 0.08f;
+static const float BTN_X = -BTN_W * 0.5f; // centered
+static const float BTN_START_Y = 0.05f;
+static const float BTN_QUIT_Y = -0.12f;
+
+int menu_hit_test(double mx, double my, int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+
+    // Start button
+    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W &&
+        ndc_y >= BTN_START_Y - BTN_H && ndc_y <= BTN_START_Y)
+        return 1;
+    // Quit button
+    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W &&
+        ndc_y >= BTN_QUIT_Y - BTN_H && ndc_y <= BTN_QUIT_Y)
+        return 2;
+    return 0;
+}
+
+void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
+                        int width, int height, float time,
+                        int hover_button) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glViewport(0, 0, width, height);
+
+    float aspect = static_cast<float>(width) / static_cast<float>(height);
+    float deg2rad = static_cast<float>(M_PI) / 180.0f;
+
+    // Slowly orbiting camera
+    float cam_angle = time * 15.0f; // degrees per second
+    float cam_pitch = 25.0f;
+    float cam_dist = 12.0f;
+
+    Mat4 view = mat4_multiply(
+        mat4_translate(0, 0, -cam_dist),
+        mat4_multiply(mat4_rotate_x(cam_pitch * deg2rad),
+                      mat4_rotate_y(cam_angle * deg2rad)));
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 100.0f);
+
+    float cy = cam_dist * std::sin(-cam_pitch * deg2rad);
+    float cxz = cam_dist * std::cos(-cam_pitch * deg2rad);
+    float cx = cxz * std::sin(-cam_angle * deg2rad);
+    float cz = cxz * std::cos(-cam_angle * deg2rad);
+    float vp_arr[3] = {cx, cy, cz};
+
+    // Draw pieces with PBR
+    glUseProgram(g_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uView"), 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uProjection"), 1, GL_FALSE, proj.m);
+
+    // No shadow map for menu
+    Mat4 dummy_lsm = mat4_identity();
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uLightSpaceMatrix"), 1, GL_FALSE, dummy_lsm.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_shadow_tex); // bind but won't produce shadows
+    glUniform1i(glGetUniformLocation(g_program, "uShadowMap"), 0);
+    glUniform3fv(glGetUniformLocation(g_program, "uViewPos"), 1, vp_arr);
+
+    float lpos[12] = {0.4f,1,0.6f, -0.5f,0.8f,-0.4f, 0,0.5f,-1, 0,0.5f,1};
+    float lcol[12] = {3.0f,2.8f,2.5f, 1.2f,1.3f,1.5f, 0.8f,0.7f,0.6f, 0.8f,0.7f,0.6f};
+    glUniform3fv(glGetUniformLocation(g_program, "uLightPositions"), 4, lpos);
+    glUniform3fv(glGetUniformLocation(g_program, "uLightColors"), 4, lcol);
+
+    for (const auto& p : pieces) {
+        float s = BASE_PIECE_SCALE * piece_scale[p.type] * p.scale / 0.35f;
+        Mat4 rot = mat4_multiply(
+            mat4_rotate_z(p.rot_z * deg2rad),
+            mat4_multiply(mat4_rotate_y(p.rot_y * deg2rad),
+                          mat4_rotate_x(p.rot_x * deg2rad)));
+        Mat4 pm = mat4_multiply(
+            mat4_translate(p.x, p.y, p.z),
+            mat4_multiply(mat4_scale(s, s, s), rot));
+
+        // Alternate white and black pieces
+        bool is_white = (static_cast<int>(&p - &pieces[0]) % 2 == 0);
+        if (is_white) set_material(g_program, 0.92f,0.88f,0.78f, 0,0.28f,1, 0);
+        else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
+
+        float nm[9]; mat4_normal_matrix(pm, nm);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, pm.m);
+        glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, nm);
+        glBindVertexArray(g_pieces[p.type].vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_pieces[p.type].num_vertices);
+        glBindVertexArray(0);
+    }
+
+    // --- UI overlay ---
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(g_text_program);
+    Mat4 id = mat4_identity();
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    std::vector<float> ui_verts;
+
+    // Title: "3D CHESS"
+    float title_ch_w = 0.07f, title_ch_h = 0.10f;
+    std::string title = "3D CHESS";
+    float title_w = title.size() * title_ch_w * 0.7f;
+    float title_x = -title_w * 0.5f;
+    add_screen_string(ui_verts, title_x, 0.35f, title_ch_w, title_ch_h, title);
+    int title_count = static_cast<int>(ui_verts.size() / 5);
+
+    // Subtitle
+    float sub_ch_w = 0.018f, sub_ch_h = 0.028f;
+    std::string subtitle = "Play against Claude AI";
+    float sub_w = subtitle.size() * sub_ch_w * 0.7f;
+    add_screen_string(ui_verts, -sub_w * 0.5f, 0.22f, sub_ch_w, sub_ch_h, subtitle);
+    int subtitle_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Button backgrounds (using highlight shader later)
+    // For now, store button text vertex ranges
+    // "Start Game" button text
+    float btn_ch_w = 0.028f, btn_ch_h = 0.042f;
+    std::string start_text = "Start Game";
+    float start_tw = start_text.size() * btn_ch_w * 0.7f;
+    add_screen_string(ui_verts, -start_tw * 0.5f, BTN_START_Y - 0.018f,
+                      btn_ch_w, btn_ch_h, start_text);
+    int start_end = static_cast<int>(ui_verts.size() / 5);
+
+    // "Quit" button text
+    std::string quit_text = "Quit";
+    float quit_tw = quit_text.size() * btn_ch_w * 0.7f;
+    add_screen_string(ui_verts, -quit_tw * 0.5f, BTN_QUIT_Y - 0.018f,
+                      btn_ch_w, btn_ch_h, quit_text);
+    int quit_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Upload text
+    GLuint uvao, uvbo;
+    glGenVertexArrays(1, &uvao); glGenBuffers(1, &uvbo);
+    glBindVertexArray(uvao);
+    glBindBuffer(GL_ARRAY_BUFFER, uvbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(ui_verts.size() * sizeof(float)),
+                 ui_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // Draw button backgrounds first with highlight shader
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+
+    // Draw button bg quads
+    {
+        std::vector<float> btn_bg;
+        auto add_btn_bg = [&](float bx, float by, float bw, float bh, bool hovered) {
+            float a = hovered ? 0.5f : 0.3f;
+            (void)a; // color set via uniform
+            btn_bg.insert(btn_bg.end(), {bx,by-bh,0, bx+bw,by-bh,0, bx+bw,by,0,
+                                          bx,by-bh,0, bx+bw,by,0, bx,by,0});
+        };
+        add_btn_bg(BTN_X, BTN_START_Y, BTN_W, BTN_H, hover_button == 1);
+        add_btn_bg(BTN_X, BTN_QUIT_Y, BTN_W, BTN_H, hover_button == 2);
+
+        GLuint bvao, bvbo;
+        glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+        glBindVertexArray(bvao);
+        glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(btn_bg.size() * sizeof(float)),
+                     btn_bg.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        // Start button bg
+        float sa = (hover_button == 1) ? 0.5f : 0.3f;
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.4f,0.8f, sa);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // Quit button bg
+        float qa = (hover_button == 2) ? 0.5f : 0.3f;
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, qa);
+        glDrawArrays(GL_TRIANGLES, 6, 6);
+
+        glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+    }
+
+    // Draw text
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    glBindVertexArray(uvao);
+
+    // Title - gold
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.6f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_count);
+
+    // Subtitle - light gray
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f, 0.7f, 0.7f, 0.8f);
+    glDrawArrays(GL_TRIANGLES, title_count, subtitle_end - title_count);
+
+    // Start text - white (brighter on hover)
+    float si = (hover_button == 1) ? 1.0f : 0.85f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), si, si, si, 1.0f);
+    glDrawArrays(GL_TRIANGLES, subtitle_end, start_end - subtitle_end);
+
+    // Quit text
+    float qi = (hover_button == 2) ? 1.0f : 0.85f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), qi, qi, qi, 1.0f);
+    glDrawArrays(GL_TRIANGLES, start_end, quit_end - start_end);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);
+
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
