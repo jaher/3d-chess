@@ -89,7 +89,7 @@ static std::vector<float> build_board_mesh(int& light_verts, int& dark_verts) {
             float cx, cz; square_center(col, row, cx, cz);
             float h = SQ / 2.0f;
             float x0 = cx - h, x1 = cx + h, z0 = cz - h, z1 = cz + h;
-            auto& buf = ((row + col) % 2 == 0) ? light : dark;
+            auto& buf = ((row + col) % 2 != 0) ? light : dark;
             buf.insert(buf.end(), {0,1,0, x0,y,z0}); buf.insert(buf.end(), {0,1,0, x1,y,z0});
             buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z0});
             buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z1});
