@@ -13,11 +13,29 @@ static GameState g_state;
 
 GameState& game_get_state() { return g_state; }
 
-void game_init(const std::string& /*models_dir*/) {
+void game_reset() {
     g_state.pieces = build_starting_position();
+    g_state.white_turn = true;
+    g_state.castling = CastlingRights();
+    g_state.selected_col = -1;
+    g_state.selected_row = -1;
+    g_state.valid_moves.clear();
+    g_state.game_over = false;
+    g_state.game_result.clear();
+    g_state.ai_thinking = false;
+    g_state.ai_animating = false;
+    g_state.analysis_mode = false;
+    g_state.analysis_index = 0;
+    g_state.move_history.clear();
+    g_state.score_history.clear();
+    g_state.snapshots.clear();
     g_state.rebuild_grid();
     g_state.score_history.push_back(evaluate_position(g_state));
     g_state.take_snapshot();
+}
+
+void game_init(const std::string& /*models_dir*/) {
+    game_reset();
 }
 
 // ---------------------------------------------------------------------------

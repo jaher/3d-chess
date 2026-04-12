@@ -409,6 +409,11 @@ static void start_game() {
         gtk_widget_remove_tick_callback(g_gl_area, g_menu_tick_id);
         g_menu_tick_id = 0;
     }
+    game_reset();
+    // Reset camera too
+    g_rot_x = 30.0f;
+    g_rot_y = 180.0f;
+    g_zoom = 12.0f;
     game_update_title(g_window);
     gtk_widget_queue_draw(g_gl_area);
 }

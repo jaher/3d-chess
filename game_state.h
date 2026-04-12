@@ -9,6 +9,9 @@ typedef struct _GtkWidget GtkWidget;
 // Game state — singleton, owns the global mutable state
 void game_init(const std::string& models_dir);
 
+// Reset the game state back to the initial position (clears all history, etc.)
+void game_reset();
+
 GameState& game_get_state();
 
 // Title bar updates
