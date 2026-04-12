@@ -1,6 +1,6 @@
 #include "board_renderer.h"
 #include "chess_rules.h"
-#include "mat4.h"
+#include "linalg.h"
 #include "shader.h"
 
 #include <algorithm>

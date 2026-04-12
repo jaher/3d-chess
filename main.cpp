@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -10,7 +11,7 @@
 #include "chess_rules.h"
 #include "chess_types.h"
 #include "game_state.h"
-#include "mat4.h"
+#include "linalg.h"
 #include "stl_model.h"
 
 // ---------------------------------------------------------------------------
