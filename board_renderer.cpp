@@ -916,6 +916,65 @@ void renderer_draw(GameState& gs, int width, int height,
 
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
     }
+
+    // --- Game over overlay ---
+    if (gs.game_over && !gs.game_result.empty()) {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Semi-transparent dark backdrop
+        glUseProgram(g_highlight_program);
+        Mat4 id_go = mat4_identity();
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id_go.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0, 0, 0, 0.5f);
+        {
+            float bv[] = {-0.6f,-0.12f,0, 0.6f,-0.12f,0, 0.6f,0.12f,0,
+                          -0.6f,-0.12f,0, 0.6f,0.12f,0, -0.6f,0.12f,0};
+            GLuint gvao, gvbo;
+            glGenVertexArrays(1, &gvao); glGenBuffers(1, &gvbo);
+            glBindVertexArray(gvao); glBindBuffer(GL_ARRAY_BUFFER, gvbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(bv), bv, GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindVertexArray(0); glDeleteBuffers(1, &gvbo); glDeleteVertexArrays(1, &gvao);
+        }
+
+        // Big text
+        glUseProgram(g_text_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id_go.m);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_font_tex);
+        glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+        std::vector<float> go_verts;
+        float go_cw = 0.055f, go_ch = 0.08f;
+        float go_w = gs.game_result.size() * go_cw * 0.7f;
+        add_screen_string(go_verts, -go_w * 0.5f, 0.04f, go_cw, go_ch, gs.game_result);
+        int go_count = static_cast<int>(go_verts.size() / 5);
+
+        if (go_count > 0) {
+            GLuint gvao, gvbo;
+            glGenVertexArrays(1, &gvao); glGenBuffers(1, &gvbo);
+            glBindVertexArray(gvao); glBindBuffer(GL_ARRAY_BUFFER, gvbo);
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(go_verts.size()*sizeof(float)),
+                         go_verts.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            // Gold text
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.5f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, go_count);
+
+            glBindVertexArray(0); glDeleteBuffers(1, &gvbo); glDeleteVertexArrays(1, &gvao);
+        }
+
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+    }
 }
 
 // ===========================================================================

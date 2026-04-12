@@ -6,6 +6,8 @@ A 3D chess game built with C++, GTK+3, and OpenGL. Play as white against an AI o
 
 ![Game Screenshot](Game.png)
 
+![Analysis Mode](Game2.png)
+
 ## Features
 
 - **3D rendered chess board** with PBR (Physically Based Rendering), shadow mapping, and procedural wood grain textures
