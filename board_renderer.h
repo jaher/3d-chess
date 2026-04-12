@@ -41,3 +41,20 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      int moves_made, int max_moves,
                                      bool starts_white,
                                      int width, int height);
+
+// Next puzzle button (drawn when challenge solved). Returns true if hit.
+void renderer_draw_next_button(int width, int height, bool hover);
+bool next_button_hit_test(double mx, double my, int width, int height);
+
+// Glass shatter transition: capture the current frame then animate shards
+void renderer_capture_frame(int width, int height);
+void renderer_draw_shatter(float t, int width, int height);
+
+// Summary table at end of challenge — shows user's solutions
+struct SummaryEntry {
+    std::string puzzle_name;
+    std::vector<std::string> moves; // algebraic notation per move
+};
+void renderer_draw_challenge_summary(const std::string& challenge_name,
+                                     const std::vector<SummaryEntry>& entries,
+                                     int width, int height);

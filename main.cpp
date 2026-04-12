@@ -42,6 +42,19 @@ static std::vector<std::string> g_challenge_names;
 static int g_challenge_select_hover = -1;
 static Challenge g_current_challenge;
 static int g_challenge_moves_made = 0;
+static bool g_challenge_solved = false; // shows Next button
+static bool g_challenge_next_hover = false;
+// Solutions submitted by the user (one entry per puzzle: list of UCI moves)
+static std::vector<std::vector<std::string>> g_challenge_solutions;
+static bool g_challenge_show_summary = false;
+static bool g_challenge_summary_hover = false;
+
+// Glass shatter transition
+static bool g_transition_active = false;
+static int g_transition_pending_next = -1; // puzzle index to load when transitioning
+static gint64 g_transition_start_time = 0;
+static const float g_transition_duration = 1.3f;
+static guint g_transition_tick_id = 0;
 
 static void start_menu();
 static void start_game();
@@ -124,8 +137,7 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
         if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode || !gs.white_turn || gs.game_over)
             return;
     } else if (is_challenge) {
-        if (gs.game_over) return;
-        // Move limit: starting side may only make max_moves total
+        if (gs.game_over || g_challenge_solved) return;
         int max_moves = g_current_challenge.max_moves;
         if (max_moves > 0) {
             bool starter_to_move = (gs.white_turn == g_current_challenge.starts_white);
@@ -157,6 +169,15 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
 
                 if (is_challenge) {
                     if (was_starter) g_challenge_moves_made++;
+                    // Record the move in algebraic notation
+                    if (!gs.move_history.empty() && gs.snapshots.size() >= 2) {
+                        int pi = g_current_challenge.current_index;
+                        if (pi >= 0 && pi < static_cast<int>(g_challenge_solutions.size())) {
+                            const auto& before = gs.snapshots[gs.snapshots.size() - 2];
+                            std::string alg = uci_to_algebraic(before, gs.move_history.back());
+                            g_challenge_solutions[pi].push_back(alg);
+                        }
+                    }
                     // Check for solve: game_over with starting side as winner
                     if (gs.game_over) {
                         bool solved = false;
@@ -168,13 +189,8 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
                             solved = true;
 
                         if (solved) {
-                            // Advance to next puzzle after a brief delay
-                            int next = g_current_challenge.current_index + 1;
-                            if (next < static_cast<int>(g_current_challenge.fens.size())) {
-                                load_challenge_puzzle(next);
-                            } else {
-                                std::printf("Challenge complete!\n");
-                            }
+                            g_challenge_solved = true;
+                            std::printf("Puzzle solved!\n");
                         }
                     }
                     gtk_widget_queue_draw(widget);
@@ -292,6 +308,20 @@ static gboolean on_button_release(GtkWidget*, GdkEventButton* event, gpointer gl
                                                  static_cast<int>(g_challenge_names.size()));
             if (idx == -2) start_menu();
             else if (idx >= 0) start_challenge(idx);
+        } else if (g_mode == MODE_CHALLENGE && g_challenge_show_summary) {
+            // Click anywhere on summary returns to menu
+            start_menu();
+        } else if (g_mode == MODE_CHALLENGE && g_challenge_solved && !g_transition_active) {
+            if (next_button_hit_test(event->x, event->y, w, h)) {
+                int next = g_current_challenge.current_index + 1;
+                if (next < static_cast<int>(g_current_challenge.fens.size())) {
+                    // Defer load until next on_render so we can capture the frame first
+                    g_transition_pending_next = next;
+                } else {
+                    g_challenge_show_summary = true;
+                }
+                gtk_widget_queue_draw(GTK_WIDGET(gl_area));
+            }
         } else {
             double dx = event->x - g_press_x, dy = event->y - g_press_y;
             if (dx*dx + dy*dy < 25.0)
@@ -315,6 +345,13 @@ static gboolean on_motion(GtkWidget*, GdkEventMotion* event, gpointer gl_area) {
             event->x, event->y, w, h, static_cast<int>(g_challenge_names.size()));
         gtk_widget_queue_draw(GTK_WIDGET(gl_area));
         return TRUE;
+    }
+    if (g_mode == MODE_CHALLENGE && g_challenge_solved) {
+        bool h_now = next_button_hit_test(event->x, event->y, w, h);
+        if (h_now != g_challenge_next_hover) {
+            g_challenge_next_hover = h_now;
+            gtk_widget_queue_draw(GTK_WIDGET(gl_area));
+        }
     }
     if (g_dragging) {
         g_rot_y += static_cast<float>(event->x - g_last_mouse_x) * 0.3f;
@@ -399,6 +436,8 @@ static void load_challenge_puzzle(int puzzle_index) {
         return;
     g_current_challenge.current_index = puzzle_index;
     g_challenge_moves_made = 0;
+    g_challenge_solved = false;
+    g_challenge_next_hover = false;
     ParsedFEN parsed = parse_fen(g_current_challenge.fens[puzzle_index]);
     if (parsed.valid)
         apply_fen_to_state(game_get_state(), parsed);
@@ -410,8 +449,17 @@ static void load_challenge_puzzle(int puzzle_index) {
     gtk_window_set_title(GTK_WINDOW(g_window), buf);
 }
 
+static gboolean on_transition_tick(GtkWidget* widget, GdkFrameClock*, gpointer) {
+    if (!g_transition_active) return G_SOURCE_REMOVE;
+    gtk_widget_queue_draw(widget);
+    return G_SOURCE_CONTINUE;
+}
+
 static void reset_challenge_puzzle() {
-    load_challenge_puzzle(g_current_challenge.current_index);
+    int idx = g_current_challenge.current_index;
+    if (idx >= 0 && idx < static_cast<int>(g_challenge_solutions.size()))
+        g_challenge_solutions[idx].clear();
+    load_challenge_puzzle(idx);
     gtk_widget_queue_draw(g_gl_area);
 }
 
@@ -420,6 +468,8 @@ static void start_challenge(int index) {
     g_current_challenge = load_challenge(g_challenge_files[index]);
     if (g_current_challenge.fens.empty()) return;
     g_mode = MODE_CHALLENGE;
+    g_challenge_solutions.assign(g_current_challenge.fens.size(), {});
+    g_challenge_show_summary = false;
     load_challenge_puzzle(0);
     gtk_widget_queue_draw(g_gl_area);
 }
@@ -442,9 +492,37 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
         renderer_draw_menu(g_menu_pieces, w, h, t, g_menu_hover);
     } else if (g_mode == MODE_CHALLENGE_SELECT) {
         renderer_draw_challenge_select(g_challenge_names, w, h, g_challenge_select_hover);
+    } else if (g_mode == MODE_CHALLENGE && g_challenge_show_summary) {
+        // Build summary entries
+        std::vector<SummaryEntry> entries;
+        for (size_t i = 0; i < g_challenge_solutions.size(); i++) {
+            SummaryEntry e;
+            char buf[16]; std::snprintf(buf, sizeof(buf), "Puzzle %zu", i + 1);
+            e.puzzle_name = buf;
+            e.moves = g_challenge_solutions[i];
+            entries.push_back(e);
+        }
+        renderer_draw_challenge_summary(g_current_challenge.name, entries, w, h);
     } else {
-        renderer_draw(game_get_state(), w, h, g_rot_x, g_rot_y, g_zoom);
+        // Suppress the regular "wins by checkmate" overlay during challenge mode —
+        // we show our own solved indicator + summary
+        bool save_game_over = false;
+        std::string save_result;
+        auto& gs_render = game_get_state();
         if (g_mode == MODE_CHALLENGE) {
+            save_game_over = gs_render.game_over;
+            save_result = gs_render.game_result;
+            gs_render.game_over = false;
+            gs_render.game_result.clear();
+        }
+
+        renderer_draw(gs_render, w, h, g_rot_x, g_rot_y, g_zoom);
+
+        if (g_mode == MODE_CHALLENGE) {
+            // Restore
+            gs_render.game_over = save_game_over;
+            gs_render.game_result = save_result;
+
             renderer_draw_challenge_overlay(
                 g_current_challenge.name,
                 g_current_challenge.current_index,
@@ -453,6 +531,46 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
                 g_current_challenge.max_moves,
                 g_current_challenge.starts_white,
                 w, h);
+            if (g_challenge_solved && !g_transition_active && g_transition_pending_next < 0)
+                renderer_draw_next_button(w, h, g_challenge_next_hover);
+
+            // Start transition: capture this frame, load next puzzle, then redraw
+            if (g_transition_pending_next >= 0) {
+                renderer_capture_frame(w, h);
+                load_challenge_puzzle(g_transition_pending_next);
+                g_transition_pending_next = -1;
+                g_transition_active = true;
+                g_transition_start_time = g_get_monotonic_time();
+                if (g_transition_tick_id == 0)
+                    g_transition_tick_id = gtk_widget_add_tick_callback(
+                        g_gl_area, on_transition_tick, nullptr, nullptr);
+
+                // Redraw with the new puzzle state
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                renderer_draw(gs_render, w, h, g_rot_x, g_rot_y, g_zoom);
+                renderer_draw_challenge_overlay(
+                    g_current_challenge.name,
+                    g_current_challenge.current_index,
+                    static_cast<int>(g_current_challenge.fens.size()),
+                    g_challenge_moves_made,
+                    g_current_challenge.max_moves,
+                    g_current_challenge.starts_white,
+                    w, h);
+            }
+
+            // Draw the shattering overlay
+            if (g_transition_active) {
+                float t = static_cast<float>(g_get_monotonic_time() - g_transition_start_time) / 1000000.0f;
+                if (t >= g_transition_duration) {
+                    g_transition_active = false;
+                    if (g_transition_tick_id != 0) {
+                        gtk_widget_remove_tick_callback(g_gl_area, g_transition_tick_id);
+                        g_transition_tick_id = 0;
+                    }
+                } else {
+                    renderer_draw_shatter(t, w, h);
+                }
+            }
         }
     }
     return TRUE;

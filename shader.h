@@ -404,6 +404,78 @@ void main() {
 )";
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Glass shatter transition shader
+// Each vertex carries: shard center (NDC), local offset from center (NDC),
+// texture UV, and a per-shard random seed.
+// ---------------------------------------------------------------------------
+static const char* shatter_vs_src = R"(
+#version 330 core
+layout(location = 0) in vec2 aCenterNDC;
+layout(location = 1) in vec2 aLocalOffset;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in float aSeed;
+
+uniform float uTime;
+
+out vec2 vUV;
+out float vAlpha;
+
+void main() {
+    float t = uTime;
+
+    // Outward velocity from screen center — stronger at the edges
+    vec2 from_impact = aCenterNDC;
+    float dist = length(from_impact);
+    vec2 vel = dist > 0.001 ? normalize(from_impact) : vec2(0);
+    vel *= 0.9 + 0.8 * aSeed + dist * 1.5;
+
+    // Random additional spread
+    vec2 rand_push = vec2(sin(aSeed * 7.3), cos(aSeed * 11.7)) * 0.4;
+    vel += rand_push;
+
+    // Gravity (screen space)
+    vec2 grav = vec2(0.0, -3.5);
+
+    // Rotation: each shard spins independently
+    float spin_speed = (aSeed - 0.5) * 14.0;
+    // Shards closer to the impact point rotate faster
+    spin_speed *= (1.5 - dist);
+    float ang = t * spin_speed;
+    float c = cos(ang), s = sin(ang);
+    mat2 rot = mat2(c, -s, s, c);
+    vec2 rotated = rot * aLocalOffset;
+
+    // Shrink slightly (depth-away illusion)
+    float shrink = 1.0 - t * 0.3;
+    rotated *= shrink;
+
+    vec2 pos = aCenterNDC + rotated + vel * t + 0.5 * grav * t * t;
+
+    gl_Position = vec4(pos, 0.0, 1.0);
+    vUV = aUV;
+    // Fade out at the end of the transition
+    vAlpha = 1.0 - smoothstep(0.75, 1.3, t);
+}
+)";
+
+static const char* shatter_fs_src = R"(
+#version 330 core
+in vec2 vUV;
+in float vAlpha;
+
+out vec4 FragColor;
+
+uniform sampler2D uTex;
+
+void main() {
+    vec3 col = texture(uTex, vUV).rgb;
+    // Slight darkening on edges of shards (thin outline)
+    // simulate cracks using UV derivatives not available without dFdx, so skip
+    FragColor = vec4(col, vAlpha);
+}
+)";
+
 // Text shader (textured quads with alpha from font atlas)
 // ---------------------------------------------------------------------------
 static const char* text_vs_src = R"(
