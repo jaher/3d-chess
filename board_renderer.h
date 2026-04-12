@@ -26,5 +26,18 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
                         int hover_button); // 0=none, 1=start, 2=quit
 
-// Returns 0=none, 1=start, 2=quit based on mouse position
+// Returns 0=none, 1=start, 2=quit, 3=challenges based on mouse position
 int menu_hit_test(double mx, double my, int width, int height);
+
+// Challenge select screen
+void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
+                                    int width, int height, int hover_index);
+// Returns -2=back, -1=none, 0..N-1=challenge index
+int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges);
+
+// Challenge in-game overlay
+void renderer_draw_challenge_overlay(const std::string& challenge_name,
+                                     int puzzle_index, int total_puzzles,
+                                     int moves_made, int max_moves,
+                                     bool starts_white,
+                                     int width, int height);

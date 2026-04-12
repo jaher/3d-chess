@@ -6,6 +6,7 @@
 #include <gtk/gtk.h>
 
 #include "board_renderer.h"
+#include "challenge.h"
 #include "chess_rules.h"
 #include "chess_types.h"
 #include "game_state.h"
@@ -35,8 +36,19 @@ static guint g_menu_tick_id = 0;
 static gint64 g_menu_last_update = 0;
 static int g_menu_hover = 0;
 
+// Challenge state
+static std::vector<std::string> g_challenge_files;
+static std::vector<std::string> g_challenge_names;
+static int g_challenge_select_hover = -1;
+static Challenge g_current_challenge;
+static int g_challenge_moves_made = 0;
+
 static void start_menu();
 static void start_game();
+static void start_challenge_select();
+static void start_challenge(int index);
+static void load_challenge_puzzle(int puzzle_index);
+static void reset_challenge_puzzle();
 
 // ---------------------------------------------------------------------------
 // Screen-to-board picking
@@ -104,8 +116,22 @@ static void stop_animation() {
 // ---------------------------------------------------------------------------
 static void handle_board_click(double mx, double my, GtkWidget* widget) {
     auto& gs = game_get_state();
-    if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode || !gs.white_turn || gs.game_over)
-        return;
+
+    bool is_challenge = (g_mode == MODE_CHALLENGE);
+    bool is_normal_game = (g_mode == MODE_PLAYING);
+
+    if (is_normal_game) {
+        if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode || !gs.white_turn || gs.game_over)
+            return;
+    } else if (is_challenge) {
+        if (gs.game_over) return;
+        // Move limit: starting side may only make max_moves total
+        int max_moves = g_current_challenge.max_moves;
+        if (max_moves > 0) {
+            bool starter_to_move = (gs.white_turn == g_current_challenge.starts_white);
+            if (starter_to_move && g_challenge_moves_made >= max_moves) return;
+        }
+    }
 
     int width = gtk_widget_get_allocated_width(widget);
     int height = gtk_widget_get_allocated_height(widget);
@@ -122,14 +148,41 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
     if (gs.selected_col >= 0) {
         for (const auto& [mc, mr] : gs.valid_moves) {
             if (mc == col && mr == row) {
+                bool was_starter = (gs.white_turn == g_current_challenge.starts_white);
                 execute_move(gs, gs.selected_col, gs.selected_row, col, row);
                 gs.selected_col = gs.selected_row = -1;
                 gs.valid_moves.clear();
                 stop_animation();
                 gtk_widget_queue_draw(widget);
-                game_update_title(g_window);
-                if (!gs.white_turn && !gs.game_over)
-                    game_trigger_ai(g_window, g_gl_area);
+
+                if (is_challenge) {
+                    if (was_starter) g_challenge_moves_made++;
+                    // Check for solve: game_over with starting side as winner
+                    if (gs.game_over) {
+                        bool solved = false;
+                        if (g_current_challenge.starts_white &&
+                            gs.game_result.find("White wins") != std::string::npos)
+                            solved = true;
+                        if (!g_current_challenge.starts_white &&
+                            gs.game_result.find("Black wins") != std::string::npos)
+                            solved = true;
+
+                        if (solved) {
+                            // Advance to next puzzle after a brief delay
+                            int next = g_current_challenge.current_index + 1;
+                            if (next < static_cast<int>(g_current_challenge.fens.size())) {
+                                load_challenge_puzzle(next);
+                            } else {
+                                std::printf("Challenge complete!\n");
+                            }
+                        }
+                    }
+                    gtk_widget_queue_draw(widget);
+                } else {
+                    game_update_title(g_window);
+                    if (!gs.white_turn && !gs.game_over)
+                        game_trigger_ai(g_window, g_gl_area);
+                }
                 return;
             }
         }
@@ -155,6 +208,28 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
 // ---------------------------------------------------------------------------
 static gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer) {
     auto& gs = game_get_state();
+
+    // Challenge mode: ESC = reset puzzle, M = back to menu
+    if (g_mode == MODE_CHALLENGE) {
+        if (event->keyval == GDK_KEY_Escape) {
+            reset_challenge_puzzle();
+            return TRUE;
+        }
+        if (event->keyval == GDK_KEY_m || event->keyval == GDK_KEY_M) {
+            start_menu();
+            return TRUE;
+        }
+        return TRUE;
+    }
+
+    // Challenge select: ESC = back to menu
+    if (g_mode == MODE_CHALLENGE_SELECT) {
+        if (event->keyval == GDK_KEY_Escape) {
+            start_menu();
+            return TRUE;
+        }
+        return TRUE;
+    }
 
     if (gs.analysis_mode) {
         if (event->keyval == GDK_KEY_Left && gs.analysis_index > 0) {
@@ -204,12 +279,19 @@ static gboolean on_button_press(GtkWidget*, GdkEventButton* event, gpointer) {
 static gboolean on_button_release(GtkWidget*, GdkEventButton* event, gpointer gl_area) {
     if (event->button == 1) {
         g_dragging = FALSE;
+        int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
+        int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
+
         if (g_mode == MODE_MENU) {
-            int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
-            int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
             int btn = menu_hit_test(event->x, event->y, w, h);
             if (btn == 1) start_game();
             else if (btn == 2) gtk_main_quit();
+            else if (btn == 3) start_challenge_select();
+        } else if (g_mode == MODE_CHALLENGE_SELECT) {
+            int idx = challenge_select_hit_test(event->x, event->y, w, h,
+                                                 static_cast<int>(g_challenge_names.size()));
+            if (idx == -2) start_menu();
+            else if (idx >= 0) start_challenge(idx);
         } else {
             double dx = event->x - g_press_x, dy = event->y - g_press_y;
             if (dx*dx + dy*dy < 25.0)
@@ -220,10 +302,18 @@ static gboolean on_button_release(GtkWidget*, GdkEventButton* event, gpointer gl
 }
 
 static gboolean on_motion(GtkWidget*, GdkEventMotion* event, gpointer gl_area) {
+    int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
+    int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
+
     if (g_mode == MODE_MENU) {
-        int w = gtk_widget_get_allocated_width(GTK_WIDGET(gl_area));
-        int h = gtk_widget_get_allocated_height(GTK_WIDGET(gl_area));
         g_menu_hover = menu_hit_test(event->x, event->y, w, h);
+        gtk_widget_queue_draw(GTK_WIDGET(gl_area));
+        return TRUE;
+    }
+    if (g_mode == MODE_CHALLENGE_SELECT) {
+        g_challenge_select_hover = challenge_select_hit_test(
+            event->x, event->y, w, h, static_cast<int>(g_challenge_names.size()));
+        gtk_widget_queue_draw(GTK_WIDGET(gl_area));
         return TRUE;
     }
     if (g_dragging) {
@@ -286,6 +376,54 @@ static void start_game() {
     gtk_widget_queue_draw(g_gl_area);
 }
 
+static void start_challenge_select() {
+    g_mode = MODE_CHALLENGE_SELECT;
+    if (g_menu_tick_id != 0) {
+        gtk_widget_remove_tick_callback(g_gl_area, g_menu_tick_id);
+        g_menu_tick_id = 0;
+    }
+    // Re-scan challenges directory
+    g_challenge_files = list_challenge_files("challenges");
+    g_challenge_names.clear();
+    for (const auto& f : g_challenge_files) {
+        Challenge c = load_challenge(f);
+        g_challenge_names.push_back(c.name);
+    }
+    g_challenge_select_hover = -1;
+    gtk_window_set_title(GTK_WINDOW(g_window), "Select Challenge");
+    gtk_widget_queue_draw(g_gl_area);
+}
+
+static void load_challenge_puzzle(int puzzle_index) {
+    if (puzzle_index < 0 || puzzle_index >= static_cast<int>(g_current_challenge.fens.size()))
+        return;
+    g_current_challenge.current_index = puzzle_index;
+    g_challenge_moves_made = 0;
+    ParsedFEN parsed = parse_fen(g_current_challenge.fens[puzzle_index]);
+    if (parsed.valid)
+        apply_fen_to_state(game_get_state(), parsed);
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Challenge: %s [%d/%d]",
+                  g_current_challenge.name.c_str(),
+                  puzzle_index + 1,
+                  static_cast<int>(g_current_challenge.fens.size()));
+    gtk_window_set_title(GTK_WINDOW(g_window), buf);
+}
+
+static void reset_challenge_puzzle() {
+    load_challenge_puzzle(g_current_challenge.current_index);
+    gtk_widget_queue_draw(g_gl_area);
+}
+
+static void start_challenge(int index) {
+    if (index < 0 || index >= static_cast<int>(g_challenge_files.size())) return;
+    g_current_challenge = load_challenge(g_challenge_files[index]);
+    if (g_current_challenge.fens.empty()) return;
+    g_mode = MODE_CHALLENGE;
+    load_challenge_puzzle(0);
+    gtk_widget_queue_draw(g_gl_area);
+}
+
 // ---------------------------------------------------------------------------
 // GL callbacks
 // ---------------------------------------------------------------------------
@@ -302,8 +440,20 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
     if (g_mode == MODE_MENU) {
         float t = static_cast<float>(g_get_monotonic_time() - g_menu_start_time) / 1000000.0f;
         renderer_draw_menu(g_menu_pieces, w, h, t, g_menu_hover);
+    } else if (g_mode == MODE_CHALLENGE_SELECT) {
+        renderer_draw_challenge_select(g_challenge_names, w, h, g_challenge_select_hover);
     } else {
         renderer_draw(game_get_state(), w, h, g_rot_x, g_rot_y, g_zoom);
+        if (g_mode == MODE_CHALLENGE) {
+            renderer_draw_challenge_overlay(
+                g_current_challenge.name,
+                g_current_challenge.current_index,
+                static_cast<int>(g_current_challenge.fens.size()),
+                g_challenge_moves_made,
+                g_current_challenge.max_moves,
+                g_current_challenge.starts_white,
+                w, h);
+        }
     }
     return TRUE;
 }

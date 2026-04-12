@@ -1057,13 +1057,15 @@ void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
 
 static const float BTN_W = 0.35f, BTN_H = 0.08f;
 static const float BTN_X = -BTN_W * 0.5f;
-static const float BTN_START_Y = 0.05f;
-static const float BTN_QUIT_Y = -0.12f;
+static const float BTN_START_Y = 0.12f;
+static const float BTN_CHALLENGE_Y = -0.05f;
+static const float BTN_QUIT_Y = -0.22f;
 
 int menu_hit_test(double mx, double my, int width, int height) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W && ndc_y >= BTN_START_Y - BTN_H && ndc_y <= BTN_START_Y) return 1;
+    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W && ndc_y >= BTN_CHALLENGE_Y - BTN_H && ndc_y <= BTN_CHALLENGE_Y) return 3;
     if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W && ndc_y >= BTN_QUIT_Y - BTN_H && ndc_y <= BTN_QUIT_Y) return 2;
     return 0;
 }
@@ -1149,6 +1151,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     add_screen_string(ui_verts, -stw*0.5f, BTN_START_Y - 0.018f, bcw, bch, start_text);
     int start_end = static_cast<int>(ui_verts.size() / 5);
 
+    std::string ch_text = "Challenges";
+    float chw = ch_text.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -chw*0.5f, BTN_CHALLENGE_Y - 0.018f, bcw, bch, ch_text);
+    int ch_end = static_cast<int>(ui_verts.size() / 5);
+
     std::string quit_text = "Quit";
     float qtw = quit_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -qtw*0.5f, BTN_QUIT_Y - 0.018f, bcw, bch, quit_text);
@@ -1172,6 +1179,8 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         float bg[] = {
             BTN_X,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y,0,
             BTN_X,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y,0, BTN_X,BTN_START_Y,0,
+            BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0,
+            BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0, BTN_X,BTN_CHALLENGE_Y,0,
             BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0,
             BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0, BTN_X,BTN_QUIT_Y,0
         };
@@ -1183,8 +1192,10 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glEnableVertexAttribArray(0);
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.4f,0.8f, hover_button==1?0.5f:0.3f);
         glDrawArrays(GL_TRIANGLES, 0, 6);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.6f,0.3f, hover_button==3?0.5f:0.3f);
         glDrawArrays(GL_TRIANGLES, 6, 6);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
+        glDrawArrays(GL_TRIANGLES, 12, 6);
         glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
     }
 
@@ -1201,10 +1212,251 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float si = hover_button==1 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), si,si,si,1);
     glDrawArrays(GL_TRIANGLES, subtitle_end, start_end - subtitle_end);
+    float ci = hover_button==3 ? 1.0f : 0.85f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), ci,ci,ci,1);
+    glDrawArrays(GL_TRIANGLES, start_end, ch_end - start_end);
     float qi = hover_button==2 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), qi,qi,qi,1);
-    glDrawArrays(GL_TRIANGLES, start_end, quit_end - start_end);
+    glDrawArrays(GL_TRIANGLES, ch_end, quit_end - ch_end);
 
     glBindVertexArray(0); glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
+
+// ===========================================================================
+// Challenge select screen
+// ===========================================================================
+static const float CS_BTN_W = 0.6f;
+static const float CS_BTN_H = 0.08f;
+static const float CS_BTN_X = -CS_BTN_W * 0.5f;
+static const float CS_TOP_Y = 0.4f;
+static const float CS_GAP = 0.02f;
+static const float CS_BACK_W = 0.2f;
+static const float CS_BACK_H = 0.07f;
+static const float CS_BACK_X = -0.95f;
+static const float CS_BACK_Y = 0.93f;
+
+int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+
+    // Back button
+    if (ndc_x >= CS_BACK_X && ndc_x <= CS_BACK_X + CS_BACK_W &&
+        ndc_y >= CS_BACK_Y - CS_BACK_H && ndc_y <= CS_BACK_Y)
+        return -2;
+
+    // Challenge buttons
+    for (int i = 0; i < num_challenges; i++) {
+        float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
+        if (ndc_x >= CS_BTN_X && ndc_x <= CS_BTN_X + CS_BTN_W &&
+            ndc_y >= by - CS_BTN_H && ndc_y <= by)
+            return i;
+    }
+    return -1;
+}
+
+void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
+                                    int width, int height, int hover_index) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glViewport(0, 0, width, height);
+
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+
+    // --- Build button background quads ---
+    std::vector<float> bg_verts;
+    auto add_quad = [&](float x, float y, float w, float h) {
+        bg_verts.insert(bg_verts.end(), {x, y-h, 0,  x+w, y-h, 0,  x+w, y, 0,
+                                          x, y-h, 0,  x+w, y, 0,  x, y, 0});
+    };
+    add_quad(CS_BACK_X, CS_BACK_Y, CS_BACK_W, CS_BACK_H); // back button
+    for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
+        float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
+        add_quad(CS_BTN_X, by, CS_BTN_W, CS_BTN_H);
+    }
+
+    GLuint bvao, bvbo;
+    glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+    glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(bg_verts.size()*sizeof(float)),
+                 bg_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+
+    // Back button
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                0.4f, 0.4f, 0.4f, hover_index == -2 ? 0.6f : 0.4f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    // Challenge buttons
+    for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
+        bool h = (hover_index == i);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.2f, 0.6f, 0.3f, h ? 0.6f : 0.35f);
+        glDrawArrays(GL_TRIANGLES, 6 + i*6, 6);
+    }
+    glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // --- Text ---
+    std::vector<float> text_verts;
+
+    // Title
+    float tcw = 0.05f, tch = 0.075f;
+    std::string title = "Select Challenge";
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(text_verts, -tw*0.5f, 0.6f, tcw, tch, title);
+    int title_count = static_cast<int>(text_verts.size() / 5);
+
+    // Back button text
+    float bw_cw = 0.022f, bw_ch = 0.032f;
+    std::string back_text = "< Back";
+    add_screen_string(text_verts, CS_BACK_X + 0.04f, CS_BACK_Y - 0.020f, bw_cw, bw_ch, back_text);
+    int back_end = static_cast<int>(text_verts.size() / 5);
+
+    // Challenge names
+    float cw = 0.024f, ch = 0.036f;
+    std::vector<int> name_ends;
+    for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
+        float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
+        float nw = challenge_names[i].size() * cw * 0.7f;
+        add_screen_string(text_verts, -nw*0.5f, by - 0.025f, cw, ch, challenge_names[i]);
+        name_ends.push_back(static_cast<int>(text_verts.size() / 5));
+    }
+
+    if (text_verts.empty()) {
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+        return;
+    }
+
+    GLuint tvao, tvbo;
+    glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+    glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(text_verts.size()*sizeof(float)),
+                 text_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    // Title
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.6f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_count);
+
+    // Back text
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
+
+    // Challenge name texts
+    int prev = back_end;
+    for (int i = 0; i < static_cast<int>(name_ends.size()); i++) {
+        float bri = (hover_index == i) ? 1.0f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), bri, bri, bri, 1.0f);
+        glDrawArrays(GL_TRIANGLES, prev, name_ends[i] - prev);
+        prev = name_ends[i];
+    }
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
+
+// ===========================================================================
+// Challenge in-game overlay (drawn on top of regular game render)
+// ===========================================================================
+void renderer_draw_challenge_overlay(const std::string& challenge_name,
+                                     int puzzle_index, int total_puzzles,
+                                     int moves_made, int max_moves,
+                                     bool starts_white,
+                                     int /*width*/, int /*height*/) {
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+
+    // Top-center info bar
+    std::vector<float> bg_verts;
+    bg_verts.insert(bg_verts.end(), {-0.6f, 0.85f, 0,  0.6f, 0.85f, 0,  0.6f, 0.97f, 0,
+                                       -0.6f, 0.85f, 0,  0.6f, 0.97f, 0,  -0.6f, 0.97f, 0});
+    GLuint bvao, bvbo;
+    glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+    glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float)*bg_verts.size(), bg_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0, 0, 0, 0.6f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // Text
+    std::vector<float> text_verts;
+    float cw = 0.018f, ch = 0.026f;
+
+    // Line 1: challenge name
+    std::string line1 = challenge_name;
+    float w1 = line1.size() * cw * 0.7f;
+    add_screen_string(text_verts, -w1*0.5f, 0.945f, cw, ch, line1);
+    int line1_end = static_cast<int>(text_verts.size() / 5);
+
+    // Line 2: puzzle number / total + move counter
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Puzzle %d/%d   %s to mate in %d   Moves: %d/%d",
+                  puzzle_index + 1, total_puzzles,
+                  starts_white ? "White" : "Black",
+                  max_moves, moves_made, max_moves);
+    std::string line2 = buf;
+    float w2 = line2.size() * cw * 0.7f;
+    add_screen_string(text_verts, -w2*0.5f, 0.895f, cw, ch, line2);
+    int line2_end = static_cast<int>(text_verts.size() / 5);
+
+    // Line 3: hint
+    std::string line3 = "ESC: reset   M: menu";
+    float cw3 = 0.014f, ch3 = 0.020f;
+    float w3 = line3.size() * cw3 * 0.7f;
+    add_screen_string(text_verts, -w3*0.5f, -0.92f, cw3, ch3, line3);
+    int line3_end = static_cast<int>(text_verts.size() / 5);
+
+    GLuint tvao, tvbo;
+    glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+    glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float)*text_verts.size(), text_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.5f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, line1_end);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.9f, 0.9f, 0.9f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, line1_end, line2_end - line1_end);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f, 0.7f, 0.7f, 0.8f);
+    glDrawArrays(GL_TRIANGLES, line2_end, line3_end - line2_end);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
