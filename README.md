@@ -4,9 +4,9 @@ A 3D chess game built with C++, GTK+3, and OpenGL. Play as white against an AI o
 
 ![Chess Board](https://img.shields.io/badge/OpenGL-3.3-blue) ![GTK](https://img.shields.io/badge/GTK-3.0-green) ![C++17](https://img.shields.io/badge/C++-17-orange)
 
-![Game Screenshot](Game.png)
+![Game Screenshot](screenshots/Game.png)
 
-![Analysis Mode](Game2.png)
+![Analysis Mode](screenshots/Game2.png)
 
 ## Features
 
