@@ -1,10 +1,21 @@
 #include "ai_player.h"
 
+#include <cerrno>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <sstream>
+#include <string>
 
-#include <curl/curl.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // FEN generation
@@ -86,189 +97,321 @@ bool parse_uci_move(const std::string& move, int& from_col, int& from_row,
 }
 
 // ---------------------------------------------------------------------------
-// Curl write callback
+// Stockfish subprocess wrapper
 // ---------------------------------------------------------------------------
-static size_t curl_write_cb(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t total = size * nmemb;
-    auto* buf = static_cast<std::string*>(userp);
-    buf->append(static_cast<char*>(contents), total);
-    return total;
+namespace {
+
+int env_int(const char* name, int fallback) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return fallback;
+    char* end = nullptr;
+    long n = std::strtol(v, &end, 10);
+    if (end == v) return fallback;
+    return static_cast<int>(n);
 }
 
-// ---------------------------------------------------------------------------
-// JSON helpers
-// ---------------------------------------------------------------------------
-std::string extract_response_text(const std::string& json) {
-    std::string marker = "\"text\":";
-    auto pos = json.find(marker);
-    if (pos == std::string::npos) return "";
+class StockfishEngine {
+public:
+    ~StockfishEngine() { stop(); }
 
-    pos += marker.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-    if (pos >= json.size() || json[pos] != '"') return "";
-    pos++; // skip opening quote
+    bool started() const { return pid_ > 0; }
 
-    std::string result;
-    while (pos < json.size() && json[pos] != '"') {
-        if (json[pos] == '\\' && pos + 1 < json.size()) pos++;
-        result += json[pos];
-        pos++;
+    bool start() {
+        int in_pipe[2];
+        int out_pipe[2];
+        if (pipe2(in_pipe, O_CLOEXEC) < 0) return false;
+        if (pipe2(out_pipe, O_CLOEXEC) < 0) {
+            ::close(in_pipe[0]); ::close(in_pipe[1]);
+            return false;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            ::close(in_pipe[0]); ::close(in_pipe[1]);
+            ::close(out_pipe[0]); ::close(out_pipe[1]);
+            return false;
+        }
+
+        if (pid == 0) {
+            // child
+            dup2(in_pipe[0], STDIN_FILENO);
+            dup2(out_pipe[1], STDOUT_FILENO);
+            // leave stderr attached to the parent's tty
+            ::close(in_pipe[0]); ::close(in_pipe[1]);
+            ::close(out_pipe[0]); ::close(out_pipe[1]);
+
+            const char* env_path = std::getenv("CHESS_STOCKFISH_PATH");
+            if (env_path && *env_path) {
+                execl(env_path, env_path, (char*)nullptr);
+            }
+            execl("third_party/stockfish/src/stockfish",
+                  "third_party/stockfish/src/stockfish", (char*)nullptr);
+            execlp("stockfish", "stockfish", (char*)nullptr);
+            _exit(127);
+        }
+
+        // parent
+        ::close(in_pipe[0]);
+        ::close(out_pipe[1]);
+        in_fd_  = in_pipe[1];
+        out_fd_ = out_pipe[0];
+        pid_ = pid;
+
+        // Non-blocking reads for poll-based wait_for_*
+        int flags = fcntl(out_fd_, F_GETFL, 0);
+        if (flags >= 0) fcntl(out_fd_, F_SETFL, flags | O_NONBLOCK);
+
+        signal(SIGPIPE, SIG_IGN);
+
+        if (!handshake()) {
+            stop();
+            return false;
+        }
+        std::fprintf(stderr, "Stockfish spawned pid=%d\n", pid_);
+        return true;
     }
-    return result;
-}
 
-std::string json_escape(const std::string& s) {
-    std::string out;
-    for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else out += c;
+    void stop() {
+        if (pid_ > 0) {
+            if (in_fd_ >= 0) {
+                (void)write_line("quit");
+            }
+        }
+        if (in_fd_ >= 0)  { ::close(in_fd_);  in_fd_ = -1; }
+        if (out_fd_ >= 0) { ::close(out_fd_); out_fd_ = -1; }
+        if (pid_ > 0) {
+            // brief grace period
+            for (int i = 0; i < 20; i++) {
+                int status = 0;
+                pid_t r = waitpid(pid_, &status, WNOHANG);
+                if (r == pid_ || r < 0) { pid_ = -1; break; }
+                struct timespec ts{0, 10 * 1000 * 1000}; // 10ms
+                nanosleep(&ts, nullptr);
+            }
+            if (pid_ > 0) {
+                kill(pid_, SIGTERM);
+                waitpid(pid_, nullptr, 0);
+                pid_ = -1;
+            }
+        }
+        read_buf_.clear();
     }
-    return out;
+
+    std::string get_move(const std::string& fen, int movetime_ms) {
+        if (!write_line("ucinewgame")) { stop(); return ""; }
+        if (!write_line("isready"))    { stop(); return ""; }
+        if (wait_for_contains("readyok", 2000).empty()) { stop(); return ""; }
+        if (!write_line("position fen " + fen)) { stop(); return ""; }
+        if (!write_line("go movetime " + std::to_string(movetime_ms))) {
+            stop(); return "";
+        }
+        std::string line = wait_for_prefix("bestmove ", movetime_ms + 3000);
+        if (line.empty()) { stop(); return ""; }
+
+        // "bestmove e7e5 ponder d2d4" or "bestmove (none)" or "bestmove 0000"
+        size_t p = line.find("bestmove ");
+        if (p == std::string::npos) return "";
+        std::string rest = line.substr(p + 9);
+        // first token
+        size_t sp = rest.find(' ');
+        std::string mv = (sp == std::string::npos) ? rest : rest.substr(0, sp);
+        if (mv == "(none)" || mv == "0000" || mv.size() < 4) return "";
+        return mv.substr(0, 4);
+    }
+
+    // Returns centipawns from white's perspective, or INT_MIN on failure.
+    int eval_position(const std::string& fen, int movetime_ms) {
+        if (!write_line("ucinewgame")) { stop(); return INT_MIN; }
+        if (!write_line("isready"))    { stop(); return INT_MIN; }
+        if (wait_for_contains("readyok", 2000).empty()) { stop(); return INT_MIN; }
+        if (!write_line("position fen " + fen)) { stop(); return INT_MIN; }
+        if (!write_line("go movetime " + std::to_string(movetime_ms))) {
+            stop(); return INT_MIN;
+        }
+
+        // Determine side to move from FEN (the field after the board).
+        bool black_to_move = false;
+        {
+            size_t s = fen.find(' ');
+            if (s != std::string::npos && s + 1 < fen.size() && fen[s + 1] == 'b')
+                black_to_move = true;
+        }
+
+        int best_score = 0;
+        int best_depth = -1;
+        bool got_any = false;
+
+        int deadline_budget = movetime_ms + 3000;
+        while (true) {
+            std::string line = read_line(deadline_budget);
+            if (line.empty()) { stop(); return INT_MIN; }
+            if (line.rfind("bestmove ", 0) == 0) break;
+
+            if (line.rfind("info ", 0) != 0) continue;
+
+            // Parse "... depth N ... score cp X" or "score mate X"
+            int depth = -1;
+            int score = 0;
+            bool have_score = false;
+            std::istringstream iss(line);
+            std::string tok;
+            while (iss >> tok) {
+                if (tok == "depth") {
+                    iss >> depth;
+                } else if (tok == "score") {
+                    std::string kind;
+                    iss >> kind;
+                    int n = 0;
+                    iss >> n;
+                    if (kind == "cp") {
+                        score = n;
+                        have_score = true;
+                    } else if (kind == "mate") {
+                        int absn = n < 0 ? -n : n;
+                        score = (n >= 0 ? 1 : -1) * (30000 - absn);
+                        have_score = true;
+                    }
+                }
+            }
+            if (have_score && depth >= best_depth) {
+                best_score = score;
+                best_depth = depth;
+                got_any = true;
+            }
+        }
+
+        if (!got_any) return 0;
+        if (black_to_move) best_score = -best_score;
+        return best_score;
+    }
+
+private:
+    pid_t pid_ = -1;
+    int in_fd_ = -1;
+    int out_fd_ = -1;
+    std::string read_buf_;
+
+    bool write_line(const std::string& s) {
+        if (in_fd_ < 0) return false;
+        std::string out = s + "\n";
+        const char* p = out.data();
+        size_t left = out.size();
+        while (left > 0) {
+            ssize_t n = ::write(in_fd_, p, left);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+            p += n;
+            left -= static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    // Returns the first complete line read from stdout, waiting up to
+    // timeout_ms. Returns "" on error/EOF/timeout.
+    std::string read_line(int timeout_ms) {
+        while (true) {
+            size_t nl = read_buf_.find('\n');
+            if (nl != std::string::npos) {
+                std::string line = read_buf_.substr(0, nl);
+                read_buf_.erase(0, nl + 1);
+                // trim \r
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                return line;
+            }
+            if (out_fd_ < 0) return "";
+
+            struct pollfd pfd;
+            pfd.fd = out_fd_;
+            pfd.events = POLLIN;
+            int pr = poll(&pfd, 1, timeout_ms);
+            if (pr <= 0) return ""; // timeout or error
+            if (!(pfd.revents & POLLIN)) return "";
+
+            char buf[4096];
+            ssize_t n = ::read(out_fd_, buf, sizeof(buf));
+            if (n <= 0) return "";
+            read_buf_.append(buf, static_cast<size_t>(n));
+        }
+    }
+
+    std::string wait_for_contains(const std::string& needle, int timeout_ms) {
+        while (true) {
+            std::string line = read_line(timeout_ms);
+            if (line.empty()) return "";
+            if (line.find(needle) != std::string::npos) return line;
+        }
+    }
+
+    std::string wait_for_prefix(const std::string& prefix, int timeout_ms) {
+        while (true) {
+            std::string line = read_line(timeout_ms);
+            if (line.empty()) return "";
+            if (line.rfind(prefix, 0) == 0) return line;
+        }
+    }
+
+    bool handshake() {
+        if (!write_line("uci")) return false;
+        if (wait_for_contains("uciok", 3000).empty()) return false;
+        if (!write_line("setoption name UCI_LimitStrength value true")) return false;
+        int elo = env_int("CHESS_AI_ELO", 1400);
+        if (!write_line("setoption name UCI_Elo value " + std::to_string(elo)))
+            return false;
+        if (!write_line("isready")) return false;
+        if (wait_for_contains("readyok", 3000).empty()) return false;
+        return true;
+    }
+};
+
+std::mutex g_engine_mu;
+std::unique_ptr<StockfishEngine> g_engine;
+bool g_atexit_registered = false;
+
+void ai_player_shutdown() {
+    std::lock_guard<std::mutex> lk(g_engine_mu);
+    g_engine.reset();
 }
 
+// Must be called with g_engine_mu held.
+StockfishEngine* get_engine_locked() {
+    if (!g_atexit_registered) {
+        std::atexit(ai_player_shutdown);
+        g_atexit_registered = true;
+    }
+    if (g_engine && g_engine->started()) return g_engine.get();
+    g_engine = std::make_unique<StockfishEngine>();
+    if (!g_engine->start()) {
+        g_engine.reset();
+        return nullptr;
+    }
+    return g_engine.get();
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
-// Anthropic API call
+// Public API
 // ---------------------------------------------------------------------------
-std::string call_anthropic(const std::string& prompt) {
-    const char* api_key = std::getenv("ANTHROPIC_API_KEY");
-    if (!api_key || std::strlen(api_key) == 0) {
-        std::fprintf(stderr, "ANTHROPIC_API_KEY not set\n");
+std::string ask_ai_move(const std::string& fen) {
+    std::lock_guard<std::mutex> lk(g_engine_mu);
+    StockfishEngine* eng = get_engine_locked();
+    if (!eng) {
+        std::fprintf(stderr, "Stockfish not available; falling back to random move\n");
         return "";
     }
-
-    std::string body =
-        "{"
-        "\"model\":\"claude-sonnet-4-20250514\","
-        "\"max_tokens\":20,"
-        "\"messages\":[{\"role\":\"user\",\"content\":\"" + prompt + "\"}]"
-        "}";
-
-    CURL* curl = curl_easy_init();
-    if (!curl) return "";
-
-    std::string response;
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
-    std::string auth_header = "x-api-key: " + std::string(api_key);
-    headers = curl_slist_append(headers, auth_header.c_str());
-    headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
-
-    curl_easy_setopt(curl, CURLOPT_URL, "https://api.anthropic.com/v1/messages");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    CURLcode res = curl_easy_perform(curl);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        std::fprintf(stderr, "API call failed: %s\n", curl_easy_strerror(res));
-        return "";
+    int movetime = env_int("CHESS_AI_MOVETIME_MS", 800);
+    std::string uci = eng->get_move(fen, movetime);
+    if (uci.empty()) {
+        std::fprintf(stderr, "Stockfish produced no move; will fall back\n");
     }
-
-    std::string text = extract_response_text(response);
-    std::fprintf(stderr, "AI response: \"%s\"\n", text.c_str());
-    return text;
+    return uci;
 }
 
-std::string extract_uci(const std::string& text) {
-    std::string clean;
-    for (char c : text) {
-        if ((c >= 'a' && c <= 'h') || (c >= '1' && c <= '8'))
-            clean += c;
-        if (clean.size() >= 4) break;
-    }
-    return clean;
-}
-
-// ---------------------------------------------------------------------------
-// Ask the AI for a move
-// ---------------------------------------------------------------------------
-std::string ask_ai_move(const std::string& fen,
-                        const std::vector<std::string>& move_history,
-                        const BoardSquare board[8][8]) {
-    // Build move history string
-    std::string history;
-    for (size_t i = 0; i < move_history.size(); i++) {
-        if (i > 0) history += " ";
-        if (i % 2 == 0) history += std::to_string(i / 2 + 1) + ". ";
-        history += move_history[i];
-    }
-
-    std::string base_prompt =
-        "You are playing as Black in a casual chess game against a beginner. "
-        "Play at a beginner-friendly level. Make reasonable but imperfect moves. "
-        "Occasionally miss tactics, play slightly passive moves, or make "
-        "minor positional mistakes. Do NOT play the optimal engine move every "
-        "time. Play like a friendly human opponent who is slightly better "
-        "than a beginner but still makes mistakes.\\n\\n"
-        "Current position (FEN): " + json_escape(fen) + "\\n\\n";
-    if (!history.empty())
-        base_prompt += "Move history: " + json_escape(history) + "\\n\\n";
-    base_prompt +=
-        "Respond with ONLY your next move in UCI coordinate format "
-        "(e.g., e7e5, g8f6, b8c6). No explanation, no punctuation, "
-        "just the 4-character move.";
-
-    std::string previous_attempts;
-
-    for (int attempt = 0; attempt < 3; attempt++) {
-        std::string prompt = base_prompt;
-        if (!previous_attempts.empty())
-            prompt += "\\n\\n" + previous_attempts;
-
-        std::string text = call_anthropic(prompt);
-        if (text.empty()) return "";
-
-        std::string uci = extract_uci(text);
-
-        int fc, fr, tc, tr;
-        if (!parse_uci_move(uci, fc, fr, tc, tr)) {
-            std::fprintf(stderr, "Attempt %d: could not parse '%s'\n",
-                         attempt + 1, uci.c_str());
-            previous_attempts +=
-                "IMPORTANT: Your previous response \\\"" + json_escape(uci) +
-                "\\\" was not a valid UCI move. "
-                "Please respond with a valid 4-character UCI move for a Black piece "
-                "(e.g., e7e5). The source square must contain one of your Black pieces.";
-            continue;
-        }
-
-        // Source must be a black piece
-        if (board[fr][fc].piece_type < 0 || board[fr][fc].is_white) {
-            std::fprintf(stderr, "Attempt %d: %s — no black piece at source\n",
-                         attempt + 1, uci.c_str());
-            previous_attempts +=
-                "IMPORTANT: Your previous move \\\"" + uci +
-                "\\\" is invalid because there is no Black piece on " +
-                square_to_uci(fc, fr) +
-                ". Please pick a square that has one of your Black pieces "
-                "and respond with a valid 4-character UCI move.";
-            continue;
-        }
-
-        // Destination must not have own (black) piece
-        if (board[tr][tc].piece_type >= 0 && !board[tr][tc].is_white) {
-            std::fprintf(stderr, "Attempt %d: %s — destination has own piece\n",
-                         attempt + 1, uci.c_str());
-            previous_attempts +=
-                "IMPORTANT: Your previous move \\\"" + uci +
-                "\\\" is invalid because " + square_to_uci(tc, tr) +
-                " is occupied by your own piece. "
-                "Please respond with a different valid 4-character UCI move.";
-            continue;
-        }
-
-        return uci;
-    }
-
-    std::fprintf(stderr, "AI failed to produce a valid move after 3 attempts\n");
-    return "";
+int stockfish_eval(const std::string& fen, int movetime_ms) {
+    std::lock_guard<std::mutex> lk(g_engine_mu);
+    StockfishEngine* eng = get_engine_locked();
+    if (!eng) return INT_MIN;
+    return eng->eval_position(fen, movetime_ms);
 }

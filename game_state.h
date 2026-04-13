@@ -24,3 +24,9 @@ void game_exit_analysis();
 
 // AI integration
 void game_trigger_ai(GtkWidget* window, GtkWidget* gl_area);
+
+// Kick off an async Stockfish eval of the current position. When the result
+// arrives it overwrites gs.score_history[move_index] and redraws gl_area.
+// No-op if move_index is no longer the last score_history entry by the time
+// the result comes back (e.g. after a game reset).
+void game_trigger_eval(int move_index, GtkWidget* gl_area);

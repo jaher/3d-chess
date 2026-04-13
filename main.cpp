@@ -196,6 +196,11 @@ static void handle_board_click(double mx, double my, GtkWidget* widget) {
                     gtk_widget_queue_draw(widget);
                 } else {
                     game_update_title(g_window);
+                    // Upgrade the most recent score_history entry with a
+                    // real Stockfish eval (async).
+                    game_trigger_eval(
+                        static_cast<int>(gs.score_history.size()) - 1,
+                        g_gl_area);
                     if (!gs.white_turn && !gs.game_over)
                         game_trigger_ai(g_window, g_gl_area);
                 }

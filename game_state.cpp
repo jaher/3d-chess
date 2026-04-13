@@ -2,6 +2,7 @@
 #include "chess_rules.h"
 #include "ai_player.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -217,6 +218,9 @@ static gboolean on_ai_anim_tick(GtkWidget* widget, GdkFrameClock*, gpointer data
         execute_move(gs, gs.ai_from_col, gs.ai_from_row, gs.ai_to_col, gs.ai_to_row);
         gs.ai_thinking = false;
         game_update_title(window);
+        // Upgrade the fresh score_history entry with a real Stockfish eval.
+        game_trigger_eval(
+            static_cast<int>(gs.score_history.size()) - 1, widget);
         gtk_widget_queue_draw(widget);
         return G_SOURCE_REMOVE;
     }
@@ -243,15 +247,14 @@ void game_trigger_ai(GtkWidget* window, GtkWidget* gl_area) {
         gs.castling.white_king_moved, gs.castling.black_king_moved,
         gs.castling.white_rook_a_moved, gs.castling.white_rook_h_moved,
         gs.castling.black_rook_a_moved, gs.castling.black_rook_h_moved);
-    std::vector<std::string> history = gs.move_history;
 
     // Capture widget pointers for the callback
     GtkWidget* win_ptr = window;
     GtkWidget* gl_ptr = gl_area;
 
-    std::thread([fen, history, board, win_ptr, gl_ptr]() {
+    std::thread([fen, win_ptr, gl_ptr]() {
         std::printf("AI thinking... FEN: %s\n", fen.c_str());
-        std::string uci = ask_ai_move(fen, history, board);
+        std::string uci = ask_ai_move(fen);
 
         auto* result = new AiMoveResult{};
         result->valid = false;
@@ -270,5 +273,76 @@ void game_trigger_ai(GtkWidget* window, GtkWidget* gl_area) {
         }
 
         g_idle_add(on_ai_move_ready, result);
+    }).detach();
+}
+
+// ---------------------------------------------------------------------------
+// Async Stockfish position eval → score graph
+// ---------------------------------------------------------------------------
+struct EvalResult {
+    int move_index;
+    int cp; // centipawns, white-relative; INT_MIN = unavailable
+    GtkWidget* gl_area;
+};
+
+static gboolean on_eval_ready(gpointer data) {
+    auto* r = static_cast<EvalResult*>(data);
+    auto& gs = g_state;
+
+    if (r->cp == INT_MIN) { delete r; return G_SOURCE_REMOVE; }
+    if (r->move_index < 0 ||
+        r->move_index >= static_cast<int>(gs.score_history.size())) {
+        delete r;
+        return G_SOURCE_REMOVE;
+    }
+
+    int cp = r->cp;
+    // Collapse mate scores to a bounded ±100 spike for display.
+    int mate_threshold = 30000 - 100;
+    float pawn_units;
+    if (cp >= mate_threshold) {
+        pawn_units = 100.0f - static_cast<float>(30000 - cp);
+    } else if (cp <= -mate_threshold) {
+        pawn_units = -(100.0f - static_cast<float>(30000 + cp));
+    } else {
+        pawn_units = cp / 100.0f;
+    }
+
+    gs.score_history[r->move_index] = pawn_units;
+    if (r->gl_area) gtk_widget_queue_draw(r->gl_area);
+    delete r;
+    return G_SOURCE_REMOVE;
+}
+
+void game_trigger_eval(int move_index, GtkWidget* gl_area) {
+    auto& gs = g_state;
+
+    // Snapshot FEN on the caller (GTK) thread — game state isn't thread-safe.
+    BoardSquare board[8][8];
+    for (int r = 0; r < 8; r++)
+        for (int c = 0; c < 8; c++)
+            board[r][c] = {-1, false};
+    for (const auto& p : gs.pieces)
+        if (p.alive)
+            board[p.row][p.col] = {p.type, p.is_white};
+
+    std::string fen = board_to_fen(board, gs.white_turn,
+        gs.castling.white_king_moved, gs.castling.black_king_moved,
+        gs.castling.white_rook_a_moved, gs.castling.white_rook_h_moved,
+        gs.castling.black_rook_a_moved, gs.castling.black_rook_h_moved);
+
+    GtkWidget* gl_ptr = gl_area;
+    int idx = move_index;
+
+    int movetime = 150;
+    if (const char* v = std::getenv("CHESS_EVAL_MOVETIME_MS")) {
+        int n = std::atoi(v);
+        if (n > 0) movetime = n;
+    }
+
+    std::thread([fen, idx, gl_ptr, movetime]() {
+        int cp = stockfish_eval(fen, movetime);
+        auto* r = new EvalResult{idx, cp, gl_ptr};
+        g_idle_add(on_eval_ready, r);
     }).detach();
 }

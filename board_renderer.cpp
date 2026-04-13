@@ -1331,7 +1331,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     int title_count = static_cast<int>(ui_verts.size() / 5);
 
     float scw = 0.018f, sch = 0.028f;
-    std::string subtitle = "Play against Claude AI";
+    std::string subtitle = "Play against stockfish";
     float sw = subtitle.size() * scw * 0.7f;
     add_screen_string(ui_verts, -sw*0.5f, 0.22f, scw, sch, subtitle);
     int subtitle_end = static_cast<int>(ui_verts.size() / 5);

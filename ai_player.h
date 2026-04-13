@@ -1,9 +1,8 @@
 #pragma once
 
 #include <string>
-#include <vector>
 
-// Simplified board square for FEN generation / AI validation.
+// Simplified board square for FEN generation.
 // piece_type matches the main PieceType enum (-1 = empty).
 struct BoardSquare {
     int piece_type;
@@ -31,21 +30,14 @@ bool parse_uci_move(const std::string& move, int& from_col, int& from_row,
                     int& to_col, int& to_row);
 
 // ---------------------------------------------------------------------------
-// Anthropic API
+// Stockfish engine integration
 // ---------------------------------------------------------------------------
-// Extract text from Anthropic API JSON response (minimal parser).
-std::string extract_response_text(const std::string& json);
+// Ask Stockfish for a move given a FEN position. Returns a 4-char UCI move
+// ("e7e5") or "" if the engine is unavailable or produced no move. Caller is
+// responsible for legality checking (the game_state layer does this anyway).
+std::string ask_ai_move(const std::string& fen);
 
-// Escape a string for JSON embedding.
-std::string json_escape(const std::string& s);
-
-// Send a prompt to the Anthropic API and return the text response.
-std::string call_anthropic(const std::string& prompt);
-
-// Extract a clean 4-char UCI move from raw AI text.
-std::string extract_uci(const std::string& text);
-
-// Call Anthropic API to get a move for black. Validates and retries up to 3 times.
-std::string ask_ai_move(const std::string& fen,
-                        const std::vector<std::string>& move_history,
-                        const BoardSquare board[8][8]);
+// Ask Stockfish to evaluate a position. Returns centipawns from WHITE's
+// perspective (positive = white winning). Mate scores are encoded as
+// ±(30000 - distance_to_mate). Returns INT_MIN if the engine is unavailable.
+int stockfish_eval(const std::string& fen, int movetime_ms = 150);
