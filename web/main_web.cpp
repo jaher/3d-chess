@@ -53,6 +53,12 @@ EM_JS(void, set_status, (const char* s), {
     if (el) el.textContent = UTF8ToString(s);
 });
 
+// Direct console.log via EM_JS for checkpoint logging from anywhere in
+// this file. Defined here so callers above main() can use it.
+EM_JS(void, js_log, (const char* s), {
+    console.log('[wasm-checkpoint]', UTF8ToString(s));
+});
+
 static void set_status_str(const std::string& s) { set_status(s.c_str()); }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +229,6 @@ static void trigger_ai() {
     int movetime = 800;
     if (const char* v = std::getenv("CHESS_AI_MOVETIME_MS")) movetime = std::atoi(v);
     if (movetime <= 0) movetime = 800;
-    std::printf("AI thinking... FEN: %s\n", fen.c_str());
     web_request_ai_move(fen, movetime);
 }
 
@@ -745,13 +750,6 @@ static void main_loop_iter() {
 // ---------------------------------------------------------------------------
 // Main / startup
 // ---------------------------------------------------------------------------
-// Direct console.log via EM_JS so we have a checkpoint mechanism that
-// completely bypasses C++ stdio (which has surprising buffering behavior
-// under modularize builds).
-EM_JS(void, js_log, (const char* s), {
-    console.log('[wasm-checkpoint]', UTF8ToString(s));
-});
-
 // Entry point. We deliberately don't use C `main()` because Emscripten 3.1.6
 // renames it to `__main_argc_argv` via a libc macro, after which LTO can drop
 // it as dead code unless we also pass the renamed symbol to EXPORTED_FUNCTIONS

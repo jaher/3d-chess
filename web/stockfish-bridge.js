@@ -1,52 +1,89 @@
 // Bridges the WASM C++ code to the Stockfish.js Web Worker.
 //
 // nmrugg/stockfish.js v18.0.0 lite-single-threaded build is loaded as a
-// Worker. We post UCI commands and route the textual responses to either
-// the move-result handler or the eval-result handler depending on what was
-// requested. Result delivery into the WASM side is done via Module.ccall
-// to the EMSCRIPTEN_KEEPALIVE callbacks declared in web/ai_player_web.cpp.
+// Worker. We post UCI commands and route the textual responses back to the
+// WASM side via Module.ccall.
+//
+// Important design point: requests are SERIALIZED via an explicit queue.
+// Only one Stockfish search runs at a time. The desktop subprocess
+// implementation in ai_player.cpp serializes naturally through the engine's
+// stdin/stdout pipe; here the Web Worker accepts messages eagerly and we
+// have to serialize on the JS side, otherwise the bridge can attribute a
+// `bestmove` from one search to the wrong request type and the C++ side
+// hangs waiting for a result that never arrives.
 
 window.StockfishBridge = (function () {
   const worker = new Worker('stockfish/stockfish.js');
 
-  let mode = null;            // null | 'move' | 'eval'
-  let pendingMoveTime = 800;  // last requested movetime (informational)
-  let pendingIdx = -1;
-  let bestEval = 0;           // centipawns from side-to-move perspective
-  let sideToMoveBlack = false;
+  // Each queued entry: { kind: 'move'|'eval', fen, movetime, idx }
+  const queue = [];
+  let active = null;          // currently-running entry, or null
+  let bestEval = 0;           // running best eval score for the active eval search
+  let handshakeDone = false;  // becomes true once 'readyok' arrives
 
   function safe_ccall(name, retType, argTypes, args) {
     if (typeof Module === 'undefined' || typeof Module.ccall !== 'function') {
-      console.warn('Module.ccall not ready for', name);
+      console.warn('[sf-bridge] Module.ccall not ready for', name);
       return;
     }
     try {
       Module.ccall(name, retType, argTypes, args);
     } catch (e) {
-      console.error(name, 'ccall failed:', e);
+      console.error('[sf-bridge]', name, 'ccall failed:', e);
     }
   }
 
-  worker.onmessage = function (e) {
-    let line = e.data;
-    if (typeof line !== 'string') return;
-    // console.debug('SF:', line);
+  function fenSideToMove(fen) {
+    const parts = fen.split(' ');
+    return parts.length >= 2 && parts[1] === 'b';
+  }
 
-    if (mode === 'move') {
+  function startNext() {
+    if (active || queue.length === 0) return;
+    active = queue.shift();
+    bestEval = 0;
+    worker.postMessage('ucinewgame');
+    worker.postMessage('position fen ' + active.fen);
+    worker.postMessage('go movetime ' + active.movetime);
+  }
+
+  function finishActive(handler) {
+    handler();
+    active = null;
+    startNext();
+  }
+
+  worker.onmessage = function (e) {
+    const line = e.data;
+    if (typeof line !== 'string') return;
+
+    // Discard handshake responses (uciok / readyok / option ...).
+    if (!handshakeDone) {
+      if (line === 'readyok') handshakeDone = true;
+      return;
+    }
+
+    if (!active) {
+      // Stray output (residual info lines after a finished search). Ignore.
+      return;
+    }
+
+    if (active.kind === 'move') {
       if (line.startsWith('bestmove ')) {
         const tokens = line.split(' ');
         let uci = tokens[1] || '';
         if (uci === '(none)' || uci === '0000') uci = '';
         // Drop the 5th promotion char; execute_move auto-queens.
         if (uci.length > 4) uci = uci.substring(0, 4);
-        mode = null;
-        safe_ccall('on_ai_move_from_js', null, ['string'], [uci]);
+        finishActive(function () {
+          safe_ccall('on_ai_move_from_js', null, ['string'], [uci]);
+        });
       }
       return;
     }
 
-    if (mode === 'eval') {
-      // Parse "info ... score (cp|mate) N ..." for the latest score.
+    if (active.kind === 'eval') {
+      // Track the latest score from the search's info lines.
       const m = line.match(/score (cp|mate) (-?\d+)/);
       if (m) {
         let cp = parseInt(m[2], 10);
@@ -57,49 +94,34 @@ window.StockfishBridge = (function () {
         bestEval = cp;
       }
       if (line.startsWith('bestmove ')) {
-        // Negate if black-to-move so the C++ side gets a white-relative score.
-        let cp = bestEval;
-        if (sideToMoveBlack) cp = -cp;
-        const idx = pendingIdx;
-        mode = null;
-        safe_ccall('on_eval_from_js', null,
-                   ['number', 'number'], [cp, idx]);
+        // Negate if black-to-move so the C++ side gets white-relative cp.
+        const sideBlack = fenSideToMove(active.fen);
+        const cp = sideBlack ? -bestEval : bestEval;
+        const idx = active.idx;
+        finishActive(function () {
+          safe_ccall('on_eval_from_js', null, ['number', 'number'], [cp, idx]);
+        });
       }
       return;
     }
   };
 
-  // UCI handshake. The lite engine accepts UCI_LimitStrength + UCI_Elo.
+  // UCI handshake — fire-and-forget; queue requests will start streaming
+  // after handshakeDone is set, but we don't strictly block on it because
+  // the worker processes messages in order anyway.
   worker.postMessage('uci');
   worker.postMessage('setoption name UCI_LimitStrength value true');
   worker.postMessage('setoption name UCI_Elo value 1400');
   worker.postMessage('isready');
 
-  function go(fen, movetime) {
-    worker.postMessage('ucinewgame');
-    worker.postMessage('position fen ' + fen);
-    worker.postMessage('go movetime ' + movetime);
-  }
-
-  function fenSideToMove(fen) {
-    // FEN second field is 'w' or 'b'.
-    const parts = fen.split(' ');
-    return parts.length >= 2 && parts[1] === 'b';
-  }
-
   return {
     requestMove: function (fen, movetime) {
-      mode = 'move';
-      pendingMoveTime = movetime;
-      sideToMoveBlack = fenSideToMove(fen);
-      go(fen, movetime);
+      queue.push({ kind: 'move', fen: fen, movetime: movetime, idx: -1 });
+      startNext();
     },
     requestEval: function (fen, movetime, idx) {
-      mode = 'eval';
-      pendingIdx = idx;
-      bestEval = 0;
-      sideToMoveBlack = fenSideToMove(fen);
-      go(fen, movetime);
+      queue.push({ kind: 'eval', fen: fen, movetime: movetime, idx: idx });
+      startNext();
     },
   };
 })();
