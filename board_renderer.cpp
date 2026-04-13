@@ -8,10 +8,24 @@
 #include <cstdio>
 #include <vector>
 
+#ifndef __EMSCRIPTEN__
 #include <epoxy/gl.h>
 #include <glib.h>
 #include <cairo.h>
 #include <pango/pangocairo.h>
+#else
+#include <GLES3/gl3.h>
+#include <emscripten.h>
+// Provided by web/font_atlas_stb.cpp; bakes the same 16x6 cell atlas the
+// desktop Cairo path produces, and binds it to *out_tex with GL_R8.
+extern void build_font_atlas_stb(unsigned int* out_tex,
+                                 int atlas_w, int atlas_h);
+// glib monotonic time replacement returning microseconds since process start.
+typedef int64_t gint64;
+static inline gint64 g_get_monotonic_time() {
+    return static_cast<gint64>(emscripten_get_now() * 1000.0);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // GL state
@@ -180,6 +194,10 @@ static constexpr int ATLAS_H = ATLAS_ROWS * CELL_SIZE;
 static constexpr int ATLAS_FIRST_CHAR = 32; // space
 
 static void build_font_atlas() {
+#ifdef __EMSCRIPTEN__
+    // Web build: stb_truetype-based atlas baker (same cell layout).
+    build_font_atlas_stb(&g_font_tex, ATLAS_W, ATLAS_H);
+#else
     cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8, ATLAS_W, ATLAS_H);
     cairo_t* cr = cairo_create(surface);
 
@@ -232,6 +250,7 @@ static void build_font_atlas() {
     g_object_unref(layout);
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
+#endif
 }
 
 // Get UV coords for a character from the atlas
@@ -535,13 +554,32 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+#ifdef __EMSCRIPTEN__
+    // WebGL 2 lacks GL_CLAMP_TO_BORDER and per-texture border colors; use
+    // CLAMP_TO_EDGE. The PBR fragment shader bounds-checks projCoords.xy
+    // against [0,1] before sampling, so the missing white border doesn't
+    // produce false shadows.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     float bc[] = {1,1,1,1}; glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, bc);
+#endif
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
     glBindFramebuffer(GL_FRAMEBUFFER, g_shadow_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, g_shadow_tex, 0);
+#ifdef __EMSCRIPTEN__
+    // WebGL 2 has no glDrawBuffer (singular); use glDrawBuffers with NONE
+    // to indicate no color attachments for this depth-only FBO.
+    {
+        GLenum none_bufs[] = { GL_NONE };
+        glDrawBuffers(1, none_bufs);
+    }
+    glReadBuffer(GL_NONE);
+#else
     glDrawBuffer(GL_NONE); glReadBuffer(GL_NONE);
+#endif
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     for (int i = 0; i < PIECE_COUNT; i++)

@@ -4,7 +4,11 @@
 #include <string>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#else
 #include <epoxy/gl.h>
+#endif
 
 enum PieceType { KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN, PIECE_COUNT };
 enum GameMode { MODE_MENU, MODE_PLAYING, MODE_CHALLENGE_SELECT, MODE_CHALLENGE };

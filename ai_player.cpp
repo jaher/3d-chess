@@ -99,6 +99,13 @@ bool parse_uci_move(const std::string& move, int& from_col, int& from_row,
 // ---------------------------------------------------------------------------
 // Stockfish subprocess wrapper
 // ---------------------------------------------------------------------------
+// The web build (Emscripten) only needs the FEN/UCI helper functions above —
+// the subprocess engine wrapper and the public ask_ai_move/stockfish_eval
+// entry points are replaced by a JS bridge in web/ai_player_web.cpp. Define
+// AI_PLAYER_HELPERS_ONLY when compiling for that target to skip the rest of
+// this file.
+#ifndef AI_PLAYER_HELPERS_ONLY
+
 namespace {
 
 int env_int(const char* name, int fallback) {
@@ -434,3 +441,5 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
     if (!eng) return INT_MIN;
     return eng->eval_position(fen, movetime_ms);
 }
+
+#endif // !AI_PLAYER_HELPERS_ONLY

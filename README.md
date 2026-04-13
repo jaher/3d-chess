@@ -114,6 +114,126 @@ Optionally specify a different models directory:
 
 A system-installed `stockfish` (e.g. via `apt-get install stockfish`) is used automatically as a fallback if the vendored binary isn't available.
 
+## Browser / WebAssembly version
+
+The same game also runs in a browser, compiled to WebAssembly via
+[Emscripten](https://emscripten.org). It uses **WebGL 2** for the renderer
+and a vendored single-threaded build of
+[Stockfish.js](https://github.com/nmrugg/stockfish.js) running inside a
+Web Worker for the AI. No `SharedArrayBuffer` / COOP-COEP setup required,
+so it deploys on plain GitHub Pages.
+
+### Prerequisites
+
+- A working Emscripten toolchain (`em++` on `$PATH`). On Debian/Ubuntu:
+  ```bash
+  sudo apt install emscripten
+  ```
+  Other platforms: install via the [emsdk](https://emscripten.org/docs/getting_started/downloads.html) and `source ./emsdk_env.sh`.
+- Python 3 (for the local development server).
+
+### Building
+
+```bash
+cd web
+make
+```
+
+The Makefile compiles the shared C++ rendering / rules code together with
+the web-only platform layer (`web/main_web.cpp`, `web/ai_player_web.cpp`,
+`web/font_atlas_stb.cpp`) and produces `chess.html`, `chess.js`, `chess.wasm`,
+and `chess.data` in `web/`. The first build takes 1–2 minutes; subsequent
+builds are incremental.
+
+> **Debian-package quirk:** the system Emscripten config at
+> `/usr/share/emscripten/.emscripten` sets `FROZEN_CACHE = True` and stores
+> the cache under `/usr/share/emscripten/cache/` which is not user-writable,
+> so the SDL2 port can't be fetched on first build. Workaround: copy the
+> system cache to a writable location and use a custom config:
+> ```bash
+> cp -r /usr/share/emscripten/cache ~/.emscripten_cache
+> cat > ~/.emscripten <<'EOF'
+> EMSCRIPTEN_ROOT = '/usr/share/emscripten'
+> LLVM_ROOT = '/usr/bin'
+> BINARYEN_ROOT = '/usr'
+> NODE_JS = '/usr/bin/node'
+> JAVA = 'java'
+> FROZEN_CACHE = False
+> CLOSURE_COMPILER = 'closure-compiler'
+> LLVM_ADD_VERSION = '15'
+> CLANG_ADD_VERSION = '15'
+> CACHE = '/home/<your-username>/.emscripten_cache'
+> EOF
+> EM_CONFIG=~/.emscripten make
+> ```
+> Once the SDL2 port is fetched into your writable cache, subsequent
+> `EM_CONFIG=~/.emscripten make` runs are fast.
+
+### Running locally
+
+Browsers refuse to load WebAssembly from `file://` URLs, so serve the
+`web/` directory over HTTP:
+
+```bash
+cd web
+make serve            # python3 -m http.server 8000
+```
+
+Then open <http://localhost:8000/chess.html>.
+
+### Deploying to GitHub Pages
+
+The `web/` directory is fully self-contained after a successful build.
+Copy these artifacts to your `gh-pages` branch (or wherever you host
+static files):
+
+```
+web/chess.html
+web/chess.js
+web/chess.wasm
+web/chess.data
+web/stockfish-bridge.js
+web/stockfish/stockfish.js
+web/stockfish/stockfish.wasm
+```
+
+No special HTTP headers required — the lite single-threaded Stockfish.js
+build does not need `SharedArrayBuffer` or COOP-COEP.
+
+### Limitations vs the desktop build
+
+- **First load is large**: `chess.data` packs the STL chess piece models
+  into the virtual filesystem. The current models total ~250 MB; the
+  payload caches after the first download. STL decimation is a planned
+  follow-up.
+- **Single-threaded Stockfish**: ~5× slower per node than threaded
+  Stockfish, but at the default 800 ms/move and `UCI_Elo 1400` cap that's
+  still strong enough to play interesting games.
+- **Mouse + keyboard only**: touch input on mobile is not yet wired up.
+- **Requires WebGL 2**: every modern browser since 2017 supports it
+  (Chrome/Edge/Firefox/Safari/Opera). No fallback to WebGL 1.
+
+### How it differs from the desktop build
+
+The same shared C++ code (`chess_rules`, `board_renderer`, `shader`,
+`stl_model`, `linalg`, `chess_types`, `challenge`) compiles for both
+targets. Three things differ:
+
+1. **Platform layer** — `web/main_web.cpp` replaces `main.cpp` +
+   `game_state.cpp` (SDL2 + `emscripten_set_main_loop` instead of GTK
+   signals + `gtk_widget_add_tick_callback`).
+2. **Engine** — `web/ai_player_web.cpp` posts UCI commands to a Web
+   Worker via `EM_JS` instead of forking a Stockfish subprocess. The
+   FEN/UCI helper functions in `ai_player.cpp` are reused via the
+   `AI_PLAYER_HELPERS_ONLY` compile flag.
+3. **Font atlas** — `web/font_atlas_stb.cpp` rasterises glyphs with
+   `stb_truetype` from a vendored `DejaVuSans-Bold.ttf` instead of
+   Cairo/Pango (which doesn't run in Emscripten).
+
+Shaders use `#version 300 es` (matching WebGL 2) under `__EMSCRIPTEN__`
+and `#version 330 core` on desktop, switched via a tiny header macro in
+`shader.cpp`.
+
 ## Controls
 
 | Control | Action |
@@ -139,17 +259,29 @@ A system-installed `stockfish` (e.g. via `apt-get install stockfish`) is used au
 
 ```
 3d_chess/
-  chess_types.h/cpp      -- Shared types (pieces, game state, board)
-  chess_rules.h/cpp      -- Game logic (moves, check, checkmate, evaluation)
-  game_state.h/cpp       -- Game lifecycle (AI, analysis mode, title)
-  board_renderer.h/cpp   -- OpenGL rendering (PBR, shadows, overlays)
-  main.cpp               -- GTK setup, camera, input handling
-  linalg.h/cpp           -- Matrix math library
-  shader.h               -- GLSL shader sources (PBR, shadows, highlights, text)
-  stl_model.h            -- STL 3D model loader
-  ai_player.h            -- Stockfish engine integration (UCI)
-  third_party/stockfish/ -- Stockfish chess engine (git submodule)
-  models/                -- STL chess piece models
+  chess_types.h/cpp        -- Shared types (pieces, game state, board)
+  chess_rules.h/cpp        -- Game logic (moves, check, checkmate, evaluation)
+  game_state.h/cpp         -- Desktop game lifecycle (GTK title, AI dispatch)
+  board_renderer.h/cpp     -- OpenGL rendering (PBR, shadows, overlays)
+  main.cpp                 -- GTK setup, camera, input handling (desktop)
+  linalg.h/cpp             -- Matrix math library
+  shader.h/cpp             -- GLSL sources (compiles to GL 3.30 / GLSL ES 3.00)
+  stl_model.h/cpp          -- STL 3D model loader
+  ai_player.h/cpp          -- Stockfish UCI integration (subprocess on desktop)
+  challenge.h/cpp          -- Mate-in-N puzzle loader
+  third_party/stockfish/   -- Native Stockfish engine (git submodule)
+  models/                  -- STL chess piece models
+  challenges/              -- Puzzle definition files
+  web/                     -- WebAssembly / WebGL 2 build (Emscripten)
+    main_web.cpp           --   SDL2 + emscripten_set_main_loop driver
+    ai_player_web.cpp      --   JS bridge to Stockfish.js Web Worker
+    font_atlas_stb.cpp     --   stb_truetype font atlas baker
+    stb_truetype.h         --   vendored single-header font rasterizer
+    DejaVuSans-Bold.ttf    --   vendored TTF used by the atlas
+    index.html             --   HTML shell with status div + canvas
+    stockfish-bridge.js    --   Worker glue (UCI ↔ WASM via Module.ccall)
+    stockfish/             --   vendored prebuilt nmrugg/stockfish.js v18
+    Makefile               --   em++ build rules
 ```
 
 ## Rendering

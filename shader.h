@@ -1,6 +1,10 @@
 #pragma once
 
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#else
 #include <epoxy/gl.h>
+#endif
 
 // GLSL shader sources (definitions in shader.cpp)
 extern const char* vertex_shader_src;

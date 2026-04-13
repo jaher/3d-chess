@@ -1,13 +1,23 @@
 #include "shader.h"
 
 #include <cstdio>
-#include <epoxy/gl.h>
+
+// ---------------------------------------------------------------------------
+// GLSL version selector. Desktop OpenGL gets core profile 3.30; Emscripten
+// (WebGL 2) gets GLSL ES 3.00, which requires explicit precision qualifiers.
+// ---------------------------------------------------------------------------
+#ifdef __EMSCRIPTEN__
+#define GLSL_VERSION    "#version 300 es\n"
+#define GLSL_FS_PREAMBLE "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n"
+#else
+#define GLSL_VERSION    "#version 330 core\n"
+#define GLSL_FS_PREAMBLE ""
+#endif
 
 // ---------------------------------------------------------------------------
 // Shadow depth shaders
 // ---------------------------------------------------------------------------
-const char* shadow_vs_src = R"(
-#version 330 core
+const char* shadow_vs_src = GLSL_VERSION R"(
 layout(location = 1) in vec3 aPos;
 
 uniform mat4 uLightSpaceMatrix;
@@ -18,8 +28,7 @@ void main() {
 }
 )";
 
-const char* shadow_fs_src = R"(
-#version 330 core
+const char* shadow_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 void main() {
 }
 )";
@@ -27,8 +36,7 @@ void main() {
 // ---------------------------------------------------------------------------
 // Shader sources — PBR with Cook-Torrance BRDF and environment reflections
 // ---------------------------------------------------------------------------
-const char* vertex_shader_src = R"(
-#version 330 core
+const char* vertex_shader_src = GLSL_VERSION R"(
 layout(location = 0) in vec3 aNormal;
 layout(location = 1) in vec3 aPos;
 
@@ -53,8 +61,7 @@ void main() {
 }
 )";
 
-const char* fragment_shader_src = R"(
-#version 330 core
+const char* fragment_shader_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 in vec3 vNormal;
 in vec3 vFragPos;
 in vec3 vWorldPos;
@@ -353,8 +360,7 @@ void main() {
 // ---------------------------------------------------------------------------
 // Highlight shaders (for selection halo and valid move indicators)
 // ---------------------------------------------------------------------------
-const char* highlight_vs_src = R"(
-#version 330 core
+const char* highlight_vs_src = GLSL_VERSION R"(
 layout(location = 0) in vec3 aPos;
 
 uniform mat4 uMVP;
@@ -367,8 +373,7 @@ void main() {
 }
 )";
 
-const char* highlight_fs_src = R"(
-#version 330 core
+const char* highlight_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 in vec2 vLocalPos;
 
 out vec4 FragColor;
@@ -409,8 +414,7 @@ void main() {
 // Each vertex carries: shard center (NDC), local offset from center (NDC),
 // texture UV, and a per-shard random seed.
 // ---------------------------------------------------------------------------
-const char* shatter_vs_src = R"(
-#version 330 core
+const char* shatter_vs_src = GLSL_VERSION R"(
 layout(location = 0) in vec2 aCenterNDC;
 layout(location = 1) in vec2 aLocalOffset;
 layout(location = 2) in vec2 aUV;
@@ -459,8 +463,7 @@ void main() {
 }
 )";
 
-const char* shatter_fs_src = R"(
-#version 330 core
+const char* shatter_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 in vec2 vUV;
 in float vAlpha;
 
@@ -478,8 +481,7 @@ void main() {
 
 // Text shader (textured quads with alpha from font atlas)
 // ---------------------------------------------------------------------------
-const char* text_vs_src = R"(
-#version 330 core
+const char* text_vs_src = GLSL_VERSION R"(
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aTexCoord;
 
@@ -493,8 +495,7 @@ void main() {
 }
 )";
 
-const char* text_fs_src = R"(
-#version 330 core
+const char* text_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 in vec2 vTexCoord;
 
 out vec4 FragColor;
