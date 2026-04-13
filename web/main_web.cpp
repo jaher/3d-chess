@@ -69,6 +69,21 @@ static SDL_GLContext g_gl_ctx = nullptr;
 static int g_width = 1024;
 static int g_height = 768;
 
+// Called from JS (web/index.html resizeCanvas) whenever the canvas
+// drawing buffer changes — orientation change, viewport resize, or
+// initial page load on a non-1024x768 viewport. Updates the SDL window
+// so SDL_WINDOWEVENT_SIZE_CHANGED dispatches and the renderer picks up
+// the new viewport on the next frame.
+extern "C" EMSCRIPTEN_KEEPALIVE
+void chess_resize(int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    g_width = w;
+    g_height = h;
+    if (g_window) {
+        SDL_SetWindowSize(g_window, w, h);
+    }
+}
+
 // Camera (same as desktop main.cpp)
 static float g_rot_x = 30.0f;
 static float g_rot_y = 180.0f;
