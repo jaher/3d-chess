@@ -2,6 +2,10 @@
 
 #include <cstdio>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 // ---------------------------------------------------------------------------
 // GLSL version selector. Desktop OpenGL gets core profile 3.30; Emscripten
 // (WebGL 2) gets GLSL ES 3.00, which requires explicit precision qualifiers.
@@ -282,7 +286,7 @@ void main() {
             float bias = max(0.003 * (1.0 - dot(N, keyLightDir)), 0.0005);
 
             // 5x5 PCF for soft shadow edges
-            vec2 texelSize = 1.0 / textureSize(uShadowMap, 0);
+            vec2 texelSize = 1.0 / vec2(textureSize(uShadowMap, 0));
             for (int x = -2; x <= 2; x++) {
                 for (int y = -2; y <= 2; y++) {
                     float pcfDepth = texture(uShadowMap,
@@ -513,6 +517,25 @@ void main() {
 // ---------------------------------------------------------------------------
 // Compilation helpers
 // ---------------------------------------------------------------------------
+static void shader_log_error(const char* kind, const char* stage,
+                             const char* log, const char* src) {
+#ifdef __EMSCRIPTEN__
+    // EM_ASM bypasses stdio entirely so the error is guaranteed to
+    // reach the JS console no matter how stdio buffering behaves.
+    EM_ASM({
+        console.error('[shader]', UTF8ToString($0), UTF8ToString($1), '\n',
+                      UTF8ToString($2));
+        // Also log a chunk of source so we can correlate line numbers
+        // with the error message.
+        console.error('[shader src]', UTF8ToString($3));
+    }, kind, stage ? stage : "", log, src ? src : "");
+#else
+    std::fprintf(stderr, "%s%s%s:\n%s\n",
+                 kind, stage ? " " : "", stage ? stage : "", log);
+    if (src) std::fprintf(stderr, "Source:\n%s\n", src);
+#endif
+}
+
 GLuint compile_shader(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &src, nullptr);
@@ -520,9 +543,10 @@ GLuint compile_shader(GLenum type, const char* src) {
     int ok;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        char log[512];
+        char log[4096];
         glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "Shader compile error:\n%s\n", log);
+        const char* stage = (type == GL_VERTEX_SHADER) ? "VERTEX" : "FRAGMENT";
+        shader_log_error("compile error", stage, log, src);
     }
     return shader;
 }
@@ -537,9 +561,9 @@ GLuint create_program(const char* vs_src, const char* fs_src) {
     int ok;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char log[512];
+        char log[4096];
         glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "Program link error:\n%s\n", log);
+        shader_log_error("link error", nullptr, log, nullptr);
     }
     glDeleteShader(vs);
     glDeleteShader(fs);

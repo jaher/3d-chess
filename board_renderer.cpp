@@ -18,8 +18,8 @@
 #include <emscripten.h>
 // Provided by web/font_atlas_stb.cpp; bakes the same 16x6 cell atlas the
 // desktop Cairo path produces, and binds it to *out_tex with GL_R8.
-extern void build_font_atlas_stb(unsigned int* out_tex,
-                                 int atlas_w, int atlas_h);
+extern "C" void build_font_atlas_stb(unsigned int* out_tex,
+                                     int atlas_w, int atlas_h);
 // glib monotonic time replacement returning microseconds since process start.
 typedef int64_t gint64;
 static inline gint64 g_get_monotonic_time() {
@@ -551,7 +551,13 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // Shadow map
     glGenFramebuffers(1, &g_shadow_fbo); glGenTextures(1, &g_shadow_tex);
     glBindTexture(GL_TEXTURE_2D, g_shadow_tex);
+#ifdef __EMSCRIPTEN__
+    // WebGL 2 requires GL_UNSIGNED_INT (or GL_UNSIGNED_INT_24_8 with stencil)
+    // for GL_DEPTH_COMPONENT24; GL_FLOAT only pairs with GL_DEPTH_COMPONENT32F.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+#else
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+#endif
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 #ifdef __EMSCRIPTEN__
@@ -580,6 +586,11 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 #else
     glDrawBuffer(GL_NONE); glReadBuffer(GL_NONE);
 #endif
+    {
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE)
+            std::fprintf(stderr, "Shadow FBO incomplete: 0x%x\n", status);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     for (int i = 0; i < PIECE_COUNT; i++)

@@ -745,22 +745,52 @@ static void main_loop_iter() {
 // ---------------------------------------------------------------------------
 // Main / startup
 // ---------------------------------------------------------------------------
-int main(int /*argc*/, char* /*argv*/[]) {
+// Direct console.log via EM_JS so we have a checkpoint mechanism that
+// completely bypasses C++ stdio (which has surprising buffering behavior
+// under modularize builds).
+EM_JS(void, js_log, (const char* s), {
+    console.log('[wasm-checkpoint]', UTF8ToString(s));
+});
+
+// Entry point. We deliberately don't use C `main()` because Emscripten 3.1.6
+// renames it to `__main_argc_argv` via a libc macro, after which LTO can drop
+// it as dead code unless we also pass the renamed symbol to EXPORTED_FUNCTIONS
+// — which is fragile across Emscripten versions. Defining our own entry point
+// with EMSCRIPTEN_KEEPALIVE + explicit ccall from JS sidesteps the whole mess.
+extern "C" EMSCRIPTEN_KEEPALIVE
+int chess_start(void) {
+    // Force stdio unbuffered so every printf/fprintf reaches Module.print
+    // immediately. Without this, std::printf can sit in a libc buffer that
+    // never flushes (we never return from this function normally; emscripten
+    // throws a JS exception out of emscripten_set_main_loop with simulate=1).
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
+    js_log("chess_start() entered");
+
     // Load STL piece models from the preloaded virtual filesystem.
-    // Sequential is fine — happens once, ~12 small files.
-    std::printf("Loading models...\n");
+    js_log("loading models");
     for (int i = 0; i < PIECE_COUNT; i++) {
         std::string path = std::string("/models/") + piece_filenames[i];
-        g_loaded_models[i].load(path);
-        std::printf("  %s: %zu triangles\n",
-                    piece_filenames[i], g_loaded_models[i].triangle_count());
+        try {
+            g_loaded_models[i].load(path);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "STL load failed (%s): %s\n", path.c_str(), e.what());
+            js_log("STL load THREW");
+            return 1;
+        }
+        std::fprintf(stderr, "  %s: %zu triangles\n",
+                     piece_filenames[i], g_loaded_models[i].triangle_count());
     }
-    std::printf("All models loaded.\n");
+    js_log("models loaded");
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        js_log("SDL_Init failed");
         return 1;
     }
+    js_log("SDL_Init ok");
+
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -773,17 +803,25 @@ int main(int /*argc*/, char* /*argv*/[]) {
                                  SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (!g_window) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        js_log("SDL_CreateWindow failed");
         return 1;
     }
+    js_log("SDL_CreateWindow ok");
+
     g_gl_ctx = SDL_GL_CreateContext(g_window);
     if (!g_gl_ctx) {
         std::fprintf(stderr, "SDL_GL_CreateContext failed: %s\n", SDL_GetError());
+        js_log("SDL_GL_CreateContext failed");
         return 1;
     }
+    js_log("GL context created");
 
     renderer_init(g_loaded_models);
+    js_log("renderer_init done");
+
     game_local_reset();
     start_menu();
+    js_log("entering main loop");
 
     emscripten_set_main_loop(main_loop_iter, 0, 1);
     return 0;

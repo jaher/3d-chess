@@ -56,15 +56,59 @@
   <script src="stockfish-bridge.js"></script>
 
   <script>
+    var statusEl = document.getElementById('chess-status');
+    function setLoadingStatus(s) { if (statusEl) statusEl.textContent = s; }
+    setLoadingStatus('Initializing module…');
+
     var Module = {
       canvas: (function() {
         var c = document.getElementById('canvas');
-        // Steal keyboard focus so SDL_KEYDOWN events arrive.
         c.addEventListener('click', function() { c.focus(); });
         return c;
       })(),
-      print: function(text) { console.log(text); },
-      printErr: function(text) { console.warn(text); },
+      print: function(text) { console.log('[wasm]', text); },
+      printErr: function(text) { console.warn('[wasm]', text); },
+
+      // Surface preload progress in the status bar so we can tell
+      // "still downloading the 260 MB asset bundle" from "crashed".
+      totalDependencies: 0,
+      monitorRunDependencies: function(left) {
+        this.totalDependencies = Math.max(this.totalDependencies, left);
+        if (left > 0) {
+          setLoadingStatus('Loading assets… ' +
+            (this.totalDependencies - left) + ' / ' + this.totalDependencies);
+        } else {
+          setLoadingStatus('Starting…');
+        }
+      },
+      setStatus: function(text) {
+        if (text) {
+          // Emscripten's text format is e.g. "Downloading data... (12345/67890)"
+          var m = text.match(/\((\d+)\/(\d+)\)/);
+          if (m) {
+            var pct = Math.round(100 * parseInt(m[1], 10) / parseInt(m[2], 10));
+            setLoadingStatus('Downloading data… ' + pct + '%');
+          } else {
+            setLoadingStatus(text);
+          }
+        }
+      },
+      onAbort: function(what) {
+        setLoadingStatus('Aborted: ' + what);
+        console.error('Module aborted:', what);
+      },
+      onRuntimeInitialized: function() {
+        console.log('[wasm] runtime initialized — calling chess_start()');
+        setLoadingStatus('Runtime initialized — starting chess_start()…');
+        // Emscripten 3.1.6 doesn't auto-invoke main() reliably under LTO,
+        // so we drive startup ourselves via an explicit exported entry point.
+        try {
+          Module.ccall('chess_start', 'number', [], []);
+        } catch (e) {
+          console.error('chess_start failed:', e);
+          setLoadingStatus('chess_start failed: ' + e);
+        }
+      },
     };
   </script>
   {{{ SCRIPT }}}
