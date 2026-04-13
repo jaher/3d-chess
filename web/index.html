@@ -28,20 +28,22 @@
       border-bottom: 1px solid #2a2a2a;
     }
     #canvas-wrap {
+      /* Take the entire space between status and footer. The canvas is
+         absolutely positioned inside so its intrinsic 1024x768 doesn't
+         force the parent to be at least that tall. */
       flex: 1 1 auto;
-      display: flex;
-      justify-content: center;
-      align-items: center;
+      position: relative;
       min-height: 0;
       overflow: hidden;
     }
     #canvas {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
       display: block;
       background: #000;
-      /* Pixel size set by resizeCanvas() in JS to match the displayed CSS
-         size × devicePixelRatio (capped). */
-      max-width: 100%;
-      max-height: 100%;
+      /* width/height (both CSS and drawing buffer) set by JS resizeCanvas() */
     }
     .footer {
       flex: 0 0 auto;
@@ -56,7 +58,10 @@
 <body>
   <div id="chess-status">Loading…</div>
   <div id="canvas-wrap">
-    <canvas id="canvas" width="1024" height="768"
+    <!-- Start at 1x1 so the canvas's intrinsic size doesn't force the
+         flex layout to allocate 1024x768 of space before resizeCanvas()
+         can set it to fit the actual viewport. -->
+    <canvas id="canvas" width="1" height="1"
             oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
   </div>
   <div class="footer">
@@ -99,9 +104,9 @@
       canvas.style.width  = cssW + 'px';
       canvas.style.height = cssH + 'px';
 
-      // Cap DPR at 2 — the Z Fold inner display reports DPR of ~2.6 which
-      // would create an enormous WebGL backbuffer for no visible gain on
-      // a 3D scene that's already supersampled by MSAA.
+      // Cap DPR at 2 — high-DPI mobile screens (the Z Fold reports ~2.6)
+      // would create an enormous backbuffer for no perceptible visual
+      // gain on a 3D scene that's already supersampled by MSAA.
       var dpr = Math.min(window.devicePixelRatio || 1, 2);
       var bufW = Math.max(1, Math.round(cssW * dpr));
       var bufH = Math.max(1, Math.round(cssH * dpr));
@@ -161,16 +166,33 @@
         setLoadingStatus('Runtime initialized — starting chess_start()…');
         try {
           Module.ccall('chess_start', 'number', [], []);
-          // Now that the WASM main loop is running, size everything to
-          // the actual viewport. This also kicks _chess_resize() so the
-          // C++ side updates its g_width / g_height.
-          resizeCanvas();
         } catch (e) {
-          console.error('chess_start failed:', e);
-          setLoadingStatus('chess_start failed: ' + e);
+          // emscripten_set_main_loop(simulate_infinite_loop=1) intentionally
+          // throws ("unwind") to bail out of main(). Anything else is real.
+          var msg = (e && e.message) ? String(e.message) : String(e);
+          if (msg.indexOf('unwind') === -1) {
+            console.error('chess_start failed:', e);
+            setLoadingStatus('chess_start failed: ' + msg);
+            return;
+          }
         }
+        // Run AFTER the try/catch so it fires regardless of whether
+        // chess_start unwound. Schedule via setTimeout(0) so it lands in
+        // a fresh task after the current event-loop tick — by then SDL
+        // has finished its initial canvas setup.
+        resizeCanvas();
+        setTimeout(resizeCanvas, 0);
+        setTimeout(resizeCanvas, 100);
       },
     };
+
+    // Initial sizing as soon as layout is ready, before WASM has even
+    // loaded — keeps the canvas from briefly showing at 1x1.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', resizeCanvas);
+    } else {
+      resizeCanvas();
+    }
   </script>
   {{{ SCRIPT }}}
 </body>
