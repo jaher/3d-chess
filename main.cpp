@@ -90,12 +90,17 @@ static void plat_trigger_eval(const char* fen_c, int movetime, int idx) {
     }).detach();
 }
 
+static void plat_set_ai_elo(int elo) {
+    ai_player_set_elo(elo);
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
     plat_now_us,
     plat_trigger_ai_move,
     plat_trigger_eval,
+    plat_set_ai_elo,
 };
 
 // ---------------------------------------------------------------------------

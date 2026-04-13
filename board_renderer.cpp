@@ -1503,6 +1503,301 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 }
 
 // ===========================================================================
+// Pre-game setup screen (side toggle + Stockfish ELO slider)
+// ===========================================================================
+// NDC layout:
+//
+//   y = +0.55   "Game Setup"            (title)
+//   y = +0.25   [ White/Black moves first ] (toggle button)
+//   y = -0.05   "Stockfish strength — NNNN"
+//   y = -0.25   gradient slider bar (width 1.20, height 0.06)
+//                                      + handle below it
+//   y = -0.60   [     Start      ]
+//   top-left    [ Back ]
+//
+// The slider's horizontal span MUST match APP_SLIDER_NDC_LEFT/RIGHT in
+// app_state.cpp so the pixel-to-ELO math in slider_px_to_elo lines up
+// with what's rendered here.
+static const float PG_TOGGLE_W = 0.60f;
+static const float PG_TOGGLE_H = 0.10f;
+static const float PG_TOGGLE_X = -PG_TOGGLE_W * 0.5f;
+static const float PG_TOGGLE_Y =  0.25f;
+
+static const float PG_SLIDER_X_LEFT  = -0.60f;  // mirrors APP_SLIDER_NDC_LEFT
+static const float PG_SLIDER_X_RIGHT = +0.60f;  // mirrors APP_SLIDER_NDC_RIGHT
+static const float PG_SLIDER_Y       = -0.25f;
+static const float PG_SLIDER_H       =  0.06f;
+
+static const float PG_HANDLE_HW  = 0.025f;   // half-width
+static const float PG_HANDLE_HH  = 0.05f;    // half-height (square part)
+static const float PG_HANDLE_TIP = 0.045f;   // triangle's point below the square
+
+static const float PG_START_W = 0.40f;
+static const float PG_START_H = 0.12f;
+static const float PG_START_X = -PG_START_W * 0.5f;
+static const float PG_START_Y = -0.55f;
+
+// Back button reuses the challenge-select back-button NDC rectangle
+// (CS_BACK_* below).
+
+int pregame_hit_test(double mx, double my, int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+
+    // Back button (same rect as challenge-select back)
+    static const float BACK_X = -0.95f, BACK_Y = 0.93f;
+    static const float BACK_W =  0.20f, BACK_H = 0.07f;
+    if (ndc_x >= BACK_X && ndc_x <= BACK_X + BACK_W &&
+        ndc_y >= BACK_Y - BACK_H && ndc_y <= BACK_Y)
+        return 2;
+
+    // Start
+    if (ndc_x >= PG_START_X && ndc_x <= PG_START_X + PG_START_W &&
+        ndc_y >= PG_START_Y - PG_START_H && ndc_y <= PG_START_Y)
+        return 1;
+
+    // Toggle
+    if (ndc_x >= PG_TOGGLE_X && ndc_x <= PG_TOGGLE_X + PG_TOGGLE_W &&
+        ndc_y >= PG_TOGGLE_Y - PG_TOGGLE_H && ndc_y <= PG_TOGGLE_Y)
+        return 3;
+
+    // Slider — the hit area is wider than the visible bar so clicks
+    // on the handle (which dangles below) still register.
+    float slider_hit_top    = PG_SLIDER_Y + 0.02f;
+    float slider_hit_bottom = PG_SLIDER_Y - PG_SLIDER_H - 2.0f * PG_HANDLE_HH - PG_HANDLE_TIP - 0.02f;
+    if (ndc_x >= PG_SLIDER_X_LEFT - 0.03f && ndc_x <= PG_SLIDER_X_RIGHT + 0.03f &&
+        ndc_y <= slider_hit_top && ndc_y >= slider_hit_bottom)
+        return 4;
+
+    return 0;
+}
+
+void renderer_draw_pregame(bool human_plays_white,
+                           int elo, int elo_min, int elo_max,
+                           int width, int height, int hover) {
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glViewport(0, 0, width, height);
+
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+
+    // ----- Flat-color geometry (buttons + slider + handle) -----
+    std::vector<float> bg_verts;  // 3 floats per vertex
+    // Per-quad color regions so we can re-bind uColor between draws.
+    struct Region { int start_vert, count; float r, g, b, a; };
+    std::vector<Region> regions;
+
+    auto add_quad = [&](float x, float y, float w, float h,
+                        float r, float g, float b, float a) {
+        int start = static_cast<int>(bg_verts.size() / 3);
+        bg_verts.insert(bg_verts.end(),
+            {x,   y-h, 0,  x+w, y-h, 0,  x+w, y, 0,
+             x,   y-h, 0,  x+w, y, 0,    x,   y, 0});
+        regions.push_back({start, 6, r, g, b, a});
+    };
+    auto add_tri = [&](float x0, float y0, float x1, float y1,
+                       float x2, float y2,
+                       float r, float g, float b, float a) {
+        int start = static_cast<int>(bg_verts.size() / 3);
+        bg_verts.insert(bg_verts.end(),
+            {x0, y0, 0,  x1, y1, 0,  x2, y2, 0});
+        regions.push_back({start, 3, r, g, b, a});
+    };
+
+    // Back button background
+    add_quad(-0.95f, 0.93f, 0.20f, 0.07f,
+             0.25f, 0.35f, 0.55f, hover == 2 ? 0.55f : 0.30f);
+
+    // Toggle button background (blue for white-first, dark for black-first)
+    if (human_plays_white) {
+        add_quad(PG_TOGGLE_X, PG_TOGGLE_Y, PG_TOGGLE_W, PG_TOGGLE_H,
+                 0.85f, 0.82f, 0.75f, hover == 3 ? 0.75f : 0.55f);
+    } else {
+        add_quad(PG_TOGGLE_X, PG_TOGGLE_Y, PG_TOGGLE_W, PG_TOGGLE_H,
+                 0.12f, 0.12f, 0.14f, hover == 3 ? 0.95f : 0.78f);
+    }
+
+    // Gradient slider bar — N segments, green -> red.
+    {
+        const int N = 24;
+        float seg_w = (PG_SLIDER_X_RIGHT - PG_SLIDER_X_LEFT) / static_cast<float>(N);
+        for (int i = 0; i < N; i++) {
+            float t0 = static_cast<float>(i)     / static_cast<float>(N);
+            float t1 = static_cast<float>(i + 1) / static_cast<float>(N);
+            // Color from the midpoint of the segment so the quad fill
+            // is a good average of the gradient at that x.
+            float t = 0.5f * (t0 + t1);
+            float r = (1.0f - t) * 0.20f + t * 0.92f;
+            float g = (1.0f - t) * 0.85f + t * 0.20f;
+            float b = (1.0f - t) * 0.25f + t * 0.18f;
+            float x0 = PG_SLIDER_X_LEFT + i     * seg_w;
+            add_quad(x0, PG_SLIDER_Y, seg_w, PG_SLIDER_H, r, g, b, 1.0f);
+        }
+    }
+
+    // Slider handle: square + downward triangle. Position centered at
+    // handle_x based on current ELO.
+    {
+        float t = static_cast<float>(elo - elo_min) /
+                  static_cast<float>(elo_max - elo_min);
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        float hx = PG_SLIDER_X_LEFT +
+                   t * (PG_SLIDER_X_RIGHT - PG_SLIDER_X_LEFT);
+        // The square sits just below the bar; y-top of the square
+        // equals y-bottom of the bar.
+        float sq_top    = PG_SLIDER_Y - PG_SLIDER_H;
+        float sq_bottom = sq_top - 2.0f * PG_HANDLE_HH;
+        float sq_h      = sq_top - sq_bottom;  // = 2 * PG_HANDLE_HH
+
+        float hr = 0.98f, hg = 0.86f, hb = 0.35f, ha = 1.0f;
+        // Square (add_quad wants top-y and height; top = sq_top)
+        add_quad(hx - PG_HANDLE_HW, sq_top, 2.0f * PG_HANDLE_HW, sq_h,
+                 hr, hg, hb, ha);
+        // Triangle pointing down, glued to the bottom of the square.
+        add_tri(hx - PG_HANDLE_HW, sq_bottom,
+                hx + PG_HANDLE_HW, sq_bottom,
+                hx,                sq_bottom - PG_HANDLE_TIP,
+                hr, hg, hb, ha);
+    }
+
+    // Start button background
+    add_quad(PG_START_X, PG_START_Y, PG_START_W, PG_START_H,
+             0.20f, 0.60f, 0.30f, hover == 1 ? 0.75f : 0.55f);
+
+    // ----- Upload + draw all flat-colored geometry -----
+    GLuint bvao, bvbo;
+    glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+    glBindVertexArray(bvao);
+    glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(bg_verts.size() * sizeof(float)),
+                 bg_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    for (const auto& r : regions) {
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    r.r, r.g, r.b, r.a);
+        glDrawArrays(GL_TRIANGLES, r.start_vert, r.count);
+    }
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // ----- Text -----
+    std::vector<float> ui_verts;  // 5 floats per vertex (xyz uv)
+
+    // Title
+    float tcw = 0.07f, tch = 0.10f;
+    std::string title = "Game Setup";
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(ui_verts, -tw * 0.5f, 0.58f, tcw, tch, title);
+    int title_count = static_cast<int>(ui_verts.size() / 5);
+
+    // Toggle button label
+    float bcw = 0.028f, bch = 0.042f;
+    const char* toggle_text_c =
+        human_plays_white ? "White moves first" : "Black moves first";
+    std::string toggle_text = toggle_text_c;
+    float gw = toggle_text.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -gw * 0.5f,
+                      PG_TOGGLE_Y - 0.025f, bcw, bch, toggle_text);
+    int toggle_end = static_cast<int>(ui_verts.size() / 5);
+
+    // ELO label + current value
+    float scw = 0.025f, sch = 0.038f;
+    char elo_buf[64];
+    std::snprintf(elo_buf, sizeof(elo_buf), "Stockfish strength  %d", elo);
+    std::string elo_label = elo_buf;
+    float ew = elo_label.size() * scw * 0.7f;
+    add_screen_string(ui_verts, -ew * 0.5f, -0.04f, scw, sch, elo_label);
+    int elo_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Start button label
+    std::string start_text = "Start";
+    float stw = start_text.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -stw * 0.5f,
+                      PG_START_Y - 0.035f, bcw, bch, start_text);
+    int start_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Back button label
+    float bkw = 0.020f, bkh = 0.030f;
+    std::string back_text = "Back";
+    add_screen_string(ui_verts, -0.92f, 0.91f, bkw, bkh, back_text);
+    int back_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Upload + draw the text geometry
+    GLuint uvao, uvbo;
+    glGenVertexArrays(1, &uvao); glGenBuffers(1, &uvbo);
+    glBindVertexArray(uvao);
+    glBindBuffer(GL_ARRAY_BUFFER, uvbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(ui_verts.size() * sizeof(float)),
+                 ui_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    // Title — warm highlight
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                1.0f, 0.9f, 0.6f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_count);
+
+    // Toggle label — the text color contrasts with the button bg.
+    if (human_plays_white) {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.10f, 0.10f, 0.10f, 1.0f);
+    } else {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.95f, 0.95f, 0.95f, 1.0f);
+    }
+    glDrawArrays(GL_TRIANGLES, title_count, toggle_end - title_count);
+
+    // ELO label — subtle white
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.85f, 0.85f, 0.85f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, toggle_end, elo_end - toggle_end);
+
+    // Start label — bright white when hovered
+    {
+        float b = hover == 1 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    b, b, b, 1.0f);
+        glDrawArrays(GL_TRIANGLES, elo_end, start_end - elo_end);
+    }
+
+    // Back label
+    {
+        float b = hover == 2 ? 1.0f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    b, b, b, 1.0f);
+        glDrawArrays(GL_TRIANGLES, start_end, back_end - start_end);
+    }
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);
+
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
+
+// ===========================================================================
 // Challenge select screen
 // ===========================================================================
 static const float CS_BTN_W = 0.6f;

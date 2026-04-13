@@ -27,6 +27,7 @@
 extern void web_request_ai_move(const std::string& fen, int movetime_ms);
 extern void web_request_eval(const std::string& fen, int movetime_ms,
                              int score_index);
+extern void web_set_ai_elo(int elo);
 
 namespace web_ai {
     extern bool        move_ready;
@@ -95,12 +96,17 @@ static void plat_trigger_eval(const char* fen, int movetime_ms, int idx) {
     web_request_eval(fen ? std::string(fen) : std::string(), movetime_ms, idx);
 }
 
+static void plat_set_ai_elo(int elo) {
+    web_set_ai_elo(elo);
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
     plat_now_us,
     plat_trigger_ai_move,
     plat_trigger_eval,
+    plat_set_ai_elo,
 };
 
 // ---------------------------------------------------------------------------

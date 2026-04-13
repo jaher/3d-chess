@@ -61,6 +61,13 @@ EM_JS(void, js_request_eval, (const char* fen, int movetime, int idx), {
     }
 });
 
+EM_JS(void, js_set_ai_elo, (int elo), {
+    if (typeof StockfishBridge !== 'undefined' &&
+        typeof StockfishBridge.setElo === 'function') {
+        StockfishBridge.setElo(elo);
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Public C++ entry points used by main_web.cpp.
 // ---------------------------------------------------------------------------
@@ -75,6 +82,10 @@ void web_request_eval(const std::string& fen, int movetime_ms, int score_index) 
     web_ai::eval_cp = 0;
     web_ai::eval_index = score_index;
     js_request_eval(fen.c_str(), movetime_ms, score_index);
+}
+
+void web_set_ai_elo(int elo) {
+    js_set_ai_elo(elo);
 }
 
 // ---------------------------------------------------------------------------

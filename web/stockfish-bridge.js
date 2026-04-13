@@ -123,5 +123,14 @@ window.StockfishBridge = (function () {
       queue.push({ kind: 'eval', fen: fen, movetime: movetime, idx: idx });
       startNext();
     },
+    // Update the engine's UCI_Elo. Takes effect on the next `go` — the
+    // worker queues these messages after any in-flight search completes.
+    // Defensive clamp: the lite-net single-threaded build accepts a
+    // narrower range than mainline Stockfish and silently clamps anyway.
+    setElo: function (elo) {
+      elo = Math.max(1320, Math.min(3190, elo | 0));
+      worker.postMessage('setoption name UCI_LimitStrength value true');
+      worker.postMessage('setoption name UCI_Elo value ' + elo);
+    },
   };
 })();

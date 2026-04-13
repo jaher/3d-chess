@@ -41,3 +41,10 @@ std::string ask_ai_move(const std::string& fen);
 // perspective (positive = white winning). Mate scores are encoded as
 // ±(30000 - distance_to_mate). Returns INT_MIN if the engine is unavailable.
 int stockfish_eval(const std::string& fen, int movetime_ms = 150);
+
+// Update the engine's UCI_Elo strength setting. If the engine is already
+// running this sends `setoption name UCI_Elo value N`, which takes effect
+// on the next `go`. If it hasn't been spawned yet the value is latched and
+// used during the first handshake in place of the CHESS_AI_ELO env var.
+// Safe to call from any thread — grabs the internal engine mutex.
+void ai_player_set_elo(int elo);

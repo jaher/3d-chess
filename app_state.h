@@ -50,6 +50,13 @@ struct AppPlatform {
     // app_eval_ready(). score_index is the index in gs.score_history
     // to overwrite when the eval arrives.
     void (*trigger_eval)(const char* fen, int movetime_ms, int score_index);
+
+    // Set the running Stockfish engine's UCI_Elo. Takes effect on the
+    // next `go`, not any currently-running search. Safe to call from
+    // the UI thread. On desktop the value is also latched so it's
+    // applied during the first engine handshake when the subprocess
+    // hasn't been spawned yet.
+    void (*set_ai_elo)(int elo);
 };
 
 // ===========================================================================
@@ -110,6 +117,14 @@ struct AppState {
     // because platforms measure in different units internally.
     int64_t ai_anim_start_us = 0;
 
+    // Pre-game setup screen state. Persists across menu <-> pregame
+    // navigation so the user's last choices are remembered for the
+    // duration of the session.
+    bool human_plays_white = true;
+    int  stockfish_elo     = 1400;
+    bool slider_dragging   = false;
+    int  pregame_hover     = 0;
+
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
 };
@@ -121,6 +136,7 @@ void app_init(AppState& a, const AppPlatform* platform);
 
 // Mode transitions
 void app_enter_menu(AppState& a);
+void app_enter_pregame(AppState& a);
 void app_enter_game(AppState& a);
 void app_enter_challenge_select(AppState& a);
 void app_enter_challenge(AppState& a, int index);

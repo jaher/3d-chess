@@ -106,6 +106,12 @@ bool parse_uci_move(const std::string& move, int& from_col, int& from_row,
 // this file.
 #ifndef AI_PLAYER_HELPERS_ONLY
 
+// Latched ELO override set by ai_player_set_elo(). -1 means "use the
+// CHESS_AI_ELO env var fallback during handshake". Read by the engine's
+// handshake() and by the public setter below. Must be accessed while
+// holding g_engine_mu.
+static int g_requested_elo = -1;
+
 namespace {
 
 int env_int(const char* name, int fallback) {
@@ -382,11 +388,22 @@ private:
         if (!write_line("uci")) return false;
         if (wait_for_contains("uciok", 3000).empty()) return false;
         if (!write_line("setoption name UCI_LimitStrength value true")) return false;
-        int elo = env_int("CHESS_AI_ELO", 1400);
+        int elo = g_requested_elo > 0
+            ? g_requested_elo
+            : env_int("CHESS_AI_ELO", 1400);
         if (!write_line("setoption name UCI_Elo value " + std::to_string(elo)))
             return false;
         if (!write_line("isready")) return false;
         if (wait_for_contains("readyok", 3000).empty()) return false;
+        return true;
+    }
+
+public:
+    // Send an ELO update to an already-running engine. Called by
+    // ai_player_set_elo() with g_engine_mu held.
+    bool set_elo(int elo) {
+        if (!write_line("setoption name UCI_LimitStrength value true")) return false;
+        if (!write_line("setoption name UCI_Elo value " + std::to_string(elo))) return false;
         return true;
     }
 };
@@ -440,6 +457,18 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
     StockfishEngine* eng = get_engine_locked();
     if (!eng) return INT_MIN;
     return eng->eval_position(fen, movetime_ms);
+}
+
+void ai_player_set_elo(int elo) {
+    if (elo < 1320) elo = 1320;
+    if (elo > 3190) elo = 3190;
+    std::lock_guard<std::mutex> lk(g_engine_mu);
+    g_requested_elo = elo;
+    // If the engine is already spawned, send setoption immediately. If
+    // not, the new value will be picked up during the first handshake.
+    if (g_engine && g_engine->started()) {
+        g_engine->set_elo(elo);
+    }
 }
 
 #endif // !AI_PLAYER_HELPERS_ONLY

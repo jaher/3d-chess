@@ -35,6 +35,14 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
 // Returns -2=back, -1=none, 0..N-1=challenge index
 int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges);
 
+// Pre-game setup screen: side toggle + Stockfish ELO slider.
+void renderer_draw_pregame(bool human_plays_white,
+                           int elo, int elo_min, int elo_max,
+                           int width, int height,
+                           int hover);
+// Returns 0=none, 1=Start, 2=Back, 3=Toggle button, 4=Slider area
+int pregame_hit_test(double mx, double my, int width, int height);
+
 // Challenge in-game overlay
 void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      int puzzle_index, int total_puzzles,

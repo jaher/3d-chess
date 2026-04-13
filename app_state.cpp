@@ -117,7 +117,9 @@ static void trigger_ai(AppState& a) {
     a.game.ai_thinking = true;
     set_status(a, "3D Chess — AI thinking...");
     queue_redraw(a);
-    std::string fen = current_fen(a.game, /*white_turn=*/false);
+    // Pass the actual current side-to-move; Stockfish plays whichever
+    // side the human isn't.
+    std::string fen = current_fen(a.game, a.game.white_turn);
     int movetime = env_int("CHESS_AI_MOVETIME_MS", 800);
     if (a.platform && a.platform->trigger_ai_move)
         a.platform->trigger_ai_move(fen.c_str(), movetime);
@@ -176,7 +178,7 @@ static void handle_board_click(AppState& a, double mx, double my,
 
     if (is_normal_game) {
         if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode ||
-            !gs.white_turn || gs.game_over)
+            gs.white_turn != a.human_plays_white || gs.game_over)
             return;
     } else if (is_challenge) {
         if (gs.game_over || a.challenge_solved) return;
@@ -233,7 +235,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                     app_refresh_status(a);
                     trigger_eval(
                         a, static_cast<int>(gs.score_history.size()) - 1);
-                    if (!gs.white_turn && !gs.game_over)
+                    if (gs.white_turn != a.human_plays_white && !gs.game_over)
                         trigger_ai(a);
                 }
                 return;
@@ -266,14 +268,52 @@ void app_enter_menu(AppState& a) {
     queue_redraw(a);
 }
 
+void app_enter_pregame(AppState& a) {
+    a.mode = MODE_PREGAME;
+    // Preserve a.human_plays_white and a.stockfish_elo across reopens.
+    a.slider_dragging = false;
+    a.pregame_hover = 0;
+    set_status(a, "3D Chess — Game Setup");
+    queue_redraw(a);
+}
+
+// ---------------------------------------------------------------------------
+// Pregame slider helpers
+// ---------------------------------------------------------------------------
+static constexpr int APP_ELO_MIN = 1320;
+static constexpr int APP_ELO_MAX = 2850;
+
+// Convert a mouse x coordinate in pixel space to an ELO value.
+// The slider's horizontal span is defined by PREGAME_SLIDER_X_LEFT /
+// PREGAME_SLIDER_WIDTH in board_renderer.cpp; we mirror the NDC
+// bounds here so app_state doesn't have to know about GL.
+static constexpr float APP_SLIDER_NDC_LEFT  = -0.60f;
+static constexpr float APP_SLIDER_NDC_RIGHT = +0.60f;
+
+static int slider_px_to_elo(double mx, int width) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float t = (ndc_x - APP_SLIDER_NDC_LEFT) /
+              (APP_SLIDER_NDC_RIGHT - APP_SLIDER_NDC_LEFT);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return APP_ELO_MIN + static_cast<int>(
+        std::round(t * (APP_ELO_MAX - APP_ELO_MIN)));
+}
+
 void app_enter_game(AppState& a) {
     a.mode = MODE_PLAYING;
     game_reset(a.game);
     a.rot_x = 30.0f;
-    a.rot_y = 180.0f;
+    // Camera points at whichever side the human is playing so their
+    // pieces are at the bottom of the screen.
+    a.rot_y = a.human_plays_white ? 180.0f : 0.0f;
     a.zoom  = 12.0f;
+    if (a.platform && a.platform->set_ai_elo)
+        a.platform->set_ai_elo(a.stockfish_elo);
     app_refresh_status(a);
     queue_redraw(a);
+    // If the human plays black, Stockfish makes the first move as white.
+    if (!a.human_plays_white) trigger_ai(a);
 }
 
 void app_enter_challenge_select(AppState& a) {
@@ -334,6 +374,18 @@ void app_press(AppState& a, double mx, double my) {
     a.dragging = true;
     a.last_mouse_x = a.press_x = mx;
     a.last_mouse_y = a.press_y = my;
+
+    // On the pregame screen, pressing inside the slider hit area begins
+    // a drag. We need the canvas size to know where the slider is, but
+    // app_press doesn't receive it — use the last known size from
+    // app_motion by querying pregame_hit_test with an estimate. In
+    // practice the press always immediately precedes a motion, so the
+    // drag flag is promptly confirmed in app_motion.
+    if (a.mode == MODE_PREGAME) {
+        // Defer actual hit-test to app_motion/app_release, which have
+        // width/height. Just mark "might be slider drag" via last_mouse.
+        a.slider_dragging = false;
+    }
 }
 
 void app_release(AppState& a, double mx, double my, int width, int height) {
@@ -341,13 +393,37 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
 
     if (a.mode == MODE_MENU) {
         int btn = menu_hit_test(mx, my, width, height);
-        if (btn == 1)      app_enter_game(a);
+        if (btn == 1)      app_enter_pregame(a);
         else if (btn == 2) {
 #ifndef __EMSCRIPTEN__
             std::exit(0);  // Desktop quit
 #endif
         }
         else if (btn == 3) app_enter_challenge_select(a);
+        return;
+    }
+
+    if (a.mode == MODE_PREGAME) {
+        // End-of-drag takes precedence over button-click handling so a
+        // tiny slider wiggle isn't mistaken for a button press.
+        if (a.slider_dragging) {
+            a.slider_dragging = false;
+            a.stockfish_elo = slider_px_to_elo(mx, width);
+            queue_redraw(a);
+            return;
+        }
+        int btn = pregame_hit_test(mx, my, width, height);
+        if (btn == 1) {           // Start
+            app_enter_game(a);
+        } else if (btn == 2) {    // Back
+            app_enter_menu(a);
+        } else if (btn == 3) {    // Toggle side
+            a.human_plays_white = !a.human_plays_white;
+            queue_redraw(a);
+        } else if (btn == 4) {    // Click on slider (not a drag)
+            a.stockfish_elo = slider_px_to_elo(mx, width);
+            queue_redraw(a);
+        }
         return;
     }
 
@@ -390,6 +466,26 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         if (h != a.menu_hover) {
             a.menu_hover = h;
             queue_redraw(a);
+        }
+        return;
+    }
+    if (a.mode == MODE_PREGAME) {
+        int h = pregame_hit_test(mx, my, width, height);
+        if (h != a.pregame_hover) {
+            a.pregame_hover = h;
+            queue_redraw(a);
+        }
+        // If the mouse button is pressed AND the press was inside the
+        // slider, treat this as a drag.
+        if (a.dragging) {
+            if (!a.slider_dragging) {
+                int start = pregame_hit_test(a.press_x, a.press_y, width, height);
+                if (start == 4) a.slider_dragging = true;
+            }
+            if (a.slider_dragging) {
+                a.stockfish_elo = slider_px_to_elo(mx, width);
+                queue_redraw(a);
+            }
         }
         return;
     }
@@ -477,9 +573,11 @@ void app_key(AppState& a, AppKey key) {
 // ===========================================================================
 // AI move animation + async result delivery
 // ===========================================================================
-static bool is_legal_ai_move(GameState& gs, int fc, int fr, int tc, int tr) {
+static bool is_legal_ai_move(const AppState& a, int fc, int fr, int tc, int tr) {
+    GameState& gs = const_cast<GameState&>(a.game);
     int idx = gs.grid[fr][fc];
-    if (idx < 0 || gs.pieces[idx].is_white) return false;
+    // AI's piece is whichever color the human isn't playing.
+    if (idx < 0 || gs.pieces[idx].is_white == a.human_plays_white) return false;
     auto legal = generate_legal_moves(gs, fc, fr);
     for (const auto& [mc, mr] : legal)
         if (mc == tc && mr == tr) return true;
@@ -502,7 +600,8 @@ static void ai_random_fallback(AppState& a) {
     GameState& gs = a.game;
     std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>> all_legal;
     for (const auto& p : gs.pieces) {
-        if (!p.alive || p.is_white) continue;
+        // AI moves whichever color the human isn't playing.
+        if (!p.alive || p.is_white == a.human_plays_white) continue;
         auto moves = generate_legal_moves(gs, p.col, p.row);
         for (const auto& [mc, mr] : moves)
             all_legal.push_back({{p.col, p.row}, {mc, mr}});
@@ -532,7 +631,7 @@ void app_ai_move_ready(AppState& a, const char* uci_c) {
     int fc, fr, tc, tr;
     bool ok = false;
     if (!uci.empty() && parse_uci_move(uci, fc, fr, tc, tr)) {
-        if (is_legal_ai_move(gs, fc, fr, tc, tr)) ok = true;
+        if (is_legal_ai_move(a, fc, fr, tc, tr)) ok = true;
     }
 
     if (ok) {
@@ -622,6 +721,13 @@ void app_render(AppState& a, int width, int height) {
         float t = static_cast<float>(
             static_cast<double>(now - a.menu_start_time_us) / 1e6);
         renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover);
+        return;
+    }
+
+    if (a.mode == MODE_PREGAME) {
+        renderer_draw_pregame(a.human_plays_white, a.stockfish_elo,
+                              APP_ELO_MIN, APP_ELO_MAX,
+                              width, height, a.pregame_hover);
         return;
     }
 

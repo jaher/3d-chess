@@ -11,7 +11,13 @@
 #endif
 
 enum PieceType { KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN, PIECE_COUNT };
-enum GameMode { MODE_MENU, MODE_PLAYING, MODE_CHALLENGE_SELECT, MODE_CHALLENGE };
+enum GameMode {
+    MODE_MENU,
+    MODE_PREGAME,          // pre-game setup screen (side + ELO)
+    MODE_PLAYING,
+    MODE_CHALLENGE_SELECT,
+    MODE_CHALLENGE,
+};
 
 extern const char* piece_filenames[PIECE_COUNT];
 extern const float piece_scale[PIECE_COUNT];
