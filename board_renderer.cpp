@@ -1547,7 +1547,7 @@ static const float PG_TOGGLE_Y =  0.25f;
 static const float PG_SLIDER_X_LEFT  = -0.60f;  // mirrors APP_SLIDER_NDC_LEFT
 static const float PG_SLIDER_X_RIGHT = +0.60f;  // mirrors APP_SLIDER_NDC_RIGHT
 static const float PG_SLIDER_Y       = -0.25f;
-static const float PG_SLIDER_H       =  0.06f;
+static const float PG_SLIDER_H       =  0.035f;
 
 static const float PG_HANDLE_HW  = 0.025f;   // half-width
 static const float PG_HANDLE_HH  = 0.05f;    // half-height (square part)
