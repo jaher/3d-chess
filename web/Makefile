@@ -18,6 +18,8 @@ LDFLAGS   := \
 SHARED_SRCS := \
     ../chess_types.cpp \
     ../chess_rules.cpp \
+    ../game_state.cpp \
+    ../app_state.cpp \
     ../board_renderer.cpp \
     ../linalg.cpp \
     ../stl_model.cpp \
