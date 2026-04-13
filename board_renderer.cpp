@@ -114,7 +114,13 @@ static std::vector<float> build_board_mesh(int& light_verts, int& dark_verts) {
             float cx, cz; square_center(col, row, cx, cz);
             float h = SQ / 2.0f;
             float x0 = cx - h, x1 = cx + h, z0 = cz - h, z1 = cz + h;
-            auto& buf = ((row + col) % 2 != 0) ? light : dark;
+            // Standard chess square colors: a1 is dark (both player's
+            // left-hand corner is a dark square). Internal col 7 = a-file,
+            // so a1 is (row=0, col=7) where (row+col)%2=1; we want that in
+            // the dark buffer, and squares where (row+col)%2=0 are light.
+            // This also puts queens on their own color: d1 (row=0, col=4)
+            // is light, d8 (row=7, col=4) is dark.
+            auto& buf = ((row + col) % 2 == 0) ? light : dark;
             buf.insert(buf.end(), {0,1,0, x0,y,z0}); buf.insert(buf.end(), {0,1,0, x1,y,z0});
             buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z0});
             buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z1});
