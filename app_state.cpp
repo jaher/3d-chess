@@ -765,7 +765,7 @@ void app_render(AppState& a, int width, int height) {
         gs.game_result.clear();
     }
 
-    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom);
+    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -798,7 +798,7 @@ void app_render(AppState& a, int width, int height) {
         a.transition_start_time_us = now;
 
         // The renderer_draw path itself clears its color/depth buffers.
-        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom);
+        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,
             a.current_challenge.current_index,

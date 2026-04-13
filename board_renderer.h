@@ -6,9 +6,13 @@
 // Initialize GL resources (call from on_realize)
 void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 
-// Main render function (call from on_render)
+// Main render function (call from on_render).
+// human_plays_white flips the score graph so the human's color is
+// always at the bottom (light fill at bottom for white player, dark
+// fill at bottom for black player).
 void renderer_draw(GameState& gs, int width, int height,
-                   float rot_x, float rot_y, float zoom);
+                   float rot_x, float rot_y, float zoom,
+                   bool human_plays_white);
 
 // Menu screen
 struct PhysicsPiece {

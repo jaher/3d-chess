@@ -659,7 +659,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 // Main draw
 // ---------------------------------------------------------------------------
 void renderer_draw(GameState& gs, int width, int height,
-                   float rot_x, float rot_y, float zoom) {
+                   float rot_x, float rot_y, float zoom,
+                   bool human_plays_white) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -917,10 +918,15 @@ void renderer_draw(GameState& gs, int width, int height,
 
         int n = static_cast<int>(gs.score_history.size());
 
-        // Compute Y positions for each score point
+        // Compute Y positions for each score point. Flip the axis when
+        // the human plays black so the human's color (black) ends up at
+        // the bottom of the graph and white at the top.
+        float sign = human_plays_white ? 1.0f : -1.0f;
+
         std::vector<float> score_y(n);
         for (int i = 0; i < n; i++)
-            score_y[i] = std::max(gy0, std::min(gy1, gy0 + gh*0.5f + (gs.score_history[i]/max_s)*gh*0.45f));
+            score_y[i] = std::max(gy0, std::min(gy1,
+                gy0 + gh*0.5f + sign * (gs.score_history[i]/max_s)*gh*0.45f));
 
         std::vector<float> gv;
 
@@ -974,12 +980,20 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
         glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
 
-        // White area (below line)
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.85f,0.85f,0.85f,0.8f);
+        // Fill below/above the score line. The below fill is always
+        // the human's own color (so playing white → light at bottom,
+        // playing black → dark at bottom).
+        float below_r = human_plays_white ? 0.85f : 0.12f;
+        float below_g = human_plays_white ? 0.85f : 0.12f;
+        float below_b = human_plays_white ? 0.85f : 0.12f;
+        float above_r = human_plays_white ? 0.12f : 0.85f;
+        float above_g = human_plays_white ? 0.12f : 0.85f;
+        float above_b = human_plays_white ? 0.12f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    below_r, below_g, below_b, 0.8f);
         glDrawArrays(GL_TRIANGLES, white_fill_start, white_fill_count);
-
-        // Black area (above line)
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.12f,0.12f,0.12f,0.8f);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    above_r, above_g, above_b, 0.8f);
         glDrawArrays(GL_TRIANGLES, black_fill_start, black_fill_count);
 
         // Center line
@@ -994,7 +1008,8 @@ void renderer_draw(GameState& gs, int width, int height,
         if (gs.analysis_mode && gs.analysis_index < n) {
             float dt = (n>1) ? float(gs.analysis_index)/(n-1) : 0;
             float dx = gx0+dt*gw;
-            float dy = std::max(gy0, std::min(gy1, gy0+gh*0.5f+(gs.score_history[gs.analysis_index]/max_s)*gh*0.45f));
+            float dy = std::max(gy0, std::min(gy1,
+                gy0 + gh*0.5f + sign * (gs.score_history[gs.analysis_index]/max_s)*gh*0.45f));
             float dr = 0.012f; int ds = 16;
             int db = static_cast<int>(gv.size()/3);
             float dst = 2.0f*static_cast<float>(M_PI)/ds;
