@@ -9,7 +9,7 @@ LDFLAGS   := \
     -s MINIFY_HTML=0 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
     -s EXPORTED_FUNCTIONS=_chess_start,_on_ai_move_from_js,_on_eval_from_js \
-    --preload-file ../models@/models \
+    --preload-file ../models-web@/models \
     --preload-file ../challenges@/challenges \
     --preload-file DejaVuSans-Bold.ttf@/DejaVuSans-Bold.ttf \
     --shell-file index.html

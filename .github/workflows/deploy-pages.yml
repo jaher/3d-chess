@@ -1,0 +1,86 @@
+name: Deploy WebAssembly build to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one Pages deploy at a time; cancel any in-progress runs that
+# get superseded by a newer commit.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Emscripten + python3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends emscripten python3
+
+      # The Debian Emscripten package ships a frozen system cache at
+      # /usr/share/emscripten/cache that doesn't include the SDL2 port we
+      # need. Copy it to a writable location and point a custom EM_CONFIG
+      # at it so emcc can fetch SDL2 sources on first build.
+      - name: Configure writable Emscripten cache
+        run: |
+          cp -r /usr/share/emscripten/cache "$HOME/.emscripten_cache"
+          cat > "$HOME/.emscripten" <<EOF
+          EMSCRIPTEN_ROOT = '/usr/share/emscripten'
+          LLVM_ROOT = '/usr/bin'
+          BINARYEN_ROOT = '/usr'
+          NODE_JS = '/usr/bin/node'
+          JAVA = 'java'
+          FROZEN_CACHE = False
+          CLOSURE_COMPILER = 'closure-compiler'
+          LLVM_ADD_VERSION = '15'
+          CLANG_ADD_VERSION = '15'
+          CACHE = '$HOME/.emscripten_cache'
+          EOF
+
+      - name: Build web target
+        env:
+          EM_CONFIG: /home/runner/.emscripten
+        run: |
+          cd web
+          make
+
+      - name: Stage Pages site
+        run: |
+          mkdir -p _site
+          # Everything the browser actually fetches lives under web/, so
+          # copy the lot. The build artifacts (chess.html/js/wasm/data) are
+          # gitignored so they only exist after the make step above.
+          cp -a web/. _site/
+          # Make chess.html the entry point at /
+          cp _site/chess.html _site/index.html
+          ls -la _site
+          du -sh _site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

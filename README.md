@@ -123,6 +123,9 @@ and a vendored single-threaded build of
 Web Worker for the AI. No `SharedArrayBuffer` / COOP-COEP setup required,
 so it deploys on plain GitHub Pages.
 
+**Live demo:** <https://jaher.github.io/3d-chess/> (auto-deployed from `main`
+by `.github/workflows/deploy-pages.yml`)
+
 ### Prerequisites
 
 - A working Emscripten toolchain (`em++` on `$PATH`). On Debian/Ubuntu:
@@ -183,32 +186,53 @@ Then open <http://localhost:8000/chess.html>.
 
 ### Deploying to GitHub Pages
 
-The `web/` directory is fully self-contained after a successful build.
-Copy these artifacts to your `gh-pages` branch (or wherever you host
-static files):
+A workflow at `.github/workflows/deploy-pages.yml` handles this
+automatically: every push to `main` builds the WebAssembly target on a
+GitHub-hosted runner and deploys the resulting `web/` directory to Pages.
 
-```
-web/chess.html
-web/chess.js
-web/chess.wasm
-web/chess.data
-web/stockfish-bridge.js
-web/stockfish/stockfish.js
-web/stockfish/stockfish.wasm
+**One-time repo setup:**
+1. Open **Settings → Pages**.
+2. Set **Source** to **GitHub Actions**.
+3. Push to `main` (or run the workflow manually from the Actions tab) —
+   the first deploy takes ~3 minutes because Emscripten has to fetch
+   SDL2 source on the runner.
+
+After that, every push to `main` redeploys automatically and the site
+stays at <https://YOUR-USER.github.io/REPO/>. No special HTTP headers
+required — the lite single-threaded Stockfish.js build doesn't need
+`SharedArrayBuffer` or COOP-COEP.
+
+**Manual deployment (alternative):** if you'd rather host the files
+yourself, the `web/` directory is fully self-contained after `make`.
+Copy `chess.{html,js,wasm,data}`, `stockfish-bridge.js`, and
+`stockfish/{stockfish.js,stockfish.wasm}` to any static host and serve
+`chess.html` (or rename it to `index.html`).
+
+### Decimated models (`models-web/`)
+
+The desktop `models/` directory holds heavily-tessellated STL pieces
+(~250 MB total — fine for a native build but unworkable for a browser
+asset bundle). The web build preloads `models-web/` instead, which
+contains the same pieces decimated to ~5,000 triangles each via Blender's
+quadric collapse decimator. Total payload drops from ~250 MB to ~1.5 MB
+with no perceptible visual difference at gameplay zoom.
+
+To regenerate after editing `models/`:
+
+```bash
+blender --background --python tools/decimate_models.py
 ```
 
-No special HTTP headers required — the lite single-threaded Stockfish.js
-build does not need `SharedArrayBuffer` or COOP-COEP.
+(Blender 4.x or newer.)
 
 ### Limitations vs the desktop build
 
-- **First load is large**: `chess.data` packs the STL chess piece models
-  into the virtual filesystem. The current models total ~250 MB; the
-  payload caches after the first download. STL decimation is a planned
-  follow-up.
 - **Single-threaded Stockfish**: ~5× slower per node than threaded
   Stockfish, but at the default 800 ms/move and `UCI_Elo 1400` cap that's
   still strong enough to play interesting games.
+- **Lower-poly pieces**: the web build uses `models-web/` (~5K triangles
+  per piece) instead of the desktop's `models/`. Differences are
+  invisible at normal zoom but visible if you zoom way in.
 - **Mouse + keyboard only**: touch input on mobile is not yet wired up.
 - **Requires WebGL 2**: every modern browser since 2017 supports it
   (Chrome/Edge/Firefox/Safari/Opera). No fallback to WebGL 1.
@@ -270,8 +294,11 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   ai_player.h/cpp          -- Stockfish UCI integration (subprocess on desktop)
   challenge.h/cpp          -- Mate-in-N puzzle loader
   third_party/stockfish/   -- Native Stockfish engine (git submodule)
-  models/                  -- STL chess piece models
+  models/                  -- High-res STL piece models (desktop build)
+  models-web/              -- Decimated STL piece models (web build)
+  tools/decimate_models.py -- Blender script that produces models-web/
   challenges/              -- Puzzle definition files
+  .github/workflows/       -- CI: deploy WebAssembly build to GitHub Pages
   web/                     -- WebAssembly / WebGL 2 build (Emscripten)
     main_web.cpp           --   SDL2 + emscripten_set_main_loop driver
     ai_player_web.cpp      --   JS bridge to Stockfish.js Web Worker
