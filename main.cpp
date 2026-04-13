@@ -48,7 +48,6 @@ static bool g_challenge_next_hover = false;
 // Solutions submitted by the user (one entry per puzzle: list of UCI moves)
 static std::vector<std::vector<std::string>> g_challenge_solutions;
 static bool g_challenge_show_summary = false;
-static bool g_challenge_summary_hover = false;
 
 // Glass shatter transition
 static bool g_transition_active = false;
@@ -503,7 +502,7 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
         std::vector<SummaryEntry> entries;
         for (size_t i = 0; i < g_challenge_solutions.size(); i++) {
             SummaryEntry e;
-            char buf[16]; std::snprintf(buf, sizeof(buf), "Puzzle %zu", i + 1);
+            char buf[32]; std::snprintf(buf, sizeof(buf), "Puzzle %zu", i + 1);
             e.puzzle_name = buf;
             e.moves = g_challenge_solutions[i];
             entries.push_back(e);
