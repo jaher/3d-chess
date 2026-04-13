@@ -1,7 +1,22 @@
 CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra
-CXXFLAGS += $(shell pkg-config --cflags gtk+-3.0 epoxy)
-LDFLAGS  := $(shell pkg-config --libs gtk+-3.0 epoxy) -lm
+
+# OS detection. On macOS, prepend the Homebrew pkgconfig dir so we find
+# gtk+-3.0 / epoxy installed via `brew install gtk+3 libepoxy`.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+    ifneq ($(BREW_PREFIX),)
+        PKG_CONFIG := PKG_CONFIG_PATH=$(BREW_PREFIX)/lib/pkgconfig:$(BREW_PREFIX)/opt/libffi/lib/pkgconfig pkg-config
+    else
+        PKG_CONFIG := pkg-config
+    endif
+else
+    PKG_CONFIG := pkg-config
+endif
+
+CXXFLAGS += $(shell $(PKG_CONFIG) --cflags gtk+-3.0 epoxy)
+LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy) -lm
 
 TARGET   := chess
 SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp board_renderer.cpp \

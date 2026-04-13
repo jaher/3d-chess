@@ -110,6 +110,25 @@ int env_int(const char* name, int fallback) {
     return static_cast<int>(n);
 }
 
+// Portable pipe + FD_CLOEXEC. pipe2() is Linux-specific; macOS doesn't have
+// it, so we fall back to pipe() + manual fcntl.
+int make_pipe_cloexec(int pipefd[2]) {
+#if defined(__linux__)
+    return pipe2(pipefd, O_CLOEXEC);
+#else
+    if (pipe(pipefd) < 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        int flags = fcntl(pipefd[i], F_GETFD);
+        if (flags < 0 || fcntl(pipefd[i], F_SETFD, flags | FD_CLOEXEC) < 0) {
+            ::close(pipefd[0]);
+            ::close(pipefd[1]);
+            return -1;
+        }
+    }
+    return 0;
+#endif
+}
+
 class StockfishEngine {
 public:
     ~StockfishEngine() { stop(); }
@@ -119,8 +138,8 @@ public:
     bool start() {
         int in_pipe[2];
         int out_pipe[2];
-        if (pipe2(in_pipe, O_CLOEXEC) < 0) return false;
-        if (pipe2(out_pipe, O_CLOEXEC) < 0) {
+        if (make_pipe_cloexec(in_pipe) < 0) return false;
+        if (make_pipe_cloexec(out_pipe) < 0) {
             ::close(in_pipe[0]); ::close(in_pipe[1]);
             return false;
         }

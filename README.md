@@ -52,6 +52,25 @@ sudo pacman -S \
     pkgconf
 ```
 
+### macOS
+
+Install the dependencies via [Homebrew](https://brew.sh):
+
+```bash
+brew install gtk+3 libepoxy pkg-config
+```
+
+The Makefile auto-detects Darwin and prepends Homebrew's pkgconfig directory
+(both Apple Silicon `/opt/homebrew` and Intel `/usr/local` are handled via
+`brew --prefix`).
+
+> **Heads-up:** GTK3 on macOS uses a Quartz backend (no XQuartz needed) and
+> compiles cleanly with the bundled Stockfish, but it is treated as a
+> second-class target by upstream GTK. The renderer requests an OpenGL
+> compatibility profile, while macOS only ships Core profile 3.2/4.1 — so
+> while the build works, the GL rendering may need tweaks before the game
+> displays correctly on a Mac. Patches welcome.
+
 ## Cloning
 
 Clone recursively so that the Stockfish submodule is fetched:
