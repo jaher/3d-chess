@@ -54,6 +54,9 @@ static GLuint g_shatter_program = 0;
 static GLuint g_shatter_vao = 0, g_shatter_vbo = 0;
 static int g_shatter_vertex_count = 0;
 static GLuint g_capture_tex = 0;
+#ifdef __EMSCRIPTEN__
+static GLuint g_capture_fbo = 0;
+#endif
 static int g_capture_w = 0, g_capture_h = 0;
 
 // ---------------------------------------------------------------------------
@@ -513,9 +516,35 @@ void renderer_capture_frame(int width, int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         g_capture_w = width;
         g_capture_h = height;
+
+#ifdef __EMSCRIPTEN__
+        // Single-sample FBO that the multisample backbuffer can be
+        // resolved into via glBlitFramebuffer. See note below.
+        if (!g_capture_fbo) glGenFramebuffers(1, &g_capture_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_capture_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, g_capture_tex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
     }
+
+#ifdef __EMSCRIPTEN__
+    // The default WebGL 2 backbuffer is created with antialias=true (the
+    // Emscripten/SDL2 default), which makes it multisampled. The OpenGL
+    // ES 3.0 spec leaves glCopyTexSubImage2D from a multisample read
+    // framebuffer UNDEFINED — in practice it produces an all-zero
+    // texture, which then makes the shatter shards render solid black.
+    // Resolve the multisample buffer into our single-sample capture
+    // FBO via glBlitFramebuffer instead.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_capture_fbo);
+    glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#else
     glBindTexture(GL_TEXTURE_2D, g_capture_tex);
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+#endif
 }
 
 void renderer_draw_shatter(float t, int width, int height) {
