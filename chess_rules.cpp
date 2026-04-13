@@ -488,9 +488,22 @@ std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci
         result += rank_to;
     }
 
-    // Check / checkmate suffix — look at the "after" state
-    // We'd need the post-move snapshot, but we can approximate by checking
-    // if the destination attacks the enemy king. Skip for simplicity.
+    // Check / checkmate suffix — simulate the move on a temp state
+    {
+        GameState tmp;
+        tmp.pieces = before.pieces;
+        tmp.white_turn = before.white_turn;
+        tmp.castling = before.castling;
+        tmp.rebuild_grid();
+        execute_move(tmp, fc_internal, fr, tc_internal, tr);
+        // After execute_move, tmp.white_turn is the OPPONENT (side to move next)
+        bool opp_in_check = is_in_check(tmp, tmp.white_turn);
+        if (opp_in_check) {
+            bool has_moves = has_any_legal_move(tmp, tmp.white_turn);
+            if (!has_moves) result += '#';
+            else result += '+';
+        }
+    }
 
     return result;
 }
