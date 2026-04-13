@@ -4,11 +4,11 @@
 #include <string>
 #include <vector>
 
-#ifdef __EMSCRIPTEN__
-#include <GLES3/gl3.h>
-#else
-#include <epoxy/gl.h>
-#endif
+// NOTE: this header must not depend on any OpenGL header, so that the
+// pure-logic layer (chess rules, FEN parsing, etc.) can be compiled
+// into the test binary without a GL sysroot on the include path. The
+// PieceGPU struct, which used to live here, has moved to
+// board_renderer.h where the GLuint type is actually needed.
 
 enum PieceType { KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN, PIECE_COUNT };
 enum GameMode {
@@ -21,11 +21,6 @@ enum GameMode {
 
 extern const char* piece_filenames[PIECE_COUNT];
 extern const float piece_scale[PIECE_COUNT];
-
-struct PieceGPU {
-    GLuint vao = 0, vbo = 0;
-    int num_vertices = 0;
-};
 
 struct BoardPiece {
     PieceType type;

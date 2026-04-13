@@ -47,8 +47,14 @@ $(STOCKFISH_BIN):
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+	-$(MAKE) -C tests clean
 
 distclean: clean
 	-$(MAKE) -C $(STOCKFISH_DIR)/src clean
 
-.PHONY: all clean distclean
+# Build and run the unit-test binary (see tests/). No GL, no GTK, no
+# Stockfish subprocess — just the pure-logic layer.
+test:
+	$(MAKE) -C tests test
+
+.PHONY: all clean distclean test

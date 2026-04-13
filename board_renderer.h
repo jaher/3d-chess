@@ -3,6 +3,19 @@
 #include "chess_types.h"
 #include "stl_model.h"
 
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#else
+#include <epoxy/gl.h>
+#endif
+
+// GPU-resident per-piece mesh handles. Moved out of chess_types.h so
+// that the pure-logic layer doesn't have to pull in a GL header.
+struct PieceGPU {
+    GLuint vao = 0, vbo = 0;
+    int num_vertices = 0;
+};
+
 // Initialize GL resources (call from on_realize)
 void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 
