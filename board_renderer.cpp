@@ -1547,12 +1547,10 @@ static const float PG_TOGGLE_Y =  0.25f;
 
 static const float PG_SLIDER_X_LEFT  = -0.60f;  // mirrors APP_SLIDER_NDC_LEFT
 static const float PG_SLIDER_X_RIGHT = +0.60f;  // mirrors APP_SLIDER_NDC_RIGHT
-static const float PG_SLIDER_Y       = -0.25f;
-static const float PG_SLIDER_H       =  0.035f;
-
-static const float PG_HANDLE_HW  = 0.025f;   // half-width
-static const float PG_HANDLE_HH  = 0.05f;    // half-height (square part)
-static const float PG_HANDLE_TIP = 0.045f;   // triangle's point below the square
+static const float PG_SLIDER_Y       = -0.22f;
+static const float PG_SLIDER_H       =  0.07f;   // pill height (rounded caps
+                                                 // have radius = H/2).
+static const float PG_SLIDER_STROKE  =  0.006f;  // outline thickness (NDC)
 
 static const float PG_START_W = 0.40f;
 static const float PG_START_H = 0.12f;
@@ -1583,10 +1581,11 @@ int pregame_hit_test(double mx, double my, int width, int height) {
         ndc_y >= PG_TOGGLE_Y - PG_TOGGLE_H && ndc_y <= PG_TOGGLE_Y)
         return 3;
 
-    // Slider — the hit area is wider than the visible bar so clicks
-    // on the handle (which dangles below) still register.
+    // Slider — widen the hit area a bit so clicks near the edges still
+    // register. The visible bar spans y from (PG_SLIDER_Y) to
+    // (PG_SLIDER_Y - PG_SLIDER_H); the hit box pads that by 0.02 NDC.
     float slider_hit_top    = PG_SLIDER_Y + 0.02f;
-    float slider_hit_bottom = PG_SLIDER_Y - PG_SLIDER_H - 2.0f * PG_HANDLE_HH - PG_HANDLE_TIP - 0.02f;
+    float slider_hit_bottom = PG_SLIDER_Y - PG_SLIDER_H - 0.02f;
     if (ndc_x >= PG_SLIDER_X_LEFT - 0.03f && ndc_x <= PG_SLIDER_X_RIGHT + 0.03f &&
         ndc_y <= slider_hit_top && ndc_y >= slider_hit_bottom)
         return 4;
@@ -1619,14 +1618,6 @@ void renderer_draw_pregame(bool human_plays_white,
              x,   y-h, 0,  x+w, y, 0,    x,   y, 0});
         regions.push_back({start, 6, r, g, b, a});
     };
-    auto add_tri = [&](float x0, float y0, float x1, float y1,
-                       float x2, float y2,
-                       float r, float g, float b, float a) {
-        int start = static_cast<int>(bg_verts.size() / 3);
-        bg_verts.insert(bg_verts.end(),
-            {x0, y0, 0,  x1, y1, 0,  x2, y2, 0});
-        regions.push_back({start, 3, r, g, b, a});
-    };
 
     // Back button background
     add_quad(-0.95f, 0.93f, 0.20f, 0.07f,
@@ -1639,32 +1630,6 @@ void renderer_draw_pregame(bool human_plays_white,
     } else {
         add_quad(PG_TOGGLE_X, PG_TOGGLE_Y, PG_TOGGLE_W, PG_TOGGLE_H,
                  0.12f, 0.12f, 0.14f, hover == 3 ? 0.95f : 0.78f);
-    }
-
-    // Slider handle: square + downward triangle. Position centered at
-    // handle_x based on current ELO.
-    {
-        float t = static_cast<float>(elo - elo_min) /
-                  static_cast<float>(elo_max - elo_min);
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        float hx = PG_SLIDER_X_LEFT +
-                   t * (PG_SLIDER_X_RIGHT - PG_SLIDER_X_LEFT);
-        // The square sits just below the bar; y-top of the square
-        // equals y-bottom of the bar.
-        float sq_top    = PG_SLIDER_Y - PG_SLIDER_H;
-        float sq_bottom = sq_top - 2.0f * PG_HANDLE_HH;
-        float sq_h      = sq_top - sq_bottom;  // = 2 * PG_HANDLE_HH
-
-        float hr = 0.98f, hg = 0.86f, hb = 0.35f, ha = 1.0f;
-        // Square (add_quad wants top-y and height; top = sq_top)
-        add_quad(hx - PG_HANDLE_HW, sq_top, 2.0f * PG_HANDLE_HW, sq_h,
-                 hr, hg, hb, ha);
-        // Triangle pointing down, glued to the bottom of the square.
-        add_tri(hx - PG_HANDLE_HW, sq_bottom,
-                hx + PG_HANDLE_HW, sq_bottom,
-                hx,                sq_bottom - PG_HANDLE_TIP,
-                hr, hg, hb, ha);
     }
 
     // Start button background
@@ -1697,65 +1662,119 @@ void renderer_draw_pregame(bool human_plays_white,
     glBindVertexArray(0);
     glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
-    // ----- Pill-shaped gradient slider bar -----
-    // A horizontal capsule: flat rectangle in the middle + two
-    // semicircular end caps, drawn as triangle fans around each cap's
-    // center. The fragment shader reads vLocalPos.x (which equals
-    // aPos.x for these vertices) and interpolates between uColor (green)
-    // on the left and uColorB (red) on the right. No stroke/outline —
-    // the pill is a solid filled shape.
+    // ----- Pill-shaped progress slider -----
+    //
+    // Three layered draws form the capsule with an outlined stroke and
+    // an interior gradient "fill" that slides from left to right as
+    // the ELO value increases:
+    //
+    //   1. Outer pill — a slightly larger capsule in the stroke color.
+    //   2. Inner pill — the same capsule inset by PG_SLIDER_STROKE in
+    //      the (dark) background color. Only the thin strip between
+    //      outer and inner remains visible as the stroke.
+    //   3. Gradient fill — a partial capsule from x_left up to fill_x,
+    //      painted with the green->red gradient shader mode. The
+    //      right edge of the fill follows the capsule boundary
+    //      (curving along the right cap when the fill is near the
+    //      right end), which is implemented by iterating narrow
+    //      vertical slices whose top/bottom y follow half_h(x).
+    //
+    // The handle (square + triangle) is gone — the leading edge of
+    // the gradient fill is the position indicator.
     {
-        const float R     = PG_SLIDER_H * 0.5f;
-        const float y_mid = PG_SLIDER_Y - R;
-        const float cap_l_cx = PG_SLIDER_X_LEFT  + R;
-        const float cap_r_cx = PG_SLIDER_X_RIGHT - R;
-
-        std::vector<float> pill_verts;  // 3 floats per vertex
-
-        auto emit_tri = [&](float x0, float y0,
-                            float x1, float y1,
-                            float x2, float y2) {
-            pill_verts.insert(pill_verts.end(),
-                {x0, y0, 0,  x1, y1, 0,  x2, y2, 0});
+        // Slice-based pill mesh builder. Emits triangles into a vec3
+        // buffer for x in [x_from, x_to] sampled at N slices, with
+        // top/bottom y values computed from half_h() given the
+        // capsule (cap_l_cx, cap_r_cx, R) it belongs to.
+        auto emit_pill_slices = [](std::vector<float>& out,
+                                   float x_from, float x_to,
+                                   float y_mid,
+                                   float cap_l_cx, float cap_r_cx,
+                                   float R, int slices) {
+            if (x_to <= x_from) return;
+            auto half_h = [&](float x) -> float {
+                if (x <= cap_l_cx) {
+                    float dx = cap_l_cx - x;
+                    if (dx >= R) return 0;
+                    return std::sqrt(R*R - dx*dx);
+                }
+                if (x >= cap_r_cx) {
+                    float dx = x - cap_r_cx;
+                    if (dx >= R) return 0;
+                    return std::sqrt(R*R - dx*dx);
+                }
+                return R;
+            };
+            for (int i = 0; i < slices; i++) {
+                float x0 = x_from + static_cast<float>(i)     / slices * (x_to - x_from);
+                float x1 = x_from + static_cast<float>(i + 1) / slices * (x_to - x_from);
+                float h0 = half_h(x0);
+                float h1 = half_h(x1);
+                // Quad (x0,y_mid-h0)-(x1,y_mid-h1)-(x1,y_mid+h1)-(x0,y_mid+h0).
+                out.insert(out.end(),
+                    {x0, y_mid - h0, 0,
+                     x1, y_mid - h1, 0,
+                     x1, y_mid + h1, 0,
+                     x0, y_mid - h0, 0,
+                     x1, y_mid + h1, 0,
+                     x0, y_mid + h0, 0});
+            }
         };
 
-        // Middle rectangle (two triangles).
-        float y_top = y_mid + R;
-        float y_bot = y_mid - R;
-        emit_tri(cap_l_cx, y_bot,  cap_r_cx, y_bot,  cap_r_cx, y_top);
-        emit_tri(cap_l_cx, y_bot,  cap_r_cx, y_top,  cap_l_cx, y_top);
+        // Inner (fill) capsule.
+        const float R_in     = PG_SLIDER_H * 0.5f;
+        const float y_mid_in = PG_SLIDER_Y - R_in;
+        const float cap_l_in = PG_SLIDER_X_LEFT  + R_in;
+        const float cap_r_in = PG_SLIDER_X_RIGHT - R_in;
 
-        // Left semicircle cap: fan around (cap_l_cx, y_mid), arc from
-        // +PI/2 (top of cap) counter-clockwise to +3PI/2 (bottom of cap),
-        // i.e. the left half of the circle.
-        const int CAP_SEGS = 24;
-        for (int i = 0; i < CAP_SEGS; i++) {
-            float a0 = static_cast<float>(M_PI) * 0.5f +
-                       (static_cast<float>(i)     / CAP_SEGS) * static_cast<float>(M_PI);
-            float a1 = static_cast<float>(M_PI) * 0.5f +
-                       (static_cast<float>(i + 1) / CAP_SEGS) * static_cast<float>(M_PI);
-            float p0x = cap_l_cx + std::cos(a0) * R;
-            float p0y = y_mid    + std::sin(a0) * R;
-            float p1x = cap_l_cx + std::cos(a1) * R;
-            float p1y = y_mid    + std::sin(a1) * R;
-            emit_tri(cap_l_cx, y_mid,  p0x, p0y,  p1x, p1y);
+        // Outer capsule is inflated in all four directions by
+        // PG_SLIDER_STROKE, which also grows its radius by the same.
+        const float R_out     = R_in + PG_SLIDER_STROKE;
+        const float y_mid_out = y_mid_in;
+        const float x_left_out  = PG_SLIDER_X_LEFT  - PG_SLIDER_STROKE;
+        const float x_right_out = PG_SLIDER_X_RIGHT + PG_SLIDER_STROKE;
+        const float cap_l_out = x_left_out  + R_out;  // = cap_l_in
+        const float cap_r_out = x_right_out - R_out;  // = cap_r_in
+
+        const int PILL_SLICES = 96;
+
+        // Build outer + inner meshes into one big flat-color VBO.
+        std::vector<float> pill_verts;
+        int outer_start = 0;
+        emit_pill_slices(pill_verts,
+            x_left_out, x_right_out,
+            y_mid_out, cap_l_out, cap_r_out, R_out, PILL_SLICES);
+        int outer_count = static_cast<int>(pill_verts.size() / 3) - outer_start;
+
+        int inner_start = static_cast<int>(pill_verts.size() / 3);
+        emit_pill_slices(pill_verts,
+            PG_SLIDER_X_LEFT, PG_SLIDER_X_RIGHT,
+            y_mid_in, cap_l_in, cap_r_in, R_in, PILL_SLICES);
+        int inner_count = static_cast<int>(pill_verts.size() / 3) - inner_start;
+
+        // Gradient fill: partial inner capsule from left edge up to
+        // fill_x. t clamps the ELO to the slider's range.
+        float t = static_cast<float>(elo - elo_min) /
+                  static_cast<float>(elo_max - elo_min);
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        float fill_x = PG_SLIDER_X_LEFT +
+                       t * (PG_SLIDER_X_RIGHT - PG_SLIDER_X_LEFT);
+
+        int fill_start = static_cast<int>(pill_verts.size() / 3);
+        if (fill_x > PG_SLIDER_X_LEFT) {
+            // Use the same slice count scaled by the fill fraction so
+            // each slice is roughly the same width as the full pill's
+            // slices — keeps the right edge smooth regardless of t.
+            int fill_slices = std::max(4,
+                static_cast<int>(std::ceil(PILL_SLICES * t)));
+            emit_pill_slices(pill_verts,
+                PG_SLIDER_X_LEFT, fill_x,
+                y_mid_in, cap_l_in, cap_r_in, R_in, fill_slices);
         }
+        int fill_count = static_cast<int>(pill_verts.size() / 3) - fill_start;
 
-        // Right semicircle cap: fan around (cap_r_cx, y_mid), arc from
-        // -PI/2 (bottom) counter-clockwise to +PI/2 (top), the right
-        // half of the circle.
-        for (int i = 0; i < CAP_SEGS; i++) {
-            float a0 = -static_cast<float>(M_PI) * 0.5f +
-                       (static_cast<float>(i)     / CAP_SEGS) * static_cast<float>(M_PI);
-            float a1 = -static_cast<float>(M_PI) * 0.5f +
-                       (static_cast<float>(i + 1) / CAP_SEGS) * static_cast<float>(M_PI);
-            float p0x = cap_r_cx + std::cos(a0) * R;
-            float p0y = y_mid    + std::sin(a0) * R;
-            float p1x = cap_r_cx + std::cos(a1) * R;
-            float p1y = y_mid    + std::sin(a1) * R;
-            emit_tri(cap_r_cx, y_mid,  p0x, p0y,  p1x, p1y);
-        }
-
+        // Upload.
         GLuint pvao, pvbo;
         glGenVertexArrays(1, &pvao); glGenBuffers(1, &pvbo);
         glBindVertexArray(pvao);
@@ -1767,19 +1786,33 @@ void renderer_draw_pregame(bool human_plays_white,
                               3 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
 
-        // Flip into gradient mode for this one draw. uInnerRadius/
-        // uOuterRadius are already 0 from above, keeping us on the
-        // flat-color path inside the shader.
-        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 1);
+        // Shader is already bound as highlight_program, inner/outer
+        // radius uniforms are 0, uMVP is identity.
+
+        // (1) Outer pill: flat color, the stroke.
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    0.20f, 0.85f, 0.25f, 1.0f);   // green (left)
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColorB"),
-                    0.92f, 0.20f, 0.18f, 1.0f);   // red   (right)
-        glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX0"),
-                    PG_SLIDER_X_LEFT);
-        glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX1"),
-                    PG_SLIDER_X_RIGHT);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<int>(pill_verts.size() / 3));
+                    0.72f, 0.76f, 0.90f, 1.0f);  // cool off-white stroke
+        glDrawArrays(GL_TRIANGLES, outer_start, outer_count);
+
+        // (2) Inner pill: flat dark background, covers all but the stroke.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.06f, 0.06f, 0.08f, 1.0f);  // near-black interior
+        glDrawArrays(GL_TRIANGLES, inner_start, inner_count);
+
+        // (3) Gradient fill: partial inner pill from left up to fill_x.
+        if (fill_count > 0) {
+            glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 1);
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.20f, 0.85f, 0.25f, 1.0f);   // green (left)
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColorB"),
+                        0.92f, 0.20f, 0.18f, 1.0f);   // red   (right)
+            glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX0"),
+                        PG_SLIDER_X_LEFT);
+            glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX1"),
+                        PG_SLIDER_X_RIGHT);
+            glDrawArrays(GL_TRIANGLES, fill_start, fill_count);
+        }
 
         // Reset gradient mode so later draws in this frame (or in the
         // next renderer pass) see a flat-color highlight program.
