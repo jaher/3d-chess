@@ -84,33 +84,43 @@ void flag_init(ClothFlag& f, int width, int height) {
 // Per-frame update
 // ---------------------------------------------------------------------------
 // Time-scale applied to every sinusoid below. Lower values = calmer,
-// more slowly swaying cloth. Tuned by eye — reduce further if the
-// flag still looks busy.
+// more slowly swaying cloth.
 static constexpr float WIND_TIME_SCALE = 0.55f;
 
-static inline float wind_x(float x, float y, float t) {
-    // Base breeze + spatially varying gust. The offsets in y and x make
-    // the flag ripple rather than move as one block.
+// Wind force functions. Spatial frequencies are expressed per-cell
+// (cf and rf are the float column/row index) so a coefficient of ~1
+// means one full wave per cell. With COLS=14 and ROWS=9, coefficients
+// around 1.0–1.3 give two to three visible ripples across the cloth —
+// the thing that actually makes it look wavy. Previously these were
+// keyed off NDC world coords, which on our ~0.04 NDC-tall cloth meant
+// the phase barely moved and the flag just pulsed as a block.
+//
+// Inspired by the cloth-texture motion in shadertoy MldXWX: the
+// shader itself reads a pre-simulated position texture, but the
+// characteristic look comes from superposed high-frequency waves
+// in the underlying sim. We get the same effect in our small grid
+// by cranking the per-cell spatial frequency.
+static inline float wind_x(float cf, float rf, float t) {
     const float ts = t * WIND_TIME_SCALE;
-    return 1.9f + 0.7f * std::sin(ts * 1.3f + y * 5.5f)
-                + 0.3f * std::sin(ts * 2.7f + x * 3.2f);
+    return 2.0f + 0.6f * std::sin(ts * 1.3f + rf * 1.1f)
+                + 0.3f * std::sin(ts * 2.7f + cf * 0.8f);
 }
 
-static inline float wind_y(float x, float y, float t) {
-    // Small vertical component so the flag's trailing edge bobs up
-    // and down instead of staying pinned at one height.
+static inline float wind_y(float cf, float rf, float t) {
     const float ts = t * WIND_TIME_SCALE;
-    return 0.15f * std::sin(ts * 2.1f + x * 4.0f + y * 2.0f);
+    return 0.20f * std::sin(ts * 2.1f + cf * 0.9f + rf * 0.6f);
 }
 
-static inline float wind_z(float x, float y, float t) {
-    // Out-of-plane bulging. This is the component that makes the
-    // lighting reveal the ripples — two travelling waves, one along
-    // x and one diagonal, so the cloth has visible folds instead of
-    // pulsing as one block.
+static inline float wind_z(float cf, float rf, float t) {
+    // Three superposed travelling waves along the length of the flag
+    // (cf grows from 0 at the stick to COLS-1 at the free edge). High
+    // per-col frequencies (1.5, 2.2, 1.1) give roughly 3, 5, and 2.5
+    // full wavelengths across our 14-wide flag, which reads as a
+    // clearly rippling cloth rather than a single bulge.
     const float ts = t * WIND_TIME_SCALE;
-    return 2.2f * std::sin(ts * 2.4f + y * 7.0f + x * 3.5f)
-         + 1.4f * std::sin(ts * 1.7f + x * 5.0f - y * 4.0f);
+    return 3.6f * std::sin(ts * 2.4f + cf * 1.50f + rf * 0.6f)
+         + 2.4f * std::sin(ts * 3.1f + cf * 2.20f - rf * 0.3f)
+         + 1.8f * std::sin(ts * 1.6f + cf * 1.10f);
 }
 
 void flag_update(ClothFlag& f, float dt, float time_s) {
@@ -139,11 +149,15 @@ void flag_update(ClothFlag& f, float dt, float time_s) {
             // cloth unfurls smoothly rather than snapping outwards at
             // the trailing edge. The (col+1) / COLS ramp also prevents
             // the pinned column's neighbour from being yanked too hard.
-            const float reach = static_cast<float>(col) /
-                                static_cast<float>(ClothFlag::COLS - 1);
-            const float ax = wind_x(q.x, q.y, time_s) * (0.35f + 0.65f * reach);
-            const float ay = GRAVITY_Y + wind_y(q.x, q.y, time_s);
-            const float az = wind_z(q.x, q.y, time_s) * (0.20f + 0.80f * reach);
+            // Wind functions are parameterised by grid indices, not
+            // NDC position, so spatial frequencies are expressed per
+            // cell and ripples are visible on our small flag.
+            const float cf    = static_cast<float>(col);
+            const float rf    = static_cast<float>(row);
+            const float reach = cf / static_cast<float>(ClothFlag::COLS - 1);
+            const float ax = wind_x(cf, rf, time_s) * (0.35f + 0.65f * reach);
+            const float ay = GRAVITY_Y + wind_y(cf, rf, time_s);
+            const float az = wind_z(cf, rf, time_s) * (0.20f + 0.80f * reach);
 
             // Verlet step with damping, all three axes.
             const float vx = (q.x - q.px) * DAMPING;
