@@ -661,9 +661,11 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 // NDC rectangle for the "Back to Menu" button that appears inside
 // the game-over overlay in renderer_draw. Shared between the draw
 // path and endgame_menu_button_hit_test below so they stay in sync.
-static const float EG_MENU_BTN_X = -0.12f;
+// Width picked to leave ~0.03 NDC of padding on each side of the
+// "Back to Menu" label (which is ~0.235 wide at the current font).
+static const float EG_MENU_BTN_X = -0.15f;
 static const float EG_MENU_BTN_Y = -0.015f;
-static const float EG_MENU_BTN_W =  0.24f;
+static const float EG_MENU_BTN_W =  0.30f;
 static const float EG_MENU_BTN_H =  0.07f;
 
 bool endgame_menu_button_hit_test(double mx, double my, int width, int height) {
