@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chess_types.h"
+#include "cloth_flag.h"
 #include "stl_model.h"
 
 #ifdef __EMSCRIPTEN__
@@ -24,17 +25,35 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // always at the bottom (light fill at bottom for white player, dark
 // fill at bottom for black player).
 // endgame_menu_hover controls the "Back to Menu" button's hover tint
-// in the game-over overlay; it's ignored when !gs.game_over.
+// in the game-over overlay; it's ignored when !gs.game_over && !gs.analysis_mode.
+// flag is the live cloth state for the withdraw flag; drawn only when
+// draw_flag is true (i.e. a live game is in progress and no modal is open).
+// withdraw_confirm_open draws the modal confirmation dialog on top of
+// everything; withdraw_hover controls its button tints.
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
-                   bool endgame_menu_hover);
+                   bool endgame_menu_hover,
+                   const ClothFlag* flag, bool draw_flag,
+                   bool withdraw_confirm_open, int withdraw_hover);
 
 // Hit-test for the "Back to Menu" button drawn in renderer_draw's
-// game-over overlay. Returns true when (mx, my) falls inside the
-// button's NDC rectangle. Only meaningful while gs.game_over is true.
+// game-over / analysis overlay. Returns true when (mx, my) falls
+// inside the button's NDC rectangle. Only meaningful while the overlay
+// is visible (gs.game_over or gs.analysis_mode).
 bool endgame_menu_button_hit_test(double mx, double my,
                                   int width, int height);
+
+// Hit-test for the withdraw flag in the bottom-right corner. Uses
+// the deformed cloth's bounding box + a small NDC padding for
+// ergonomics, so the click region tracks the rippling cloth.
+bool flag_hit_test(const ClothFlag& flag,
+                   double mx, double my, int width, int height);
+
+// Hit-test for the withdraw confirmation modal. Writes to *which:
+// 0 = background / neither button, 1 = Yes, 2 = No.
+bool withdraw_confirm_hit_test(double mx, double my,
+                               int width, int height, int* which);
 
 // Menu screen
 struct PhysicsPiece {

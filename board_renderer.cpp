@@ -675,10 +675,89 @@ bool endgame_menu_button_hit_test(double mx, double my, int width, int height) {
            ndc_y >= EG_MENU_BTN_Y - EG_MENU_BTN_H && ndc_y <= EG_MENU_BTN_Y;
 }
 
+// ---------------------------------------------------------------------------
+// Withdraw confirmation modal — dialog box centred on screen with
+// Yes / No buttons. Constants shared between the draw path and the
+// hit-test so they stay in sync.
+// ---------------------------------------------------------------------------
+// Dialog panel (outer outline is drawn slightly larger).
+static const float WC_PANEL_X0 = -0.30f;
+static const float WC_PANEL_X1 =  0.30f;
+static const float WC_PANEL_Y0 = -0.14f;
+static const float WC_PANEL_Y1 =  0.18f;
+
+// Yes button (green).
+static const float WC_YES_X0 = -0.22f;
+static const float WC_YES_X1 = -0.02f;
+static const float WC_YES_Y0 = -0.10f;
+static const float WC_YES_Y1 =  0.00f;
+
+// No button (red).
+static const float WC_NO_X0 =  0.02f;
+static const float WC_NO_X1 =  0.22f;
+static const float WC_NO_Y0 = -0.10f;
+static const float WC_NO_Y1 =  0.00f;
+
+bool withdraw_confirm_hit_test(double mx, double my,
+                               int width, int height, int* which) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    if (which) *which = 0;
+    if (ndc_x >= WC_YES_X0 && ndc_x <= WC_YES_X1 &&
+        ndc_y >= WC_YES_Y0 && ndc_y <= WC_YES_Y1) {
+        if (which) *which = 1;
+        return true;
+    }
+    if (ndc_x >= WC_NO_X0 && ndc_x <= WC_NO_X1 &&
+        ndc_y >= WC_NO_Y0 && ndc_y <= WC_NO_Y1) {
+        if (which) *which = 2;
+        return true;
+    }
+    // Clicks anywhere inside the panel are swallowed by the modal but
+    // don't map to either button — return true with *which == 0 so
+    // the dispatcher knows not to pass the click through to the board.
+    if (ndc_x >= WC_PANEL_X0 && ndc_x <= WC_PANEL_X1 &&
+        ndc_y >= WC_PANEL_Y0 && ndc_y <= WC_PANEL_Y1) {
+        return true;
+    }
+    // Click outside the panel — also swallowed (modal semantics).
+    return true;
+}
+
+bool flag_hit_test(const ClothFlag& flag,
+                   double mx, double my, int width, int height) {
+    if (flag.p.empty()) return false;
+    float x0, y0, x1, y1;
+    flag_bbox(flag, x0, y0, x1, y1);
+    // Small NDC padding so the rippling trailing edge doesn't make
+    // the click area frustrating to hit.
+    const float pad = 0.015f;
+    x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    return ndc_x >= x0 && ndc_x <= x1 && ndc_y >= y0 && ndc_y <= y1;
+}
+
+// ---------------------------------------------------------------------------
+// Small helper: push six vertices (two triangles) for an axis-aligned
+// NDC quad into a flat float buffer. Each vertex is xyz (z=0).
+// ---------------------------------------------------------------------------
+static void push_quad(std::vector<float>& verts,
+                      float x0, float y0, float x1, float y1) {
+    verts.push_back(x0); verts.push_back(y0); verts.push_back(0);
+    verts.push_back(x1); verts.push_back(y0); verts.push_back(0);
+    verts.push_back(x1); verts.push_back(y1); verts.push_back(0);
+    verts.push_back(x0); verts.push_back(y0); verts.push_back(0);
+    verts.push_back(x1); verts.push_back(y1); verts.push_back(0);
+    verts.push_back(x0); verts.push_back(y1); verts.push_back(0);
+}
+
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
-                   bool endgame_menu_hover) {
+                   bool endgame_menu_hover,
+                   const ClothFlag* flag, bool draw_flag,
+                   bool withdraw_confirm_open, int withdraw_hover) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -1226,19 +1305,387 @@ void renderer_draw(GameState& gs, int width, int height,
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
     }
 
-    // --- Game over overlay ---
-    if (gs.game_over && !gs.game_result.empty()) {
+    // --- Withdraw flag (bottom-right corner, live game only) ---
+    if (draw_flag && flag != nullptr && !flag->p.empty()) {
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // Semi-transparent dark backdrop
+        glUseProgram(g_highlight_program);
+        Mat4 id_flag = mat4_identity();
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id_flag.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+        // 1. Brown stick. Drawn as a stack of vertical slices with
+        //    per-slice shading to fake a cylindrical pole: edges are
+        //    dark, centre is bright. Cheap and convincing at small
+        //    sizes.
+        const float stick_half_px = 3.0f; // half-thickness in pixels
+        const float stick_half_x  = stick_half_px * 2.0f / static_cast<float>(width);
+        const float stick_top_px  = 6.0f;
+        const float stick_top_pad = stick_top_px * 2.0f / static_cast<float>(height);
+        const float stick_x       = flag->anchor_x;
+        const float stick_y_top   = flag->anchor_y + stick_top_pad;
+        // Stick length scales with the cloth height: it extends one
+        // cloth-height below the anchor, so the flag sits near the top
+        // of the stick and there's a short bit of pole visible under
+        // the free edge. flag->rest_v * (ROWS-1) is the cloth's
+        // vertical extent in NDC.
+        const float cloth_h       = flag->rest_v * static_cast<float>(ClothFlag::ROWS - 1);
+        const float stick_y_bot   = flag->anchor_y - cloth_h * 2.2f;
+        {
+            const int SLICES = 9;
+            // Base (centre) and edge colours — Lambertian "cylinder"
+            // shading between them along the thickness.
+            const float base_r = 0.55f, base_g = 0.33f, base_b = 0.13f;
+            const float edge_r = 0.22f, edge_g = 0.12f, edge_b = 0.04f;
+            for (int i = 0; i < SLICES; ++i) {
+                float t0 = static_cast<float>(i)     / SLICES;
+                float t1 = static_cast<float>(i + 1) / SLICES;
+                float x0 = stick_x + (t0 * 2.0f - 1.0f) * stick_half_x;
+                float x1 = stick_x + (t1 * 2.0f - 1.0f) * stick_half_x;
+                // Normalised position across the thickness, 0 at the
+                // left edge, 1 at the right. shade peaks at 1 in the
+                // middle, goes to 0 at both edges — approximates the
+                // cosine falloff on a cylindrical surface.
+                float tc = (t0 + t1) * 0.5f;
+                float shade = std::sin(tc * static_cast<float>(M_PI));
+                float r = edge_r + (base_r - edge_r) * shade;
+                float g = edge_g + (base_g - edge_g) * shade;
+                float b = edge_b + (base_b - edge_b) * shade;
+                glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                            r, g, b, 1.0f);
+
+                std::vector<float> sv;
+                push_quad(sv, x0, stick_y_bot, x1, stick_y_top);
+                GLuint svao, svbo;
+                glGenVertexArrays(1, &svao); glGenBuffers(1, &svbo);
+                glBindVertexArray(svao); glBindBuffer(GL_ARRAY_BUFFER, svbo);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(sv.size() * sizeof(float)),
+                             sv.data(), GL_STREAM_DRAW);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                      3 * sizeof(float), (void*)0);
+                glEnableVertexAttribArray(0);
+                glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(sv.size() / 3));
+                glBindVertexArray(0);
+                glDeleteBuffers(1, &svbo); glDeleteVertexArrays(1, &svao);
+            }
+        }
+
+        // 3. Cloth geometry + per-vertex color (normal-based half-
+        //    Lambert lighting from flag_build_triangles). 5 floats
+        //    per vertex: x, y, r, g, b. The drop-shadow below shares
+        //    the same position data but ignores the color.
+        std::vector<float> cloth_verts;
+        flag_build_triangles(*flag, cloth_verts);
+        const size_t verts_per_stride = 5;
+        if (!cloth_verts.empty()) {
+            const int n_verts = static_cast<int>(
+                cloth_verts.size() / verts_per_stride);
+
+            // Drop shadow: same positions, offset down+right, drawn
+            // solid black with low alpha. Still uses the flat
+            // uUseVertexColor=0 path so uColor applies uniformly.
+            const float shadow_dx = 4.0f * 2.0f / static_cast<float>(width);
+            const float shadow_dy = -4.0f * 2.0f / static_cast<float>(height);
+            std::vector<float> shadow_v3;
+            shadow_v3.reserve(static_cast<size_t>(n_verts) * 3);
+            for (int i = 0; i < n_verts; ++i) {
+                shadow_v3.push_back(cloth_verts[i * verts_per_stride + 0] + shadow_dx);
+                shadow_v3.push_back(cloth_verts[i * verts_per_stride + 1] + shadow_dy);
+                shadow_v3.push_back(0.0f);
+            }
+            glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 0);
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.0f, 0.0f, 0.0f, 0.35f);
+            {
+                GLuint fvao, fvbo;
+                glGenVertexArrays(1, &fvao); glGenBuffers(1, &fvbo);
+                glBindVertexArray(fvao); glBindBuffer(GL_ARRAY_BUFFER, fvbo);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(shadow_v3.size() * sizeof(float)),
+                             shadow_v3.data(), GL_STREAM_DRAW);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                      3 * sizeof(float), (void*)0);
+                glEnableVertexAttribArray(0);
+                glDisableVertexAttribArray(1);
+                glDrawArrays(GL_TRIANGLES, 0,
+                             static_cast<GLsizei>(shadow_v3.size() / 3));
+                glBindVertexArray(0);
+                glDeleteBuffers(1, &fvbo); glDeleteVertexArrays(1, &fvao);
+            }
+
+            // 4. Cloth itself — per-vertex color path. Pack a single
+            //    interleaved VBO: vec3 pos (x, y, 0) + vec3 color.
+            std::vector<float> cloth_packed;
+            cloth_packed.reserve(static_cast<size_t>(n_verts) * 6);
+            for (int i = 0; i < n_verts; ++i) {
+                cloth_packed.push_back(cloth_verts[i * verts_per_stride + 0]); // x
+                cloth_packed.push_back(cloth_verts[i * verts_per_stride + 1]); // y
+                cloth_packed.push_back(0.0f);                                  // z
+                cloth_packed.push_back(cloth_verts[i * verts_per_stride + 2]); // r
+                cloth_packed.push_back(cloth_verts[i * verts_per_stride + 3]); // g
+                cloth_packed.push_back(cloth_verts[i * verts_per_stride + 4]); // b
+            }
+            glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 1);
+            // uColor.a is used as the alpha — set it opaque for the cloth.
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        1.0f, 1.0f, 1.0f, 1.0f);
+            {
+                GLuint cvao, cvbo;
+                glGenVertexArrays(1, &cvao); glGenBuffers(1, &cvbo);
+                glBindVertexArray(cvao); glBindBuffer(GL_ARRAY_BUFFER, cvbo);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(cloth_packed.size() * sizeof(float)),
+                             cloth_packed.data(), GL_STREAM_DRAW);
+                // aPos: 3 floats at offset 0, stride 6
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                      6 * sizeof(float), (void*)0);
+                glEnableVertexAttribArray(0);
+                // aVColor: 3 floats at offset 12 (3 * sizeof(float)),
+                // stride 6
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                                      6 * sizeof(float),
+                                      (void*)(3 * sizeof(float)));
+                glEnableVertexAttribArray(1);
+                glDrawArrays(GL_TRIANGLES, 0, n_verts);
+                glBindVertexArray(0);
+                glDisableVertexAttribArray(1);
+                glDeleteBuffers(1, &cvbo); glDeleteVertexArrays(1, &cvao);
+            }
+            // Reset the uniform so subsequent highlight_program draws
+            // don't inherit the vertex-color path.
+            glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 0);
+        }
+
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+    }
+
+    // --- Withdraw confirmation modal ---
+    if (withdraw_confirm_open) {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        glUseProgram(g_highlight_program);
+        Mat4 id_wc = mat4_identity();
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id_wc.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+        // Full-screen backdrop dim.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.0f, 0.0f, 0.0f, 0.55f);
+        {
+            std::vector<float> bv;
+            push_quad(bv, -1.0f, -1.0f, 1.0f, 1.0f);
+            GLuint bvao, bvbo;
+            glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+            glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(bv.size() * sizeof(float)),
+                         bv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(bv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+        }
+
+        // Panel outline (drawn slightly larger behind the panel bg
+        // to give a 1-cell border on all sides).
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.60f, 0.65f, 0.75f, 0.95f);
+        {
+            std::vector<float> ov;
+            push_quad(ov,
+                      WC_PANEL_X0 - 0.006f, WC_PANEL_Y0 - 0.010f,
+                      WC_PANEL_X1 + 0.006f, WC_PANEL_Y1 + 0.010f);
+            GLuint ovao, ovbo;
+            glGenVertexArrays(1, &ovao); glGenBuffers(1, &ovbo);
+            glBindVertexArray(ovao); glBindBuffer(GL_ARRAY_BUFFER, ovbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(ov.size() * sizeof(float)),
+                         ov.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(ov.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &ovbo); glDeleteVertexArrays(1, &ovao);
+        }
+
+        // Panel background.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.10f, 0.12f, 0.16f, 0.97f);
+        {
+            std::vector<float> pv;
+            push_quad(pv, WC_PANEL_X0, WC_PANEL_Y0, WC_PANEL_X1, WC_PANEL_Y1);
+            GLuint pvao, pvbo;
+            glGenVertexArrays(1, &pvao); glGenBuffers(1, &pvbo);
+            glBindVertexArray(pvao); glBindBuffer(GL_ARRAY_BUFFER, pvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(pv.size() * sizeof(float)),
+                         pv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(pv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &pvbo); glDeleteVertexArrays(1, &pvao);
+        }
+
+        // Yes button (green, brighter on hover).
+        {
+            float r = (withdraw_hover == 1) ? 0.30f : 0.20f;
+            float g = (withdraw_hover == 1) ? 0.70f : 0.55f;
+            float b = (withdraw_hover == 1) ? 0.35f : 0.25f;
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        r, g, b, 0.95f);
+            std::vector<float> yv;
+            push_quad(yv, WC_YES_X0, WC_YES_Y0, WC_YES_X1, WC_YES_Y1);
+            GLuint yvao, yvbo;
+            glGenVertexArrays(1, &yvao); glGenBuffers(1, &yvbo);
+            glBindVertexArray(yvao); glBindBuffer(GL_ARRAY_BUFFER, yvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(yv.size() * sizeof(float)),
+                         yv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(yv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &yvbo); glDeleteVertexArrays(1, &yvao);
+        }
+
+        // No button (red, brighter on hover).
+        {
+            float r = (withdraw_hover == 2) ? 0.80f : 0.65f;
+            float g = (withdraw_hover == 2) ? 0.28f : 0.22f;
+            float b = (withdraw_hover == 2) ? 0.28f : 0.22f;
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        r, g, b, 0.95f);
+            std::vector<float> nv;
+            push_quad(nv, WC_NO_X0, WC_NO_Y0, WC_NO_X1, WC_NO_Y1);
+            GLuint nvao, nvbo;
+            glGenVertexArrays(1, &nvao); glGenBuffers(1, &nvbo);
+            glBindVertexArray(nvao); glBindBuffer(GL_ARRAY_BUFFER, nvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(nv.size() * sizeof(float)),
+                         nv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(nv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &nvbo); glDeleteVertexArrays(1, &nvao);
+        }
+
+        // Title + button labels.
+        glUseProgram(g_text_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                           1, GL_FALSE, id_wc.m);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_font_tex);
+        glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+        std::vector<float> tv;
+        // Title: "Withdraw from game?"
+        {
+            std::string title = "Withdraw from game?";
+            float cw = 0.036f, ch = 0.055f;
+            float tw = title.size() * cw * 0.7f;
+            add_screen_string(tv, -tw * 0.5f, 0.08f, cw, ch, title);
+        }
+        int title_count = static_cast<int>(tv.size() / 5);
+
+        // "Yes" label
+        {
+            std::string s = "Yes";
+            float cw = 0.030f, ch = 0.045f;
+            float sw = s.size() * cw * 0.7f;
+            float cx = (WC_YES_X0 + WC_YES_X1) * 0.5f;
+            float cy = (WC_YES_Y0 + WC_YES_Y1) * 0.5f;
+            add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
+        }
+        int yes_end = static_cast<int>(tv.size() / 5);
+        int yes_count = yes_end - title_count;
+
+        // "No" label
+        {
+            std::string s = "No";
+            float cw = 0.030f, ch = 0.045f;
+            float sw = s.size() * cw * 0.7f;
+            float cx = (WC_NO_X0 + WC_NO_X1) * 0.5f;
+            float cy = (WC_NO_Y0 + WC_NO_Y1) * 0.5f;
+            add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
+        }
+        int no_end = static_cast<int>(tv.size() / 5);
+        int no_count = no_end - yes_end;
+
+        if (!tv.empty()) {
+            GLuint tvao, tvbo;
+            glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+            glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
+                         tv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float),
+                                  (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                        0.95f, 0.95f, 0.95f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, title_count);
+            glDrawArrays(GL_TRIANGLES, title_count, yes_count);
+            glDrawArrays(GL_TRIANGLES, title_count + yes_count, no_count);
+
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+        }
+
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+    }
+
+    // --- Game over / analysis overlay ---
+    // The overlay appears for both a finished game (declared winner)
+    // and live analysis mode (entered via the withdraw flag). In
+    // analysis mode we only draw the "Back to Menu" button, not the
+    // game-result text, and we use a lighter backdrop so the user
+    // can still see the board while stepping through snapshots.
+    const bool overlay_visible =
+        (gs.game_over && !gs.game_result.empty()) || gs.analysis_mode;
+    const bool overlay_is_analysis = gs.analysis_mode && !gs.game_over;
+    if (overlay_visible) {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Semi-transparent dark backdrop — drawn only in the "game
+        // ended" case. In analysis mode we skip it so the user can
+        // see the board clearly while stepping through snapshots; the
+        // "Back to Menu" button below is visually self-contained.
         glUseProgram(g_highlight_program);
         Mat4 id_go = mat4_identity();
         glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id_go.m);
         glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
         glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0, 0, 0, 0.5f);
-        {
+        if (!overlay_is_analysis) {
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0, 0, 0, 0.5f);
             float bv[] = {-0.6f,-0.12f,0, 0.6f,-0.12f,0, 0.6f,0.12f,0,
                           -0.6f,-0.12f,0, 0.6f,0.12f,0, -0.6f,0.12f,0};
             GLuint gvao, gvbo;
@@ -1259,12 +1706,15 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
         std::vector<float> go_verts;
-        float go_cw = 0.045f, go_ch = 0.065f;
-        float go_w = gs.game_result.size() * go_cw * 0.7f;
-        // Result text pushed up a bit so the "Back to Menu" button
-        // fits under it inside the backdrop.
-        add_screen_string(go_verts, -go_w * 0.5f, 0.085f, go_cw, go_ch, gs.game_result);
-        int go_count = static_cast<int>(go_verts.size() / 5);
+        int go_count = 0;
+        if (!overlay_is_analysis && !gs.game_result.empty()) {
+            float go_cw = 0.045f, go_ch = 0.065f;
+            float go_w = gs.game_result.size() * go_cw * 0.7f;
+            // Result text pushed up a bit so the "Back to Menu" button
+            // fits under it inside the backdrop.
+            add_screen_string(go_verts, -go_w * 0.5f, 0.085f, go_cw, go_ch, gs.game_result);
+            go_count = static_cast<int>(go_verts.size() / 5);
+        }
 
         // "Back to Menu" button label
         float btn_cw = 0.028f, btn_ch = 0.042f;

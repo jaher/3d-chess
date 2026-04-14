@@ -366,19 +366,27 @@ void main() {
 // ---------------------------------------------------------------------------
 const char* highlight_vs_src = GLSL_VERSION R"(
 layout(location = 0) in vec3 aPos;
+// Optional per-vertex color, used by the withdraw flag's cloth to
+// carry normal-based lighting. When uUseVertexColor is 0 (the
+// default) this attribute is ignored and uColor is used for the
+// whole draw, preserving existing call sites.
+layout(location = 1) in vec3 aVColor;
 
 uniform mat4 uMVP;
 
 out vec2 vLocalPos;
+out vec3 vVColor;
 
 void main() {
     vLocalPos = aPos.xz;
+    vVColor = aVColor;
     gl_Position = uMVP * vec4(aPos, 1.0);
 }
 )";
 
 const char* highlight_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
 in vec2 vLocalPos;
+in vec3 vVColor;
 
 out vec4 FragColor;
 
@@ -396,10 +404,17 @@ uniform vec4  uColorB;
 uniform float uGradX0;
 uniform float uGradX1;
 
+// Optional per-vertex color mode for the withdraw flag's cloth
+// (normal-based lighting). When non-zero, flat mode uses vVColor.rgb
+// instead of uColor.rgb; uColor.a is still respected.
+uniform int   uUseVertexColor;
+
 void main() {
     // Flat mode: when both radii are 0, draw solid color (for UI overlays)
     if (uInnerRadius <= 0.0 && uOuterRadius <= 0.0) {
-        if (uUseGradient != 0) {
+        if (uUseVertexColor != 0) {
+            FragColor = vec4(vVColor, uColor.a);
+        } else if (uUseGradient != 0) {
             float span = uGradX1 - uGradX0;
             float t = (span > 0.0) ? (vLocalPos.x - uGradX0) / span : 0.0;
             t = clamp(t, 0.0, 1.0);

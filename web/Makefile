@@ -28,6 +28,7 @@ SHARED_SRCS := \
     ../game_state.cpp \
     ../app_state.cpp \
     ../board_renderer.cpp \
+    ../cloth_flag.cpp \
     ../linalg.cpp \
     ../stl_model.cpp \
     ../shader.cpp \

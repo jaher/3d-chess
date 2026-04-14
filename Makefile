@@ -20,11 +20,11 @@ LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy) -lm
 
 TARGET   := chess
 SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cpp \
-            board_renderer.cpp challenge.cpp linalg.cpp stl_model.cpp shader.cpp \
-            ai_player.cpp
+            board_renderer.cpp challenge.cpp cloth_flag.cpp linalg.cpp \
+            stl_model.cpp shader.cpp ai_player.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
-            challenge.h linalg.h shader.h stl_model.h ai_player.h
+            challenge.h cloth_flag.h linalg.h shader.h stl_model.h ai_player.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish

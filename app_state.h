@@ -2,6 +2,7 @@
 
 #include "board_renderer.h"  // PhysicsPiece, SummaryEntry
 #include "challenge.h"       // Challenge
+#include "cloth_flag.h"      // ClothFlag
 #include "chess_types.h"     // GameState, GameMode
 #include "game_state.h"
 
@@ -126,9 +127,21 @@ struct AppState {
     int  pregame_hover     = 0;
 
     // Hover flag for the "Back to Menu" button drawn on top of the
-    // game-over overlay. Only meaningful in MODE_PLAYING while
-    // game.game_over is true.
+    // game-over / analysis overlay. Only meaningful in MODE_PLAYING
+    // while game.game_over or game.analysis_mode is true.
     bool endgame_menu_hover = false;
+
+    // Withdraw flag — the wavy white cloth on a brown stick in the
+    // bottom-right corner of MODE_PLAYING. Clicking it opens the
+    // confirmation modal; "Yes" drops the user into analysis mode.
+    ClothFlag flag;
+    int64_t   flag_last_update_us = 0;
+    int64_t   flag_start_us = 0;
+
+    // Withdraw confirmation modal state.
+    // withdraw_hover: 0=none, 1=Yes, 2=No
+    bool withdraw_confirm_open = false;
+    int  withdraw_hover = 0;
 
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;

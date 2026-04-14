@@ -2,6 +2,7 @@
 
 #include "ai_player.h"
 #include "chess_rules.h"
+#include "cloth_flag.h"
 #include "linalg.h"
 
 #include <climits>
@@ -260,10 +261,17 @@ static void handle_board_click(AppState& a, double mx, double my,
 // Mode transitions
 // ===========================================================================
 void app_enter_menu(AppState& a) {
+    // Exit analysis mode if we're in it, so the next game starts
+    // clean even if the user clicked Back to Menu mid-analysis.
+    if (a.game.analysis_mode) game_exit_analysis(a.game);
+
     a.mode = MODE_MENU;
     menu_init_physics(a.menu_pieces);
     a.menu_start_time_us  = now_us(a);
     a.menu_last_update_us = a.menu_start_time_us;
+    a.withdraw_confirm_open = false;
+    a.withdraw_hover = 0;
+    a.endgame_menu_hover = false;
     set_status(a, "3D Chess");
     queue_redraw(a);
 }
@@ -310,6 +318,17 @@ void app_enter_game(AppState& a) {
     a.zoom  = 12.0f;
     if (a.platform && a.platform->set_ai_elo)
         a.platform->set_ai_elo(a.stockfish_elo);
+    // Withdraw modal and button-hover state — clean slate per game.
+    a.withdraw_confirm_open = false;
+    a.withdraw_hover = 0;
+    a.endgame_menu_hover = false;
+    // Flag is (re)initialised lazily on the first frame we know the
+    // window size, either from app_tick or the first renderer_draw
+    // dispatch. Mark it uninitialised by zeroing inited_w/h.
+    a.flag.inited_w = 0;
+    a.flag.inited_h = 0;
+    a.flag_last_update_us = 0;
+    a.flag_start_us = now_us(a);
     app_refresh_status(a);
     queue_redraw(a);
     // If the human plays black, Stockfish makes the first move as white.
@@ -454,16 +473,54 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         return;
     }
 
-    // End of a normal game: the "Back to Menu" button drawn inside the
-    // game-over overlay is the only interactive element.
-    if (a.mode == MODE_PLAYING && a.game.game_over) {
+    // Withdraw confirmation modal is modal — it eats every click while
+    // open, whether it hits a button or not.
+    if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
+        double dx_m = mx - a.press_x, dy_m = my - a.press_y;
+        if (dx_m*dx_m + dy_m*dy_m < 25.0) {
+            int which = 0;
+            withdraw_confirm_hit_test(mx, my, width, height, &which);
+            if (which == 1) {            // Yes → back to main menu
+                a.withdraw_confirm_open = false;
+                a.withdraw_hover = 0;
+                app_enter_menu(a);
+                return;
+            } else if (which == 2) {     // No → close modal
+                a.withdraw_confirm_open = false;
+                a.withdraw_hover = 0;
+                queue_redraw(a);
+            }
+        }
+        return;  // Always swallow clicks while the modal is open.
+    }
+
+    // "Back to Menu" button is live during both game-over and analysis
+    // mode (entered via the withdraw flag).
+    if (a.mode == MODE_PLAYING &&
+        (a.game.game_over || a.game.analysis_mode)) {
         double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
         if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0 &&
             endgame_menu_button_hit_test(mx, my, width, height)) {
             app_enter_menu(a);
             return;
         }
-        // Fall through so camera-drag releases still work.
+        // In analysis mode, clicks that don't hit the button should
+        // still not act on the board — fall through to camera drag.
+        if (a.game.analysis_mode) return;
+        // Fall through so camera-drag releases still work on game-over.
+    }
+
+    // Withdraw flag (live game only, no modal already open).
+    if (a.mode == MODE_PLAYING && !a.game.game_over &&
+        !a.game.analysis_mode && !a.withdraw_confirm_open) {
+        double dx_f = mx - a.press_x, dy_f = my - a.press_y;
+        if (dx_f*dx_f + dy_f*dy_f < 25.0 &&
+            flag_hit_test(a.flag, mx, my, width, height)) {
+            a.withdraw_confirm_open = true;
+            a.withdraw_hover = 0;
+            queue_redraw(a);
+            return;
+        }
     }
 
     // Regular game / challenge board interaction: only treat as a click
@@ -518,7 +575,18 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
             queue_redraw(a);
         }
     }
-    if (a.mode == MODE_PLAYING && a.game.game_over) {
+    if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
+        int which = 0;
+        withdraw_confirm_hit_test(mx, my, width, height, &which);
+        if (which != a.withdraw_hover) {
+            a.withdraw_hover = which;
+            queue_redraw(a);
+        }
+        return;  // Modal swallows motion — no camera drag, no hover on
+                 // other widgets.
+    }
+    if (a.mode == MODE_PLAYING &&
+        (a.game.game_over || a.game.analysis_mode)) {
         bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
         if (h_now != a.endgame_menu_hover) {
             a.endgame_menu_hover = h_now;
@@ -545,6 +613,17 @@ void app_scroll(AppState& a, double delta) {
 
 void app_key(AppState& a, AppKey key) {
     GameState& gs = a.game;
+
+    // Modal takes priority over every other key handler — ESC closes
+    // it, everything else is swallowed.
+    if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
+        if (key == KEY_ESCAPE) {
+            a.withdraw_confirm_open = false;
+            a.withdraw_hover = 0;
+            queue_redraw(a);
+        }
+        return;
+    }
 
     if (a.mode == MODE_CHALLENGE) {
         if (key == KEY_ESCAPE) { app_reset_challenge_puzzle(a); return; }
@@ -727,6 +806,33 @@ void app_tick(AppState& a) {
     // Shatter transition has its own elapsed check in the render path;
     // we just need to keep issuing redraws while it's active.
     if (a.transition_active) queue_redraw(a);
+
+    // Withdraw flag cloth physics: run during a live game (not
+    // game-over, not analysis, not a paused modal). The flag itself
+    // is (re)initialised in renderer_draw when it first sees the
+    // window size, so this block is safe even on the very first tick
+    // after entering the game.
+    if (a.mode == MODE_PLAYING && !gs.game_over && !gs.analysis_mode &&
+        !a.withdraw_confirm_open && !a.flag.p.empty()) {
+        float dt;
+        if (a.flag_last_update_us == 0) {
+            dt = 0.0f;
+        } else {
+            dt = static_cast<float>(
+                static_cast<double>(now - a.flag_last_update_us) / 1e6);
+        }
+        a.flag_last_update_us = now;
+        if (dt < 0.0f)  dt = 0.0f;
+        if (dt > 0.02f) dt = 0.02f;
+        float time_s = static_cast<float>(
+            static_cast<double>(now - a.flag_start_us) / 1e6);
+        flag_update(a.flag, dt, time_s);
+        queue_redraw(a);
+    } else if (a.withdraw_confirm_open || gs.game_over || gs.analysis_mode) {
+        // Pause the clock so dt after the modal closes is one frame,
+        // not "however long the user stared at the dialog".
+        a.flag_last_update_us = 0;
+    }
 }
 
 // ===========================================================================
@@ -784,7 +890,23 @@ void app_render(AppState& a, int width, int height) {
         gs.game_result.clear();
     }
 
-    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white, a.endgame_menu_hover);
+    // (Re)initialise the withdraw flag when the window size changes
+    // or on the very first draw of a new game. Cheap (O(N) in grid
+    // cells) so we don't need to guard against extra re-inits.
+    if (a.mode == MODE_PLAYING &&
+        (a.flag.inited_w != width || a.flag.inited_h != height)) {
+        flag_init(a.flag, width, height);
+        a.flag_last_update_us = 0;
+    }
+
+    const bool draw_flag =
+        a.mode == MODE_PLAYING &&
+        !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
+
+    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
+                  a.human_plays_white, a.endgame_menu_hover,
+                  &a.flag, draw_flag,
+                  a.withdraw_confirm_open, a.withdraw_hover);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -817,7 +939,10 @@ void app_render(AppState& a, int width, int height) {
         a.transition_start_time_us = now;
 
         // The renderer_draw path itself clears its color/depth buffers.
-        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white, a.endgame_menu_hover);
+        // Challenge mode never wants the withdraw flag or modal.
+        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
+                      a.human_plays_white, a.endgame_menu_hover,
+                      nullptr, false, false, 0);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,
             a.current_challenge.current_index,
