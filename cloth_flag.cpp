@@ -113,14 +113,14 @@ static inline float wind_y(float cf, float rf, float t) {
 
 static inline float wind_z(float cf, float rf, float t) {
     // Three superposed travelling waves along the length of the flag
-    // (cf grows from 0 at the stick to COLS-1 at the free edge). High
-    // per-col frequencies (1.5, 2.2, 1.1) give roughly 3, 5, and 2.5
-    // full wavelengths across our 14-wide flag, which reads as a
-    // clearly rippling cloth rather than a single bulge.
+    // (cf grows from 0 at the stick to COLS-1 at the free edge). Per-
+    // col frequencies (2.1, 3.0, 1.6) give roughly 4.7, 6.7, and 3.6
+    // full wavelengths across our 14-wide flag — a dense ripple that
+    // reads as a strongly fluttering cloth.
     const float ts = t * WIND_TIME_SCALE;
-    return 3.6f * std::sin(ts * 2.4f + cf * 1.50f + rf * 0.6f)
-         + 2.4f * std::sin(ts * 3.1f + cf * 2.20f - rf * 0.3f)
-         + 1.8f * std::sin(ts * 1.6f + cf * 1.10f);
+    return 4.8f * std::sin(ts * 2.4f + cf * 2.10f + rf * 0.8f)
+         + 3.4f * std::sin(ts * 3.1f + cf * 3.00f - rf * 0.3f)
+         + 2.4f * std::sin(ts * 1.6f + cf * 1.60f);
 }
 
 void flag_update(ClothFlag& f, float dt, float time_s) {
@@ -157,7 +157,7 @@ void flag_update(ClothFlag& f, float dt, float time_s) {
             const float reach = cf / static_cast<float>(ClothFlag::COLS - 1);
             const float ax = wind_x(cf, rf, time_s) * (0.35f + 0.65f * reach);
             const float ay = GRAVITY_Y + wind_y(cf, rf, time_s);
-            const float az = wind_z(cf, rf, time_s) * (0.20f + 0.80f * reach);
+            const float az = wind_z(cf, rf, time_s) * (0.40f + 0.60f * reach);
 
             // Verlet step with damping, all three axes.
             const float vx = (q.x - q.px) * DAMPING;
