@@ -668,11 +668,27 @@ static const float EG_MENU_BTN_Y = -0.015f;
 static const float EG_MENU_BTN_W =  0.30f;
 static const float EG_MENU_BTN_H =  0.07f;
 
+// In analysis mode we additionally show a "Continue Playing" button
+// stacked above the Back to Menu button. Slightly wider because the
+// label is ~0.30 NDC at the button font.
+static const float EG_CONT_BTN_X = -0.18f;
+static const float EG_CONT_BTN_Y =  0.072f;
+static const float EG_CONT_BTN_W =  0.36f;
+static const float EG_CONT_BTN_H =  0.07f;
+
 bool endgame_menu_button_hit_test(double mx, double my, int width, int height) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     return ndc_x >= EG_MENU_BTN_X && ndc_x <= EG_MENU_BTN_X + EG_MENU_BTN_W &&
            ndc_y >= EG_MENU_BTN_Y - EG_MENU_BTN_H && ndc_y <= EG_MENU_BTN_Y;
+}
+
+bool analysis_continue_button_hit_test(double mx, double my,
+                                       int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    return ndc_x >= EG_CONT_BTN_X && ndc_x <= EG_CONT_BTN_X + EG_CONT_BTN_W &&
+           ndc_y >= EG_CONT_BTN_Y - EG_CONT_BTN_H && ndc_y <= EG_CONT_BTN_Y;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +772,7 @@ void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
+                   bool continue_playing_hover,
                    const ClothFlag* flag, bool draw_flag,
                    bool withdraw_confirm_open, int withdraw_hover) {
     GLint default_fbo = 0;
@@ -1725,6 +1742,18 @@ void renderer_draw(GameState& gs, int width, int height,
         int btn_label_end = static_cast<int>(go_verts.size() / 5);
         int btn_label_count = btn_label_end - go_count;
 
+        // "Continue Playing" button label — analysis mode only.
+        int cont_label_count = 0;
+        if (overlay_is_analysis) {
+            std::string cont_label = "Continue Playing";
+            float cont_lw = cont_label.size() * btn_cw * 0.7f;
+            add_screen_string(go_verts, -cont_lw * 0.5f,
+                              EG_CONT_BTN_Y - 0.018f,
+                              btn_cw, btn_ch, cont_label);
+            int cont_end = static_cast<int>(go_verts.size() / 5);
+            cont_label_count = cont_end - btn_label_end;
+        }
+
         // Button background — drawn via highlight_program before the text.
         {
             glUseProgram(g_highlight_program);
@@ -1757,6 +1786,35 @@ void renderer_draw(GameState& gs, int width, int height,
             glBindVertexArray(0);
             glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
+            // "Continue Playing" button background — analysis mode
+            // only. Warmer green tint to distinguish it from the
+            // bluish "Back to Menu" button.
+            if (overlay_is_analysis) {
+                float cr = continue_playing_hover ? 0.30f : 0.20f;
+                float cg = continue_playing_hover ? 0.65f : 0.48f;
+                float cb = continue_playing_hover ? 0.38f : 0.28f;
+                glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                            cr, cg, cb, 0.92f);
+                float cv[] = {
+                    EG_CONT_BTN_X,                 EG_CONT_BTN_Y - EG_CONT_BTN_H, 0,
+                    EG_CONT_BTN_X + EG_CONT_BTN_W, EG_CONT_BTN_Y - EG_CONT_BTN_H, 0,
+                    EG_CONT_BTN_X + EG_CONT_BTN_W, EG_CONT_BTN_Y,                 0,
+                    EG_CONT_BTN_X,                 EG_CONT_BTN_Y - EG_CONT_BTN_H, 0,
+                    EG_CONT_BTN_X + EG_CONT_BTN_W, EG_CONT_BTN_Y,                 0,
+                    EG_CONT_BTN_X,                 EG_CONT_BTN_Y,                 0,
+                };
+                GLuint cvao, cvbo;
+                glGenVertexArrays(1, &cvao); glGenBuffers(1, &cvbo);
+                glBindVertexArray(cvao); glBindBuffer(GL_ARRAY_BUFFER, cvbo);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(cv), cv, GL_STREAM_DRAW);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                      3*sizeof(float), (void*)0);
+                glEnableVertexAttribArray(0);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+                glBindVertexArray(0);
+                glDeleteBuffers(1, &cvbo); glDeleteVertexArrays(1, &cvao);
+            }
+
             // Rebind the text program for the result + button label draws.
             glUseProgram(g_text_program);
             glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
@@ -1766,7 +1824,7 @@ void renderer_draw(GameState& gs, int width, int height,
             glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
         }
 
-        if (go_count > 0 || btn_label_count > 0) {
+        if (go_count > 0 || btn_label_count > 0 || cont_label_count > 0) {
             GLuint gvao, gvbo;
             glGenVertexArrays(1, &gvao); glGenBuffers(1, &gvbo);
             glBindVertexArray(gvao); glBindBuffer(GL_ARRAY_BUFFER, gvbo);
@@ -1781,10 +1839,19 @@ void renderer_draw(GameState& gs, int width, int height,
             glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.5f, 1.0f);
             glDrawArrays(GL_TRIANGLES, 0, go_count);
 
-            // White button label (brighter on hover)
+            // White "Back to Menu" label (brighter on hover)
             float lb = endgame_menu_hover ? 1.0f : 0.92f;
             glUniform4f(glGetUniformLocation(g_text_program, "uColor"), lb, lb, lb, 1.0f);
             glDrawArrays(GL_TRIANGLES, go_count, btn_label_count);
+
+            // White "Continue Playing" label (analysis mode only)
+            if (cont_label_count > 0) {
+                float lc = continue_playing_hover ? 1.0f : 0.92f;
+                glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                            lc, lc, lc, 1.0f);
+                glDrawArrays(GL_TRIANGLES,
+                             go_count + btn_label_count, cont_label_count);
+            }
 
             glBindVertexArray(0); glDeleteBuffers(1, &gvbo); glDeleteVertexArrays(1, &gvao);
         }

@@ -26,6 +26,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // fill at bottom for black player).
 // endgame_menu_hover controls the "Back to Menu" button's hover tint
 // in the game-over overlay; it's ignored when !gs.game_over && !gs.analysis_mode.
+// continue_playing_hover controls the "Continue Playing" button's
+// hover tint in the analysis overlay; ignored when !gs.analysis_mode.
 // flag is the live cloth state for the withdraw flag; drawn only when
 // draw_flag is true (i.e. a live game is in progress and no modal is open).
 // withdraw_confirm_open draws the modal confirmation dialog on top of
@@ -34,6 +36,7 @@ void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
+                   bool continue_playing_hover,
                    const ClothFlag* flag, bool draw_flag,
                    bool withdraw_confirm_open, int withdraw_hover);
 
@@ -43,6 +46,11 @@ void renderer_draw(GameState& gs, int width, int height,
 // is visible (gs.game_over or gs.analysis_mode).
 bool endgame_menu_button_hit_test(double mx, double my,
                                   int width, int height);
+
+// Hit-test for the "Continue Playing" button drawn above Back to
+// Menu while gs.analysis_mode is true. Returns false in other modes.
+bool analysis_continue_button_hit_test(double mx, double my,
+                                       int width, int height);
 
 // Hit-test for the withdraw flag in the bottom-right corner. Uses
 // the deformed cloth's bounding box + a small NDC padding for

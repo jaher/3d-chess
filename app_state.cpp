@@ -272,6 +272,7 @@ void app_enter_menu(AppState& a) {
     a.withdraw_confirm_open = false;
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
+    a.continue_playing_hover = false;
     set_status(a, "3D Chess");
     queue_redraw(a);
 }
@@ -322,6 +323,7 @@ void app_enter_game(AppState& a) {
     a.withdraw_confirm_open = false;
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
+    a.continue_playing_hover = false;
     // Flag is (re)initialised lazily on the first frame we know the
     // window size, either from app_tick or the first renderer_draw
     // dispatch. Mark it uninitialised by zeroing inited_w/h.
@@ -495,16 +497,28 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
     }
 
     // "Back to Menu" button is live during both game-over and analysis
-    // mode (entered via the withdraw flag).
+    // mode (entered via the withdraw flag). Analysis mode additionally
+    // gets a "Continue Playing" button that exits analysis and resumes
+    // the live game — same effect as pressing ESC.
     if (a.mode == MODE_PLAYING &&
         (a.game.game_over || a.game.analysis_mode)) {
         double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
-        if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0 &&
-            endgame_menu_button_hit_test(mx, my, width, height)) {
-            app_enter_menu(a);
-            return;
+        if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0) {
+            if (endgame_menu_button_hit_test(mx, my, width, height)) {
+                app_enter_menu(a);
+                return;
+            }
+            if (a.game.analysis_mode &&
+                analysis_continue_button_hit_test(mx, my, width, height)) {
+                game_exit_analysis(a.game);
+                a.continue_playing_hover = false;
+                a.endgame_menu_hover = false;
+                refresh_play_status(a);
+                queue_redraw(a);
+                return;
+            }
         }
-        // In analysis mode, clicks that don't hit the button should
+        // In analysis mode, clicks that don't hit a button should
         // still not act on the board — fall through to camera drag.
         if (a.game.analysis_mode) return;
         // Fall through so camera-drag releases still work on game-over.
@@ -590,6 +604,16 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
         if (h_now != a.endgame_menu_hover) {
             a.endgame_menu_hover = h_now;
+            queue_redraw(a);
+        }
+        if (a.game.analysis_mode) {
+            bool c_now = analysis_continue_button_hit_test(mx, my, width, height);
+            if (c_now != a.continue_playing_hover) {
+                a.continue_playing_hover = c_now;
+                queue_redraw(a);
+            }
+        } else if (a.continue_playing_hover) {
+            a.continue_playing_hover = false;
             queue_redraw(a);
         }
     }
@@ -904,7 +928,8 @@ void app_render(AppState& a, int width, int height) {
         !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
 
     renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
-                  a.human_plays_white, a.endgame_menu_hover,
+                  a.human_plays_white,
+                  a.endgame_menu_hover, a.continue_playing_hover,
                   &a.flag, draw_flag,
                   a.withdraw_confirm_open, a.withdraw_hover);
 
@@ -941,7 +966,8 @@ void app_render(AppState& a, int width, int height) {
         // The renderer_draw path itself clears its color/depth buffers.
         // Challenge mode never wants the withdraw flag or modal.
         renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
-                      a.human_plays_white, a.endgame_menu_hover,
+                      a.human_plays_white,
+                      a.endgame_menu_hover, false,
                       nullptr, false, false, 0);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,

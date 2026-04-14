@@ -131,6 +131,10 @@ struct AppState {
     // while game.game_over or game.analysis_mode is true.
     bool endgame_menu_hover = false;
 
+    // Hover flag for the "Continue Playing" button drawn above "Back
+    // to Menu" while in analysis mode.
+    bool continue_playing_hover = false;
+
     // Withdraw flag — the wavy white cloth on a brown stick in the
     // bottom-right corner of MODE_PLAYING. Clicking it opens the
     // confirmation modal; "Yes" drops the user into analysis mode.
