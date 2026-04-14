@@ -198,10 +198,12 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
 vec3 sampleEnvironment(vec3 dir) {
     float y = dir.y;
 
-    // Base gradient: bright warm room
-    vec3 ceiling  = vec3(1.8, 1.7, 1.5);  // bright warm white above
-    vec3 horizon  = vec3(0.6, 0.55, 0.50); // warm gray walls
-    vec3 floor_c  = vec3(0.25, 0.22, 0.18); // warm floor (bounce light)
+    // Base gradient: warm room. Ceiling intentionally kept under
+    // 1.4 so upward-facing surfaces on white pieces don't drown the
+    // albedo.
+    vec3 ceiling  = vec3(1.35, 1.28, 1.13); // warm white above
+    vec3 horizon  = vec3(0.55, 0.50, 0.46); // warm gray walls
+    vec3 floor_c  = vec3(0.22, 0.19, 0.16); // warm floor (bounce light)
 
     vec3 env;
     if (y > 0.0) {
@@ -210,21 +212,22 @@ vec3 sampleEnvironment(vec3 dir) {
         env = mix(horizon, floor_c, smoothstep(0.0, -0.5, y));
     }
 
-    // Soft area light overhead (large softbox)
+    // Soft area light overhead (large softbox). Toned down from 4.0
+    // so the top of white pieces doesn't blow out.
     float lightDist1 = length(dir - normalize(vec3(0.3, 0.95, 0.2)));
-    env += vec3(4.0, 3.8, 3.4) * exp(-lightDist1 * lightDist1 * 6.0);
+    env += vec3(2.9, 2.75, 2.45) * exp(-lightDist1 * lightDist1 * 6.0);
 
     // Secondary fill from the side
     float lightDist2 = length(dir - normalize(vec3(-0.6, 0.7, -0.4)));
-    env += vec3(2.0, 2.1, 2.4) * exp(-lightDist2 * lightDist2 * 10.0);
+    env += vec3(1.55, 1.60, 1.80) * exp(-lightDist2 * lightDist2 * 10.0);
 
     // Warm bounce from below (floor reflection)
     float lightDist3 = length(dir - normalize(vec3(0.0, -0.3, 0.5)));
-    env += vec3(0.8, 0.6, 0.4) * exp(-lightDist3 * lightDist3 * 12.0);
+    env += vec3(0.65, 0.50, 0.35) * exp(-lightDist3 * lightDist3 * 12.0);
 
     // Back fill (reduces dark shadows on far side of pieces)
     float lightDist4 = length(dir - normalize(vec3(0.0, 0.4, -0.8)));
-    env += vec3(1.0, 0.95, 0.85) * exp(-lightDist4 * lightDist4 * 12.0);
+    env += vec3(0.80, 0.77, 0.68) * exp(-lightDist4 * lightDist4 * 12.0);
 
     return env;
 }
@@ -308,9 +311,11 @@ void main() {
 
         vec3 radiance = uLightColors[i];
 
-        // Apply shadow to key light and partially to fill
-        if (i == 0) radiance *= (1.0 - shadow * 0.85);
-        if (i == 1) radiance *= (1.0 - shadow * 0.3);
+        // Apply shadow to key light and partially to fill. Shadow
+        // strength softened from 0.85 so lit and shadowed areas
+        // aren't as far apart — reduces overall contrast.
+        if (i == 0) radiance *= (1.0 - shadow * 0.72);
+        if (i == 1) radiance *= (1.0 - shadow * 0.25);
 
         // Cook-Torrance BRDF
         float D = DistributionGGX(N, H, roughness);
@@ -340,17 +345,19 @@ void main() {
     vec3 R = reflect(-V, N);
     vec3 envSampleDir = mix(R, N, roughness * roughness);
     vec3 envSpec = sampleEnvironment(envSampleDir);
-    // Scale down for rough/dark surfaces to prevent blow-out
-    vec3 specularIBL = envSpec * F_env * (1.0 - roughness) * 0.4;
+    // Scale down for rough/dark surfaces to prevent blow-out.
+    // Dropped from 0.4 to 0.30 so specular highlights on white
+    // pieces don't clip to pure white.
+    vec3 specularIBL = envSpec * F_env * (1.0 - roughness) * 0.30;
 
     // Darken ambient slightly in shadowed areas (contact shadow approx)
-    float ambientShadow = 1.0 - shadow * 0.25;
+    float ambientShadow = 1.0 - shadow * 0.18;
     vec3 ambient = (diffuseIBL + specularIBL) * ao * ambientShadow;
 
     vec3 color = ambient + Lo;
 
     // --- Tone mapping (ACES filmic) ---
-    color = color * 0.75; // exposure
+    color = color * 0.66; // exposure (was 0.75)
     vec3 x = color;
     color = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
 
