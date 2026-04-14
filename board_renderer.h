@@ -23,9 +23,18 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // human_plays_white flips the score graph so the human's color is
 // always at the bottom (light fill at bottom for white player, dark
 // fill at bottom for black player).
+// endgame_menu_hover controls the "Back to Menu" button's hover tint
+// in the game-over overlay; it's ignored when !gs.game_over.
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
-                   bool human_plays_white);
+                   bool human_plays_white,
+                   bool endgame_menu_hover);
+
+// Hit-test for the "Back to Menu" button drawn in renderer_draw's
+// game-over overlay. Returns true when (mx, my) falls inside the
+// button's NDC rectangle. Only meaningful while gs.game_over is true.
+bool endgame_menu_button_hit_test(double mx, double my,
+                                  int width, int height);
 
 // Menu screen
 struct PhysicsPiece {

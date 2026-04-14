@@ -125,6 +125,11 @@ struct AppState {
     bool slider_dragging   = false;
     int  pregame_hover     = 0;
 
+    // Hover flag for the "Back to Menu" button drawn on top of the
+    // game-over overlay. Only meaningful in MODE_PLAYING while
+    // game.game_over is true.
+    bool endgame_menu_hover = false;
+
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
 };

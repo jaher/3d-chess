@@ -454,6 +454,18 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         return;
     }
 
+    // End of a normal game: the "Back to Menu" button drawn inside the
+    // game-over overlay is the only interactive element.
+    if (a.mode == MODE_PLAYING && a.game.game_over) {
+        double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
+        if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0 &&
+            endgame_menu_button_hit_test(mx, my, width, height)) {
+            app_enter_menu(a);
+            return;
+        }
+        // Fall through so camera-drag releases still work.
+    }
+
     // Regular game / challenge board interaction: only treat as a click
     // if the pointer didn't move much between press and release.
     double dx = mx - a.press_x, dy = my - a.press_y;
@@ -503,6 +515,13 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         bool h_now = next_button_hit_test(mx, my, width, height);
         if (h_now != a.challenge_next_hover) {
             a.challenge_next_hover = h_now;
+            queue_redraw(a);
+        }
+    }
+    if (a.mode == MODE_PLAYING && a.game.game_over) {
+        bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
+        if (h_now != a.endgame_menu_hover) {
+            a.endgame_menu_hover = h_now;
             queue_redraw(a);
         }
     }
@@ -765,7 +784,7 @@ void app_render(AppState& a, int width, int height) {
         gs.game_result.clear();
     }
 
-    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white);
+    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white, a.endgame_menu_hover);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -798,7 +817,7 @@ void app_render(AppState& a, int width, int height) {
         a.transition_start_time_us = now;
 
         // The renderer_draw path itself clears its color/depth buffers.
-        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white);
+        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom, a.human_plays_white, a.endgame_menu_hover);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,
             a.current_challenge.current_index,

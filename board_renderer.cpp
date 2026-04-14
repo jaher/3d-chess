@@ -658,9 +658,25 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 // ---------------------------------------------------------------------------
 // Main draw
 // ---------------------------------------------------------------------------
+// NDC rectangle for the "Back to Menu" button that appears inside
+// the game-over overlay in renderer_draw. Shared between the draw
+// path and endgame_menu_button_hit_test below so they stay in sync.
+static const float EG_MENU_BTN_X = -0.12f;
+static const float EG_MENU_BTN_Y = -0.015f;
+static const float EG_MENU_BTN_W =  0.24f;
+static const float EG_MENU_BTN_H =  0.07f;
+
+bool endgame_menu_button_hit_test(double mx, double my, int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    return ndc_x >= EG_MENU_BTN_X && ndc_x <= EG_MENU_BTN_X + EG_MENU_BTN_W &&
+           ndc_y >= EG_MENU_BTN_Y - EG_MENU_BTN_H && ndc_y <= EG_MENU_BTN_Y;
+}
+
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
-                   bool human_plays_white) {
+                   bool human_plays_white,
+                   bool endgame_menu_hover) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -1241,12 +1257,64 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
         std::vector<float> go_verts;
-        float go_cw = 0.055f, go_ch = 0.08f;
+        float go_cw = 0.045f, go_ch = 0.065f;
         float go_w = gs.game_result.size() * go_cw * 0.7f;
-        add_screen_string(go_verts, -go_w * 0.5f, 0.04f, go_cw, go_ch, gs.game_result);
+        // Result text pushed up a bit so the "Back to Menu" button
+        // fits under it inside the backdrop.
+        add_screen_string(go_verts, -go_w * 0.5f, 0.085f, go_cw, go_ch, gs.game_result);
         int go_count = static_cast<int>(go_verts.size() / 5);
 
-        if (go_count > 0) {
+        // "Back to Menu" button label
+        float btn_cw = 0.028f, btn_ch = 0.042f;
+        std::string btn_label = "Back to Menu";
+        float btn_lw = btn_label.size() * btn_cw * 0.7f;
+        add_screen_string(go_verts, -btn_lw * 0.5f,
+                          EG_MENU_BTN_Y - 0.018f, btn_cw, btn_ch, btn_label);
+        int btn_label_end = static_cast<int>(go_verts.size() / 5);
+        int btn_label_count = btn_label_end - go_count;
+
+        // Button background — drawn via highlight_program before the text.
+        {
+            glUseProgram(g_highlight_program);
+            glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                               1, GL_FALSE, id_go.m);
+            glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+            glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+            glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+            float br = endgame_menu_hover ? 0.35f : 0.22f;
+            float bg = endgame_menu_hover ? 0.50f : 0.32f;
+            float bb = endgame_menu_hover ? 0.75f : 0.55f;
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        br, bg, bb, 0.92f);
+            float bv[] = {
+                EG_MENU_BTN_X,                EG_MENU_BTN_Y - EG_MENU_BTN_H, 0,
+                EG_MENU_BTN_X + EG_MENU_BTN_W, EG_MENU_BTN_Y - EG_MENU_BTN_H, 0,
+                EG_MENU_BTN_X + EG_MENU_BTN_W, EG_MENU_BTN_Y,                 0,
+                EG_MENU_BTN_X,                EG_MENU_BTN_Y - EG_MENU_BTN_H, 0,
+                EG_MENU_BTN_X + EG_MENU_BTN_W, EG_MENU_BTN_Y,                 0,
+                EG_MENU_BTN_X,                EG_MENU_BTN_Y,                 0,
+            };
+            GLuint bvao, bvbo;
+            glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+            glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(bv), bv, GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3*sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+            // Rebind the text program for the result + button label draws.
+            glUseProgram(g_text_program);
+            glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                               1, GL_FALSE, id_go.m);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_font_tex);
+            glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+        }
+
+        if (go_count > 0 || btn_label_count > 0) {
             GLuint gvao, gvbo;
             glGenVertexArrays(1, &gvao); glGenBuffers(1, &gvbo);
             glBindVertexArray(gvao); glBindBuffer(GL_ARRAY_BUFFER, gvbo);
@@ -1257,9 +1325,14 @@ void renderer_draw(GameState& gs, int width, int height,
             glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
             glEnableVertexAttribArray(1);
 
-            // Gold text
+            // Gold game result text
             glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.5f, 1.0f);
             glDrawArrays(GL_TRIANGLES, 0, go_count);
+
+            // White button label (brighter on hover)
+            float lb = endgame_menu_hover ? 1.0f : 0.92f;
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), lb, lb, lb, 1.0f);
+            glDrawArrays(GL_TRIANGLES, go_count, btn_label_count);
 
             glBindVertexArray(0); glDeleteBuffers(1, &gvbo); glDeleteVertexArrays(1, &gvao);
         }
