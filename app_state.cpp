@@ -736,6 +736,16 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
+    // Cartoon-outline toggle. Works in any in-game context
+    // (playing or challenge), including analysis mode — it's a
+    // pure render effect and doesn't interact with the rules.
+    if (key == KEY_S &&
+        (a.mode == MODE_PLAYING || a.mode == MODE_CHALLENGE)) {
+        a.cartoon_outline = !a.cartoon_outline;
+        queue_redraw(a);
+        return;
+    }
+
     if (a.mode == MODE_CHALLENGE) {
         if (key == KEY_ESCAPE) { app_reset_challenge_puzzle(a); return; }
         if (key == KEY_M)      { app_enter_menu(a); return; }
@@ -1086,7 +1096,8 @@ void app_render(AppState& a, int width, int height) {
                   a.endgame_menu_hover, a.continue_playing_hover,
                   &a.flag, draw_flag,
                   a.withdraw_confirm_open, a.withdraw_hover,
-                  draw_clock, clock_ms, clock_side_is_white);
+                  draw_clock, clock_ms, clock_side_is_white,
+                  a.cartoon_outline);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -1120,11 +1131,14 @@ void app_render(AppState& a, int width, int height) {
 
         // The renderer_draw path itself clears its color/depth buffers.
         // Challenge mode never wants the withdraw flag, modal, or clock.
+        // Reuse the session-level cartoon_outline setting so toggling
+        // it survives across a puzzle transition.
         renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
                       a.human_plays_white,
                       a.endgame_menu_hover, false,
                       nullptr, false, false, 0,
-                      false, 0, false);
+                      false, 0, false,
+                      a.cartoon_outline);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,
             a.current_challenge.current_index,

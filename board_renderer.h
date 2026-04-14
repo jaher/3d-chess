@@ -45,7 +45,8 @@ void renderer_draw(GameState& gs, int width, int height,
                    bool withdraw_confirm_open, int withdraw_hover,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
-                   bool clock_side_is_white);
+                   bool clock_side_is_white,
+                   bool cartoon_outline);
 
 // Hit-test for the "Back to Menu" button drawn in renderer_draw's
 // game-over / analysis overlay. Returns true when (mx, my) falls

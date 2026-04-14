@@ -73,6 +73,7 @@ enum AppKey {
     KEY_ESCAPE,
     KEY_A,
     KEY_M,
+    KEY_S,   // toggles cartoon outline in a live game / challenge
 };
 
 // ===========================================================================
@@ -168,6 +169,11 @@ struct AppState {
     // withdraw_hover: 0=none, 1=Yes, 2=No
     bool withdraw_confirm_open = false;
     int  withdraw_hover = 0;
+
+    // Cartoon-outline post-process toggle. Flipped by the 'S' key
+    // during a live game or challenge. Off by default; persists
+    // across games within a session until the user toggles again.
+    bool cartoon_outline = false;
 
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;

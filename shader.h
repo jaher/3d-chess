@@ -17,6 +17,8 @@ extern const char* text_vs_src;
 extern const char* text_fs_src;
 extern const char* shatter_vs_src;
 extern const char* shatter_fs_src;
+extern const char* outline_vs_src;
+extern const char* outline_fs_src;
 
 GLuint compile_shader(GLenum type, const char* src);
 GLuint create_program(const char* vs_src, const char* fs_src);

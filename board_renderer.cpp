@@ -59,6 +59,60 @@ static GLuint g_capture_fbo = 0;
 #endif
 static int g_capture_w = 0, g_capture_h = 0;
 
+// Cartoon-outline post-process. Scene FBO has color + depth
+// textures, both sampleable from g_outline_program. Size tracks
+// the current window, recreated lazily on resize.
+static GLuint g_outline_program  = 0;
+static GLuint g_scene_fbo        = 0;
+static GLuint g_scene_color_tex  = 0;
+static GLuint g_scene_depth_tex  = 0;
+static int    g_scene_fbo_w      = 0;
+static int    g_scene_fbo_h      = 0;
+// Two-triangle NDC fullscreen quad, reused by the outline pass.
+static GLuint g_fullscreen_vao   = 0;
+static GLuint g_fullscreen_vbo   = 0;
+
+// Lazily (re)allocate the scene FBO textures for a new window size.
+// Creates the FBO on first call. Cheap (six GL calls) — safe to
+// call every frame when the outline is on.
+static void ensure_scene_fbo(int w, int h) {
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    if (g_scene_fbo && g_scene_fbo_w == w && g_scene_fbo_h == h) return;
+
+    if (g_scene_fbo == 0)       glGenFramebuffers(1, &g_scene_fbo);
+    if (g_scene_color_tex == 0) glGenTextures(1, &g_scene_color_tex);
+    if (g_scene_depth_tex == 0) glGenTextures(1, &g_scene_depth_tex);
+
+    glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
+    // 24-bit depth; matches the shadow-map format already used
+    // elsewhere in this file and is sampleable on both desktop
+    // and WebGL 2 / GLES 3.0.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, g_scene_color_tex, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, g_scene_depth_tex, 0);
+
+    g_scene_fbo_w = w;
+    g_scene_fbo_h = h;
+}
+
 // ---------------------------------------------------------------------------
 // Mesh builders
 // ---------------------------------------------------------------------------
@@ -581,7 +635,33 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_shadow_program = create_program(shadow_vs_src, shadow_fs_src);
     g_text_program = create_program(text_vs_src, text_fs_src);
     g_shatter_program = create_program(shatter_vs_src, shatter_fs_src);
+    g_outline_program = create_program(outline_vs_src, outline_fs_src);
     build_shatter_mesh();
+
+    // Two-triangle fullscreen quad in clip space for the outline
+    // post-process. Position-only attribute at location 0 matches
+    // the outline_vs layout. One VAO/VBO for the lifetime of the
+    // program.
+    {
+        const float quad_verts[] = {
+            -1.0f, -1.0f,
+             1.0f, -1.0f,
+             1.0f,  1.0f,
+            -1.0f, -1.0f,
+             1.0f,  1.0f,
+            -1.0f,  1.0f,
+        };
+        glGenVertexArrays(1, &g_fullscreen_vao);
+        glGenBuffers(1, &g_fullscreen_vbo);
+        glBindVertexArray(g_fullscreen_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_fullscreen_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad_verts), quad_verts,
+                     GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                              2 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glBindVertexArray(0);
+    }
 
     // Shadow map
     glGenFramebuffers(1, &g_shadow_fbo); glGenTextures(1, &g_shadow_tex);
@@ -799,9 +879,23 @@ void renderer_draw(GameState& gs, int width, int height,
                    bool withdraw_confirm_open, int withdraw_hover,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
-                   bool clock_side_is_white) {
+                   bool clock_side_is_white,
+                   bool cartoon_outline) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
+
+    // When the cartoon outline is on, the 3D-MVP pass renders into
+    // an offscreen FBO instead of the default framebuffer; after
+    // the 3D draws we run a fullscreen-quad post-process that reads
+    // the FBO's color + depth textures and darkens pixels along
+    // depth discontinuities. NDC overlays draw AFTER the post-
+    // process directly to the default FB so they aren't affected.
+    if (cartoon_outline) {
+        ensure_scene_fbo(width, height);
+    }
+    const GLuint main_pass_fbo = cartoon_outline
+        ? g_scene_fbo
+        : static_cast<GLuint>(default_fbo);
 
     float aspect = static_cast<float>(width) / static_cast<float>(height);
     float deg2rad = static_cast<float>(M_PI) / 180.0f;
@@ -860,7 +954,7 @@ void renderer_draw(GameState& gs, int width, int height,
     }
 
     glDisable(GL_POLYGON_OFFSET_FILL);
-    glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);
 
     // --- Main pass ---
     glViewport(0, 0, width, height);
@@ -1044,6 +1138,54 @@ void renderer_draw(GameState& gs, int width, int height,
         glBindVertexArray(0);
 
         glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+    }
+
+    // --- Cartoon outline post-process ---
+    // When enabled, the 3D-MVP draws above rendered into g_scene_fbo
+    // instead of the default FB. Sample those textures with the
+    // outline shader and write the darkened result to the default
+    // FB. After this block the NDC overlays continue to draw on
+    // the default FB as they always have.
+    if (cartoon_outline) {
+        glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
+        glViewport(0, 0, width, height);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glUseProgram(g_outline_program);
+        glUniform1i(glGetUniformLocation(g_outline_program, "uColorTex"), 0);
+        glUniform1i(glGetUniformLocation(g_outline_program, "uDepthTex"), 1);
+        glUniform2f(glGetUniformLocation(g_outline_program, "uTexelSize"),
+                    1.0f / static_cast<float>(width),
+                    1.0f / static_cast<float>(height));
+        // Must match the near/far plane of the perspective matrix
+        // built above — the shader uses them to linearise depth so
+        // the edge strength is distance-invariant.
+        glUniform1f(glGetUniformLocation(g_outline_program, "uNear"),
+                    0.1f);
+        glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),
+                    100.0f);
+        // With linearised depth and a RELATIVE delta (|Δz| / z), a
+        // silhouette gives ~0.3–1.0 and smooth surfaces stay near
+        // zero. A multiplier of ~4 reaches full black on real
+        // discontinuities at any zoom level.
+        glUniform1f(glGetUniformLocation(g_outline_program, "uEdgeStrength"),
+                    4.0f);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
+
+        glBindVertexArray(g_fullscreen_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        // Leave texture unit 0 active for subsequent draws — the
+        // font / highlight passes all bind their own textures so
+        // any leftover state is harmless.
+        glActiveTexture(GL_TEXTURE0);
     }
 
     // --- Score graph ---

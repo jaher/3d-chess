@@ -547,6 +547,85 @@ void main() {
 )";
 
 // ---------------------------------------------------------------------------
+// Cartoon-outline post-process shaders. Toggled by pressing 'S' in
+// a live game. Samples the offscreen scene color + depth textures,
+// does a 4-tap neighbour depth comparison, and darkens the pixel
+// proportionally to the max |dz| — the same neighbour-compare idea
+// as the "cartoon edges" block in shadertoy XtscWn (Inigo Quilez
+// Bender), adapted from per-pixel material ID to rasterized depth.
+// ---------------------------------------------------------------------------
+const char* outline_vs_src = GLSL_VERSION R"(
+layout(location = 0) in vec2 aPos;
+
+out vec2 vUV;
+
+void main() {
+    vUV = aPos * 0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+const char* outline_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vUV;
+
+out vec4 FragColor;
+
+uniform sampler2D uColorTex;
+uniform sampler2D uDepthTex;
+uniform vec2      uTexelSize;      // 1/w, 1/h
+uniform float     uEdgeStrength;   // scales depth-delta into darken
+uniform float     uNear;           // camera near plane
+uniform float     uFar;            // camera far plane
+
+// Convert a window-space depth value [0,1] to view-space linear
+// depth. Without this the raw NDC depth buffer is wildly non-
+// linear (values near 1.0 for all far geometry), so neighbour
+// diffs shrink with distance and the outline fades to grey at the
+// back of the scene.
+float linearize(float d) {
+    float z = d * 2.0 - 1.0;  // [0,1] -> [-1,1]
+    return (2.0 * uNear * uFar) /
+           (uFar + uNear - z * (uFar - uNear));
+}
+
+void main() {
+    vec3 col = texture(uColorTex, vUV).rgb;
+
+    // Four-tap depth comparison. Offsets chosen to be ~2 px each
+    // direction (matching the shadertoy's 2-pixel neighbour
+    // sampling) so the outline is 1-2 px wide without anti-alias
+    // shimmer.
+    float dc_raw  = texture(uDepthTex, vUV).r;
+    float dr_raw  = texture(uDepthTex, vUV + vec2( 2.0 * uTexelSize.x, 0.0)).r;
+    float dd_raw  = texture(uDepthTex, vUV + vec2( 0.0, 2.0 * uTexelSize.y)).r;
+    float drd_raw = texture(uDepthTex, vUV + vec2( 2.0 * uTexelSize.x,
+                                                   2.0 * uTexelSize.y)).r;
+
+    // Skip cleared background pixels (depth == 1.0) — there's
+    // nothing to outline there, and they would otherwise spam
+    // huge linear values that swamp the relative comparison.
+    if (dc_raw >= 0.9999) {
+        FragColor = vec4(col, 1.0);
+        return;
+    }
+
+    float dc  = linearize(dc_raw);
+    float dr  = linearize(dr_raw);
+    float dd  = linearize(dd_raw);
+    float drd = linearize(drd_raw);
+
+    // Relative delta: fraction of local depth. A silhouette edge
+    // between two pieces is roughly the same fractional
+    // discontinuity at any camera distance, so this is what makes
+    // the outline dark near AND far.
+    float e = max(max(abs(dc - dr), abs(dc - dd)), abs(dc - drd)) / dc;
+    float darken = clamp(uEdgeStrength * e, 0.0, 1.0);
+
+    FragColor = vec4(col * (1.0 - darken), 1.0);
+}
+)";
+
+// ---------------------------------------------------------------------------
 // Compilation helpers
 // ---------------------------------------------------------------------------
 static void shader_log_error(const char* kind, const char* stage,

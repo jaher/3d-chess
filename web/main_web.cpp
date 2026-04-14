@@ -119,6 +119,7 @@ static AppKey translate_key(SDL_Keycode k) {
         case SDLK_ESCAPE: return KEY_ESCAPE;
         case SDLK_a:      return KEY_A;
         case SDLK_m:      return KEY_M;
+        case SDLK_s:      return KEY_S;
         default:          return KEY_UNKNOWN;
     }
 }
