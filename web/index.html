@@ -70,9 +70,29 @@
     · <a href="https://github.com/jaher/3d-chess">source</a>
   </div>
 
-  <!-- Stockfish bridge must be defined BEFORE the WASM module loads, so the
-       WASM side can call into StockfishBridge from main(). -->
-  <script src="stockfish-bridge.js"></script>
+  <!--
+    Cache-busting. __BUILD_HASH__ is replaced by the Makefile post-link
+    step with the current git short SHA (or a timestamp as a fallback).
+    Each deploy gets a new value so returning users always fetch fresh
+    chess.js / chess.wasm / chess.data / stockfish-bridge.js, while
+    unchanged deploys keep their ETags and hit the fast 304 path.
+
+    Every asset the page loads dynamically has the '?v=<HASH>' suffix
+    appended, including:
+      - stockfish-bridge.js (loaded via a hand-written <script> below)
+      - chess.js            (loaded via a hand-written <script> below,
+                             replacing the Emscripten SCRIPT shell macro)
+      - chess.wasm          (loaded by chess.js; Module.locateFile hook)
+      - chess.data          (the preloaded --preload-file package; same
+                             Module.locateFile hook)
+    We intentionally do NOT cache-bust stockfish/stockfish.{js,wasm} —
+    that's vendored and only changes when we bump the submodule, which
+    is rare enough that the Pages default 10 min HTML TTL handles it.
+  -->
+  <script>
+    // Replaced by web/Makefile at link time (see BUILD_HASH).
+    window.__BUILD_HASH = '__BUILD_HASH__';
+  </script>
 
   <script>
     var statusEl = document.getElementById('chess-status');
@@ -131,6 +151,15 @@
         c.addEventListener('click', function() { c.focus(); });
         return c;
       })(),
+      // Cache-bust the binary artifacts that chess.js fetches at
+      // runtime (chess.wasm and the --preload-file data package,
+      // chess.data). Non-matching filenames fall through unchanged.
+      locateFile: function (path, prefix) {
+        if (path === 'chess.wasm' || path === 'chess.data') {
+          return (prefix || '') + path + '?v=' + window.__BUILD_HASH;
+        }
+        return (prefix || '') + path;
+      },
       print: function(text) { console.log('[wasm]', text); },
       printErr: function(text) { console.warn('[wasm]', text); },
 
@@ -193,7 +222,35 @@
     } else {
       resizeCanvas();
     }
+
+    // Sequential script loader. stockfish-bridge.js must be parsed
+    // before chess.js fires its onRuntimeInitialized callback,
+    // because that callback ultimately leads to C++ code in
+    // ai_player_web.cpp calling window.StockfishBridge.
+    (function () {
+      var v = '?v=' + window.__BUILD_HASH;
+      function loadScript(src, cb) {
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = cb || null;
+        s.onerror = function () {
+          setLoadingStatus('Failed to load ' + src);
+          console.error('Failed to load', src);
+        };
+        document.body.appendChild(s);
+      }
+      loadScript('stockfish-bridge.js' + v, function () {
+        loadScript('chess.js' + v);
+      });
+    })();
   </script>
-  {{{ SCRIPT }}}
+  <!--
+    Emscripten asserts that '{{{ SCRIPT }}}' exists literally in the
+    shell file. Keeping it inside an HTML comment still satisfies the
+    assertion while making the expanded <script> tag inert, so our
+    dynamic loader above is the only thing that actually fetches
+    chess.js. DO NOT remove: em++ will refuse to build otherwise.
+    {{{ SCRIPT }}}
+  -->
 </body>
 </html>

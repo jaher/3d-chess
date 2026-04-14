@@ -1,4 +1,11 @@
 EMCC      := em++
+
+# Short hash baked into the generated chess.html as the `?v=<HASH>`
+# cache-bust suffix on chess.js / chess.wasm / chess.data /
+# stockfish-bridge.js. Uses the current git HEAD (so CI deploys get
+# the commit SHA), falling back to a wall-clock timestamp for dirty
+# working trees or builds outside a git clone.
+BUILD_HASH := $(shell git -C .. rev-parse --short HEAD 2>/dev/null || date +%s)
 # USE_SDL=2 must be in both compile and link flags: it wires the SDL
 # headers into the per-TU compile sysroot *and* pulls in the SDL lib
 # at link time. Leaving it in LDFLAGS only worked with the previous
@@ -63,6 +70,10 @@ $(OBJ_DIR)/web_%.o: %.cpp | $(OBJ_DIR)
 
 chess.html: $(OBJS) stockfish-bridge.js index.html stockfish/stockfish.js
 	$(EMCC) $(EMFLAGS) $(OBJS) -o $@ $(LDFLAGS)
+	@# Substitute the cache-bust hash placeholder in the generated
+	@# chess.html. index.html uses __BUILD_HASH__ as a literal token
+	@# that won't collide with anything Emscripten produces.
+	sed -i.bak 's/__BUILD_HASH__/$(BUILD_HASH)/g' $@ && rm $@.bak
 
 stockfish/stockfish.js:
 	@echo "Vendored stockfish.js missing under web/stockfish/."
