@@ -177,6 +177,17 @@ struct AppState {
 
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
+
+    // Non-owning pointer to the driver-owned array of loaded STL
+    // piece models (PIECE_COUNT entries, indexed by PieceType).
+    // Used by the ray-vs-mesh hit test in handle_board_click so
+    // clicking on a tall piece that leans over a neighbouring
+    // square selects the piece the user can actually see, rather
+    // than the square underneath the cursor. The driver assigns
+    // this right after app_init. nullptr is a safe fallback —
+    // pick_piece returns -1 and the code paths fall through to
+    // the flat-plane click test.
+    const StlModel* loaded_models = nullptr;
 };
 
 // ===========================================================================

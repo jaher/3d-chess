@@ -151,8 +151,11 @@ static void trigger_eval(AppState& a, int score_index) {
 // ===========================================================================
 // Screen-to-board picking
 // ===========================================================================
-static bool screen_to_board(const AppState& a, double mx, double my,
-                            int width, int height, int& out_col, int& out_row) {
+// Build a world-space ray from a mouse pixel position. Shared
+// between the flat-plane click test and the ray-vs-mesh piece pick.
+static bool screen_ray(const AppState& a, double mx, double my,
+                       int width, int height,
+                       float ro[3], float rd[3]) {
     float deg2rad = static_cast<float>(M_PI) / 180.0f;
     float aspect = static_cast<float>(width) / static_cast<float>(height);
     Mat4 view = mat4_multiply(
@@ -170,17 +173,184 @@ static bool screen_to_board(const AppState& a, double mx, double my,
     Vec4 fw = mat4_mul_vec4(inv_vp, {ndc_x, ndc_y,  1, 1});
     if (std::abs(nw.w) < 1e-10f || std::abs(fw.w) < 1e-10f) return false;
 
-    float np[3] = {nw.x/nw.w, nw.y/nw.w, nw.z/nw.w};
-    float fp[3] = {fw.x/fw.w, fw.y/fw.w, fw.z/fw.w};
-    float d[3] = {fp[0]-np[0], fp[1]-np[1], fp[2]-np[2]};
-    if (std::abs(d[1]) < 1e-10f) return false;
+    ro[0] = nw.x / nw.w; ro[1] = nw.y / nw.w; ro[2] = nw.z / nw.w;
+    float fx = fw.x / fw.w - ro[0];
+    float fy = fw.y / fw.w - ro[1];
+    float fz = fw.z / fw.w - ro[2];
+    float len = std::sqrt(fx * fx + fy * fy + fz * fz);
+    if (len < 1e-10f) return false;
+    rd[0] = fx / len; rd[1] = fy / len; rd[2] = fz / len;
+    return true;
+}
 
-    float t = (BOARD_Y - np[1]) / d[1];
+static bool screen_to_board(const AppState& a, double mx, double my,
+                            int width, int height, int& out_col, int& out_row) {
+    float ro[3], rd[3];
+    if (!screen_ray(a, mx, my, width, height, ro, rd)) return false;
+    if (std::abs(rd[1]) < 1e-10f) return false;
+
+    float t = (BOARD_Y - ro[1]) / rd[1];
     if (t < 0) return false;
 
-    out_col = static_cast<int>(std::floor((np[0] + t*d[0]) / SQ + 4.0f));
-    out_row = static_cast<int>(std::floor((np[2] + t*d[2]) / SQ + 4.0f));
+    out_col = static_cast<int>(std::floor((ro[0] + t * rd[0]) / SQ + 4.0f));
+    out_row = static_cast<int>(std::floor((ro[2] + t * rd[2]) / SQ + 4.0f));
     return in_bounds(out_col, out_row);
+}
+
+// ---------------------------------------------------------------------------
+// Ray-vs-mesh piece picking
+// ---------------------------------------------------------------------------
+// Möller-Trumbore ray-triangle intersection. The direction does
+// NOT need to be unit-length: the resulting t is in the same units
+// as `rd`, so if the caller passes a direction transformed by an
+// inverse model matrix (unnormalized), the t it gets back is
+// directly comparable to t values from other pieces under the same
+// ray (because they're all in world units).
+static bool ray_triangle_hit(const float ro[3], const float rd[3],
+                             const Vertex& v0, const Vertex& v1,
+                             const Vertex& v2, float& out_t) {
+    const float e1x = v1.x - v0.x, e1y = v1.y - v0.y, e1z = v1.z - v0.z;
+    const float e2x = v2.x - v0.x, e2y = v2.y - v0.y, e2z = v2.z - v0.z;
+    const float hx = rd[1] * e2z - rd[2] * e2y;
+    const float hy = rd[2] * e2x - rd[0] * e2z;
+    const float hz = rd[0] * e2y - rd[1] * e2x;
+    const float a = e1x * hx + e1y * hy + e1z * hz;
+    if (std::fabs(a) < 1e-8f) return false;
+    const float f = 1.0f / a;
+    const float sx = ro[0] - v0.x, sy = ro[1] - v0.y, sz = ro[2] - v0.z;
+    const float u = f * (sx * hx + sy * hy + sz * hz);
+    if (u < 0.0f || u > 1.0f) return false;
+    const float qx = sy * e1z - sz * e1y;
+    const float qy = sz * e1x - sx * e1z;
+    const float qz = sx * e1y - sy * e1x;
+    const float v = f * (rd[0] * qx + rd[1] * qy + rd[2] * qz);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    const float t = f * (e2x * qx + e2y * qy + e2z * qz);
+    if (t < 1e-4f) return false;
+    out_t = t;
+    return true;
+}
+
+// Slab-method ray-AABB test. Used as an early reject before the
+// per-triangle loop. If the ray misses the piece's bounding box in
+// object space we save ~80k triangle tests.
+static bool ray_aabb_hit(const float ro[3], const float rd[3],
+                         const Vertex& bmin, const Vertex& bmax) {
+    float tmin = -1e30f, tmax = 1e30f;
+    const float rox[3] = { ro[0], ro[1], ro[2] };
+    const float rdx[3] = { rd[0], rd[1], rd[2] };
+    const float bn[3]  = { bmin.x, bmin.y, bmin.z };
+    const float bx[3]  = { bmax.x, bmax.y, bmax.z };
+    for (int i = 0; i < 3; i++) {
+        if (std::fabs(rdx[i]) < 1e-8f) {
+            if (rox[i] < bn[i] || rox[i] > bx[i]) return false;
+        } else {
+            const float inv = 1.0f / rdx[i];
+            float t1 = (bn[i] - rox[i]) * inv;
+            float t2 = (bx[i] - rox[i]) * inv;
+            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > tmin) tmin = t1;
+            if (t2 < tmax) tmax = t2;
+            if (tmin > tmax) return false;
+        }
+    }
+    return tmax >= 0.0f;
+}
+
+// Ray-vs-mesh piece picking. Iterates every alive piece, builds
+// its world-to-raw-STL transform, intersects the ray against the
+// piece's STL triangles, and returns the index (into gs.pieces) of
+// the closest positive-t hit. Returns -1 on miss or when no STL
+// models are available.
+//
+// Coordinate-space note: the GPU vertex buffer for each piece is
+// `(v_raw - bbox_center) * (2 / bbox_max_extent)` — a normalised
+// unit-sphere fit. The render-time model matrix in board_renderer
+// is `translate(wx, BOARD_Y+s, wz) * scale(s) * orient`, which
+// premultiplies that normalised space. For picking we want to
+// intersect against the raw STL triangles directly (so we don't
+// have to rebuild a normalised vertex list), so we fold the
+// normalisation into the transform:
+//
+//   M = T(wx, BOARD_Y+s, wz) * S(s) * orient * S(norm) * T(-center)
+//
+// and then M_inv carries the world ray into raw-STL space. The
+// unnormalised inverse direction preserves the world-space metric,
+// so the t values are directly comparable across pieces.
+static int pick_piece(const AppState& a, double mx, double my,
+                      int width, int height) {
+    if (!a.loaded_models) return -1;
+
+    float ro[3], rd[3];
+    if (!screen_ray(a, mx, my, width, height, ro, rd)) return -1;
+
+    const GameState& gs = a.game;
+    const float deg2rad = static_cast<float>(M_PI) / 180.0f;
+    const float rot_z_to_y = -90.0f * deg2rad;
+
+    int best_idx = -1;
+    float best_t = 1e30f;
+
+    for (size_t i = 0; i < gs.pieces.size(); i++) {
+        const BoardPiece& bp = gs.pieces[i];
+        if (!bp.alive) continue;
+
+        float wx, wz;
+        square_center(bp.col, bp.row, wx, wz);
+        const float s = BASE_PIECE_SCALE * piece_scale[bp.type];
+
+        const StlModel& model = a.loaded_models[bp.type];
+        const BoundingBox& bb = model.bounding_box();
+        if (model.triangles().empty()) continue;
+        const float max_ext = bb.max_extent();
+        if (max_ext < 1e-6f) continue;
+        const float norm_scale = 2.0f / max_ext;
+        const Vertex center = bb.center();
+
+        // Build M = T_piece * S_piece * orient * S_norm * T(-center)
+        Mat4 orient = mat4_rotate_x(rot_z_to_y);
+        if (!bp.is_white)
+            orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)),
+                                   orient);
+        Mat4 M = mat4_multiply(
+            mat4_translate(wx, BOARD_Y + s, wz),
+            mat4_multiply(mat4_scale(s, s, s),
+                mat4_multiply(orient,
+                    mat4_multiply(
+                        mat4_scale(norm_scale, norm_scale, norm_scale),
+                        mat4_translate(-center.x, -center.y, -center.z)))));
+        Mat4 M_inv = mat4_inverse(M);
+
+        // Transform the world ray into raw-STL space. Keep the
+        // direction UNNORMALISED so that t from the triangle
+        // intersection is still in world units.
+        Vec4 ro_obj4 = mat4_mul_vec4(M_inv, {ro[0], ro[1], ro[2], 1.0f});
+        Vec4 rd_obj4 = mat4_mul_vec4(M_inv, {rd[0], rd[1], rd[2], 0.0f});
+        float ro_obj[3] = { ro_obj4.x, ro_obj4.y, ro_obj4.z };
+        float rd_obj[3] = { rd_obj4.x, rd_obj4.y, rd_obj4.z };
+
+        // AABB early-reject against the raw-STL bounding box.
+        if (!ray_aabb_hit(ro_obj, rd_obj, bb.min, bb.max)) continue;
+
+        float piece_t = 1e30f;
+        bool piece_hit = false;
+        const auto& tris = model.triangles();
+        for (const auto& tri : tris) {
+            float t;
+            if (ray_triangle_hit(ro_obj, rd_obj, tri.v0, tri.v1, tri.v2, t)) {
+                if (t < piece_t) {
+                    piece_t = t;
+                    piece_hit = true;
+                }
+            }
+        }
+        if (piece_hit && piece_t < best_t) {
+            best_t = piece_t;
+            best_idx = static_cast<int>(i);
+        }
+    }
+
+    return best_idx;
 }
 
 // ===========================================================================
@@ -206,8 +376,18 @@ static void handle_board_click(AppState& a, double mx, double my,
         }
     }
 
+    // Ray-vs-mesh pick first: if the cursor ray hits an actual
+    // piece model, use that piece's square as the click target so
+    // tall pieces that lean forward over a neighbouring square
+    // still select correctly. Fall back to the flat-plane test
+    // when the ray misses all meshes (empty squares / move
+    // destinations).
     int col, row;
-    if (!screen_to_board(a, mx, my, width, height, col, row)) {
+    int hit_piece = pick_piece(a, mx, my, width, height);
+    if (hit_piece >= 0) {
+        col = gs.pieces[hit_piece].col;
+        row = gs.pieces[hit_piece].row;
+    } else if (!screen_to_board(a, mx, my, width, height, col, row)) {
         gs.selected_col = gs.selected_row = -1;
         gs.valid_moves.clear();
         queue_redraw(a);

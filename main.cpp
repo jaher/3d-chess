@@ -212,6 +212,7 @@ int main(int argc, char* argv[]) {
     std::printf("All models loaded.\n");
 
     app_init(g_app, &g_platform);
+    g_app.loaded_models = g_loaded_models;
 
     gtk_init(&argc, &argv);
 

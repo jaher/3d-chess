@@ -384,6 +384,7 @@ int chess_start(void) {
     js_log("renderer_init done");
 
     app_init(g_app, &g_platform);
+    g_app.loaded_models = g_loaded_models;
     app_enter_menu(g_app);
     js_log("entering main loop");
 
