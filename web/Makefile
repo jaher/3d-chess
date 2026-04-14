@@ -30,12 +30,30 @@ SHARED_SRCS := \
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp
 
+# Object files live in build/ so `make -jN` can compile each TU in
+# parallel. em++ is clang under the hood — -j20 actually parallelizes
+# once the build is split into per-TU compile steps instead of a single
+# monolithic em++ invocation.
+OBJ_DIR   := build
+SHARED_OBJS := $(patsubst ../%.cpp,$(OBJ_DIR)/shared_%.o,$(SHARED_SRCS))
+WEB_OBJS    := $(patsubst %.cpp,$(OBJ_DIR)/web_%.o,$(WEB_SRCS))
+OBJS        := $(SHARED_OBJS) $(WEB_OBJS)
+
 ARTIFACTS := chess.html chess.js chess.wasm chess.data
 
 all: chess.html
 
-chess.html: $(SHARED_SRCS) $(WEB_SRCS) stockfish-bridge.js index.html stockfish/stockfish.js
-	$(EMCC) $(EMFLAGS) $(SHARED_SRCS) $(WEB_SRCS) -o $@ $(LDFLAGS)
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(OBJ_DIR)/shared_%.o: ../%.cpp | $(OBJ_DIR)
+	$(EMCC) $(EMFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/web_%.o: %.cpp | $(OBJ_DIR)
+	$(EMCC) $(EMFLAGS) -c $< -o $@
+
+chess.html: $(OBJS) stockfish-bridge.js index.html stockfish/stockfish.js
+	$(EMCC) $(EMFLAGS) $(OBJS) -o $@ $(LDFLAGS)
 
 stockfish/stockfish.js:
 	@echo "Vendored stockfish.js missing under web/stockfish/."
@@ -44,6 +62,7 @@ stockfish/stockfish.js:
 
 clean:
 	rm -f $(ARTIFACTS)
+	rm -rf $(OBJ_DIR)
 
 # Optional: serve the build locally for testing.
 serve: all

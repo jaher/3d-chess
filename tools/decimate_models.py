@@ -4,9 +4,12 @@ WebAssembly build, where total asset size is the binding constraint
 (GitHub Pages caps individual files at 100 MB).
 
 Each piece is reduced to roughly TARGET_FACES triangles using Blender's
-Decimate modifier (collapse mode). At 5,000 faces per piece the wood-grain
-shader and shadow mapping completely hide the polygon count at gameplay
-zoom levels.
+Decimate modifier (collapse mode). At 80,000 faces per piece the six
+models together occupy ~24 MB of preloaded assets, which keeps the
+total GitHub Pages deploy under 40 MB while preserving enough detail
+that the knight's mane and the crown finials stay crisp under close
+zoom. (The original meshes are 480k–1.28M faces each; the wood-grain
+shader and shadow mapping hide the rest.)
 
 Run via:
     blender --background --python tools/decimate_models.py
@@ -20,7 +23,7 @@ import bpy
 REPO_ROOT  = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC_DIR    = os.path.join(REPO_ROOT, "models")
 DST_DIR    = os.path.join(REPO_ROOT, "models-web")
-TARGET_FACES = 5000
+TARGET_FACES = 80000
 
 PIECES = ["King.stl", "Queen.stl", "Bishop.stl", "Knight.stl", "Rook.stl", "Pawn.stl"]
 
