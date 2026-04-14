@@ -1766,7 +1766,7 @@ void renderer_draw(GameState& gs, int width, int height,
             float bg = endgame_menu_hover ? 0.50f : 0.32f;
             float bb = endgame_menu_hover ? 0.75f : 0.55f;
             glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                        br, bg, bb, 0.92f);
+                        br, bg, bb, 0.55f);
             float bv[] = {
                 EG_MENU_BTN_X,                EG_MENU_BTN_Y - EG_MENU_BTN_H, 0,
                 EG_MENU_BTN_X + EG_MENU_BTN_W, EG_MENU_BTN_Y - EG_MENU_BTN_H, 0,
@@ -1794,7 +1794,7 @@ void renderer_draw(GameState& gs, int width, int height,
                 float cg = continue_playing_hover ? 0.65f : 0.48f;
                 float cb = continue_playing_hover ? 0.38f : 0.28f;
                 glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                            cr, cg, cb, 0.92f);
+                            cr, cg, cb, 0.55f);
                 float cv[] = {
                     EG_CONT_BTN_X,                 EG_CONT_BTN_Y - EG_CONT_BTN_H, 0,
                     EG_CONT_BTN_X + EG_CONT_BTN_W, EG_CONT_BTN_Y - EG_CONT_BTN_H, 0,
