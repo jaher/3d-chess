@@ -1,5 +1,12 @@
 EMCC      := em++
-EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I..
+# USE_SDL=2 must be in both compile and link flags: it wires the SDL
+# headers into the per-TU compile sysroot *and* pulls in the SDL lib
+# at link time. Leaving it in LDFLAGS only worked with the previous
+# monolithic em++ invocation (where compile and link were one step)
+# but breaks the split per-TU build because the compile steps couldn't
+# find <SDL2/SDL.h>.
+EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
+    -s USE_SDL=2
 LDFLAGS   := \
     -s USE_SDL=2 \
     -s USE_WEBGL2=1 -s FULL_ES3=1 \
