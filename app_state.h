@@ -3,6 +3,7 @@
 #include "board_renderer.h"  // PhysicsPiece, SummaryEntry
 #include "challenge.h"       // Challenge
 #include "cloth_flag.h"      // ClothFlag
+#include "time_control.h"    // TimeControl, TIME_CONTROLS
 #include "chess_types.h"     // GameState, GameMode
 #include "game_state.h"
 
@@ -125,6 +126,27 @@ struct AppState {
     int  stockfish_elo     = 1400;
     bool slider_dragging   = false;
     int  pregame_hover     = 0;
+
+    // Pregame time-control dropdown state. Default = Classical
+    // (30+30) so the first game out of the box has a clock without
+    // forcing the user to interact with the dropdown.
+    TimeControl time_control    = TC_CLASSICAL;
+    bool        pregame_tc_open = false;
+    // -1 = none, 0..TC_COUNT-1 = row index (only meaningful when the
+    // dropdown is open), -2 = collapsed-head hover.
+    int         pregame_tc_hover = -1;
+
+    // Live in-game clock state. Milliseconds remaining per side.
+    // clock_last_tick_us is the monotonic timestamp of the last tick
+    // that decremented a clock; zero means "paused, re-latch on the
+    // next active tick" (same pattern as flag_last_update_us).
+    // prev_white_turn is used to detect turn flips so we can add the
+    // Fischer increment to the side that just moved.
+    bool    clock_enabled       = false;
+    int64_t white_ms_left       = 0;
+    int64_t black_ms_left       = 0;
+    int64_t clock_last_tick_us  = 0;
+    int     prev_white_turn     = -1; // -1 = uninitialised, 0 = black, 1 = white
 
     // Hover flag for the "Back to Menu" button drawn on top of the
     // game-over / analysis overlay. Only meaningful in MODE_PLAYING

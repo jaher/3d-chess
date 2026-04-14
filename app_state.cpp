@@ -121,7 +121,22 @@ static void trigger_ai(AppState& a) {
     // Pass the actual current side-to-move; Stockfish plays whichever
     // side the human isn't.
     std::string fen = current_fen(a.game, a.game.white_turn);
-    int movetime = env_int("CHESS_AI_MOVETIME_MS", 800);
+    // Move time: an explicit env var override wins; otherwise use
+    // ~1/30 of the AI's own remaining clock, clamped so bullet is
+    // responsive (≤2s) and classical doesn't drag (≤3s). In
+    // Unlimited mode we fall back to the legacy 800ms default.
+    int movetime = env_int("CHESS_AI_MOVETIME_MS", 0);
+    if (movetime <= 0) {
+        if (!a.clock_enabled) {
+            movetime = 800;
+        } else {
+            int64_t ai_ms = a.human_plays_white ? a.black_ms_left
+                                                : a.white_ms_left;
+            movetime = static_cast<int>(ai_ms / 30);
+            if (movetime < 200)  movetime = 200;
+            if (movetime > 3000) movetime = 3000;
+        }
+    }
     if (a.platform && a.platform->trigger_ai_move)
         a.platform->trigger_ai_move(fen.c_str(), movetime);
 }
@@ -279,9 +294,14 @@ void app_enter_menu(AppState& a) {
 
 void app_enter_pregame(AppState& a) {
     a.mode = MODE_PREGAME;
-    // Preserve a.human_plays_white and a.stockfish_elo across reopens.
+    // Preserve a.human_plays_white, a.stockfish_elo, a.time_control
+    // across reopens. Volatile state (drags, hovers, open dropdowns)
+    // must be reset so re-entering the screen doesn't land in a
+    // weird half-expanded state.
     a.slider_dragging = false;
     a.pregame_hover = 0;
+    a.pregame_tc_open = false;
+    a.pregame_tc_hover = -1;
     set_status(a, "3D Chess — Game Setup");
     queue_redraw(a);
 }
@@ -331,6 +351,17 @@ void app_enter_game(AppState& a) {
     a.flag.inited_h = 0;
     a.flag_last_update_us = 0;
     a.flag_start_us = now_us(a);
+    // Clocks — refill both sides with the starting budget for the
+    // selected time control. Unlimited leaves base_ms at 0 which
+    // disables the clock widget and the tick loop entirely.
+    {
+        const TimeControlSpec& spec = TIME_CONTROLS[a.time_control];
+        a.clock_enabled = (a.time_control != TC_UNLIMITED);
+        a.white_ms_left = spec.base_ms;
+        a.black_ms_left = spec.base_ms;
+        a.clock_last_tick_us = 0;
+        a.prev_white_turn = -1;
+    }
     app_refresh_status(a);
     queue_redraw(a);
     // If the human plays black, Stockfish makes the first move as white.
@@ -433,7 +464,30 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
             queue_redraw(a);
             return;
         }
-        int btn = pregame_hit_test(mx, my, width, height);
+        int tc_index = -1;
+        int btn = pregame_hit_test(mx, my, width, height,
+                                   a.pregame_tc_open, &tc_index);
+        if (a.pregame_tc_open) {
+            // Dropdown is modal while open.
+            if (btn == 6 && tc_index >= 0 && tc_index < TC_COUNT) {
+                // Row click → select and collapse.
+                a.time_control = static_cast<TimeControl>(tc_index);
+                a.pregame_tc_open = false;
+                a.pregame_tc_hover = -1;
+                queue_redraw(a);
+            } else if (btn == 5) {
+                // Head click while open → collapse without change.
+                a.pregame_tc_open = false;
+                a.pregame_tc_hover = -1;
+                queue_redraw(a);
+            } else {
+                // Click anywhere else → collapse without change.
+                a.pregame_tc_open = false;
+                a.pregame_tc_hover = -1;
+                queue_redraw(a);
+            }
+            return;
+        }
         if (btn == 1) {           // Start
             app_enter_game(a);
         } else if (btn == 2) {    // Back
@@ -443,6 +497,10 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
             queue_redraw(a);
         } else if (btn == 4) {    // Click on slider (not a drag)
             a.stockfish_elo = slider_px_to_elo(mx, width);
+            queue_redraw(a);
+        } else if (btn == 5) {    // Dropdown head → expand
+            a.pregame_tc_open = true;
+            a.pregame_tc_hover = -1;
             queue_redraw(a);
         }
         return;
@@ -553,16 +611,35 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         return;
     }
     if (a.mode == MODE_PREGAME) {
-        int h = pregame_hit_test(mx, my, width, height);
+        int tc_idx = -1;
+        int h = pregame_hit_test(mx, my, width, height,
+                                 a.pregame_tc_open, &tc_idx);
         if (h != a.pregame_hover) {
             a.pregame_hover = h;
             queue_redraw(a);
         }
+        // Dropdown hover: -2 for the head, 0..TC_COUNT-1 for a row,
+        // -1 otherwise. Used by the renderer to tint the head and
+        // the hovered row.
+        int new_tc_hover = -1;
+        if (a.pregame_tc_open) {
+            if (h == 6) new_tc_hover = tc_idx;
+            else if (h == 5) new_tc_hover = -2;
+        } else if (h == 5) {
+            new_tc_hover = -2;
+        }
+        if (new_tc_hover != a.pregame_tc_hover) {
+            a.pregame_tc_hover = new_tc_hover;
+            queue_redraw(a);
+        }
         // If the mouse button is pressed AND the press was inside the
-        // slider, treat this as a drag.
-        if (a.dragging) {
+        // slider, treat this as a drag. Skip this while the dropdown
+        // is open — it's modal.
+        if (a.dragging && !a.pregame_tc_open) {
             if (!a.slider_dragging) {
-                int start = pregame_hit_test(a.press_x, a.press_y, width, height);
+                int start = pregame_hit_test(a.press_x, a.press_y,
+                                             width, height,
+                                             false, nullptr);
                 if (start == 4) a.slider_dragging = true;
             }
             if (a.slider_dragging) {
@@ -644,6 +721,16 @@ void app_key(AppState& a, AppKey key) {
         if (key == KEY_ESCAPE) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
+            queue_redraw(a);
+        }
+        return;
+    }
+
+    // Dropdown-open is also modal — ESC collapses it.
+    if (a.mode == MODE_PREGAME && a.pregame_tc_open) {
+        if (key == KEY_ESCAPE) {
+            a.pregame_tc_open = false;
+            a.pregame_tc_hover = -1;
             queue_redraw(a);
         }
         return;
@@ -857,6 +944,60 @@ void app_tick(AppState& a) {
         // not "however long the user stared at the dialog".
         a.flag_last_update_us = 0;
     }
+
+    // Chess clock. Tick the side-to-move's budget, add Fischer
+    // increment on turn flips, and set game_over on timeout. Same
+    // pause-on-modal pattern as the flag so that reopening a modal
+    // doesn't dump a huge dt into a clock.
+    if (a.mode == MODE_PLAYING && a.clock_enabled && !gs.game_over &&
+        !gs.analysis_mode && !a.withdraw_confirm_open) {
+        if (a.clock_last_tick_us == 0) {
+            a.clock_last_tick_us = now;
+            a.prev_white_turn = gs.white_turn ? 1 : 0;
+        } else {
+            int64_t dt_us = now - a.clock_last_tick_us;
+            a.clock_last_tick_us = now;
+            int cur = gs.white_turn ? 1 : 0;
+            // Charge this interval to whoever WAS on move. If the
+            // turn flipped between ticks, the move happened
+            // mid-interval — the dt belongs to the previous side
+            // (they thought, then moved), not the new side.
+            if (dt_us > 0) {
+                int64_t dt_ms = dt_us / 1000;
+                if (a.prev_white_turn == 1) a.white_ms_left -= dt_ms;
+                else                        a.black_ms_left -= dt_ms;
+            }
+            // Turn flip → the side that just moved gets the
+            // Fischer increment. Detected here rather than inside
+            // execute_move so the rules layer stays pure.
+            if (cur != a.prev_white_turn) {
+                int64_t inc = TIME_CONTROLS[a.time_control].increment_ms;
+                if (a.prev_white_turn == 1) a.white_ms_left += inc;
+                else                        a.black_ms_left += inc;
+            }
+            a.prev_white_turn = cur;
+            // Time loss.
+            if (a.white_ms_left <= 0) {
+                a.white_ms_left = 0;
+                gs.game_over = true;
+                gs.game_result = "Black wins on time!";
+                std::printf("Black wins on time!\n");
+                app_refresh_status(a);
+            } else if (a.black_ms_left <= 0) {
+                a.black_ms_left = 0;
+                gs.game_over = true;
+                gs.game_result = "White wins on time!";
+                std::printf("White wins on time!\n");
+                app_refresh_status(a);
+            }
+        }
+        queue_redraw(a);
+    } else if (a.clock_enabled && (a.withdraw_confirm_open ||
+                                   gs.game_over ||
+                                   gs.analysis_mode)) {
+        // Pause the clock — re-latch on the next active tick.
+        a.clock_last_tick_us = 0;
+    }
 }
 
 // ===========================================================================
@@ -876,6 +1017,9 @@ void app_render(AppState& a, int width, int height) {
     if (a.mode == MODE_PREGAME) {
         renderer_draw_pregame(a.human_plays_white, a.stockfish_elo,
                               APP_ELO_MIN, APP_ELO_MAX,
+                              a.time_control,
+                              a.pregame_tc_open,
+                              a.pregame_tc_hover,
                               width, height, a.pregame_hover);
         return;
     }
@@ -927,11 +1071,22 @@ void app_render(AppState& a, int width, int height) {
         a.mode == MODE_PLAYING &&
         !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
 
+    // Clock widget: same visibility gate as the flag, plus the
+    // time control must be non-Unlimited. The side shown is whoever
+    // is on move — matches the user's spec ("when it's white's turn
+    // it shows white's clock, etc.").
+    const bool draw_clock =
+        a.mode == MODE_PLAYING && a.clock_enabled &&
+        !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
+    int64_t clock_ms = gs.white_turn ? a.white_ms_left : a.black_ms_left;
+    bool clock_side_is_white = gs.white_turn;
+
     renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
                   a.human_plays_white,
                   a.endgame_menu_hover, a.continue_playing_hover,
                   &a.flag, draw_flag,
-                  a.withdraw_confirm_open, a.withdraw_hover);
+                  a.withdraw_confirm_open, a.withdraw_hover,
+                  draw_clock, clock_ms, clock_side_is_white);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -964,11 +1119,12 @@ void app_render(AppState& a, int width, int height) {
         a.transition_start_time_us = now;
 
         // The renderer_draw path itself clears its color/depth buffers.
-        // Challenge mode never wants the withdraw flag or modal.
+        // Challenge mode never wants the withdraw flag, modal, or clock.
         renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
                       a.human_plays_white,
                       a.endgame_menu_hover, false,
-                      nullptr, false, false, 0);
+                      nullptr, false, false, 0,
+                      false, 0, false);
         renderer_draw_challenge_overlay(
             a.current_challenge.name,
             a.current_challenge.current_index,

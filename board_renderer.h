@@ -3,6 +3,7 @@
 #include "chess_types.h"
 #include "cloth_flag.h"
 #include "stl_model.h"
+#include "time_control.h"
 
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
@@ -32,13 +33,19 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // draw_flag is true (i.e. a live game is in progress and no modal is open).
 // withdraw_confirm_open draws the modal confirmation dialog on top of
 // everything; withdraw_hover controls its button tints.
+// draw_clock/clock_ms_remaining/clock_side_is_white drive the top-
+// centre clock widget (drawn only while a timed live game is in
+// progress).
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
                    bool continue_playing_hover,
                    const ClothFlag* flag, bool draw_flag,
-                   bool withdraw_confirm_open, int withdraw_hover);
+                   bool withdraw_confirm_open, int withdraw_hover,
+                   bool draw_clock,
+                   int64_t clock_ms_remaining,
+                   bool clock_side_is_white);
 
 // Hit-test for the "Back to Menu" button drawn in renderer_draw's
 // game-over / analysis overlay. Returns true when (mx, my) falls
@@ -88,13 +95,21 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
 // Returns -2=back, -1=none, 0..N-1=challenge index
 int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges);
 
-// Pre-game setup screen: side toggle + Stockfish ELO slider.
+// Pre-game setup screen: side toggle + Stockfish ELO slider + new
+// time-control dropdown. tc_hover: -2 = head hovered, -1 = none,
+// 0..TC_COUNT-1 = row hovered (only meaningful if dropdown_open).
 void renderer_draw_pregame(bool human_plays_white,
                            int elo, int elo_min, int elo_max,
+                           TimeControl time_control,
+                           bool dropdown_open,
+                           int tc_hover,
                            int width, int height,
                            int hover);
-// Returns 0=none, 1=Start, 2=Back, 3=Toggle button, 4=Slider area
-int pregame_hit_test(double mx, double my, int width, int height);
+// Returns 0=none, 1=Start, 2=Back, 3=Toggle button, 4=Slider area,
+// 5=Dropdown head, 6=Dropdown row (out_tc_index receives the row
+// index when this function returns 6; caller may pass nullptr).
+int pregame_hit_test(double mx, double my, int width, int height,
+                     bool dropdown_open, int* out_tc_index);
 
 // Challenge in-game overlay
 void renderer_draw_challenge_overlay(const std::string& challenge_name,

@@ -768,13 +768,38 @@ static void push_quad(std::vector<float>& verts,
     verts.push_back(x0); verts.push_back(y1); verts.push_back(0);
 }
 
+// ---------------------------------------------------------------------------
+// Format a millisecond budget as the display string for the in-game
+// clock widget: "M:SS" for ≥10 s remaining, "S.T" (seconds + tenths)
+// for the last ten seconds. This is the canonical convention every
+// online chess UI uses.
+// ---------------------------------------------------------------------------
+static std::string format_clock_ms(int64_t ms) {
+    if (ms < 0) ms = 0;
+    char buf[16];
+    if (ms < 10000) {
+        int tenths = static_cast<int>(ms / 100); // 0..99
+        std::snprintf(buf, sizeof(buf), "%d.%d",
+                      tenths / 10, tenths % 10);
+        return buf;
+    }
+    int total_s = static_cast<int>(ms / 1000);
+    int m = total_s / 60;
+    int s = total_s % 60;
+    std::snprintf(buf, sizeof(buf), "%d:%02d", m, s);
+    return buf;
+}
+
 void renderer_draw(GameState& gs, int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
                    bool continue_playing_hover,
                    const ClothFlag* flag, bool draw_flag,
-                   bool withdraw_confirm_open, int withdraw_hover) {
+                   bool withdraw_confirm_open, int withdraw_hover,
+                   bool draw_clock,
+                   int64_t clock_ms_remaining,
+                   bool clock_side_is_white) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -1317,6 +1342,149 @@ void renderer_draw(GameState& gs, int width, int height,
 
             glBindVertexArray(0);
             glDeleteBuffers(1, &mvbo); glDeleteVertexArrays(1, &mvao);
+        }
+
+        glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+    }
+
+    // --- Chess clock (top-centre, timed live game only) ---
+    if (draw_clock) {
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        glUseProgram(g_highlight_program);
+        Mat4 id_c = mat4_identity();
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id_c.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 0);
+
+        // Panel NDC rectangle. Sized to just fit the side label
+        // (~0.030 NDC high) + a 0.010 gap + the clock text
+        // (~0.075 NDC high) + 0.010 top/bottom padding.
+        const float cx0 = -0.16f, cx1 = +0.16f;
+        const float cy0 =  0.850f, cy1 =  0.985f;
+
+        // Outline (slightly larger behind the bg).
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.55f, 0.60f, 0.72f, 0.80f);
+        {
+            std::vector<float> ov;
+            push_quad(ov,
+                      cx0 - 0.006f, cy0 - 0.008f,
+                      cx1 + 0.006f, cy1 + 0.005f);
+            GLuint ovao, ovbo;
+            glGenVertexArrays(1, &ovao); glGenBuffers(1, &ovbo);
+            glBindVertexArray(ovao); glBindBuffer(GL_ARRAY_BUFFER, ovbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(ov.size() * sizeof(float)),
+                         ov.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(ov.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &ovbo); glDeleteVertexArrays(1, &ovao);
+        }
+
+        // Panel background.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.08f, 0.10f, 0.14f, 0.85f);
+        {
+            std::vector<float> pv;
+            push_quad(pv, cx0, cy0, cx1, cy1);
+            GLuint pvao, pvbo;
+            glGenVertexArrays(1, &pvao); glGenBuffers(1, &pvbo);
+            glBindVertexArray(pvao); glBindBuffer(GL_ARRAY_BUFFER, pvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(pv.size() * sizeof(float)),
+                         pv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(pv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &pvbo); glDeleteVertexArrays(1, &pvao);
+        }
+
+        // Side label + clock value text.
+        glUseProgram(g_text_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                           1, GL_FALSE, id_c.m);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_font_tex);
+        glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+        std::vector<float> cv;
+        // Side label ("White" or "Black"), anchored near the top
+        // of the panel. add_screen_string treats y as the TOP of
+        // the character so (cy1 - 0.010) puts the glyphs just
+        // inside the top edge with a 0.010 NDC pad.
+        const float lch = 0.030f;
+        const float cch = 0.075f;
+        const float label_top_y = cy1 - 0.010f;
+        const float clock_top_y = label_top_y - lch - 0.008f;
+        {
+            const char* label = clock_side_is_white ? "White" : "Black";
+            std::string s = label;
+            float lcw = 0.022f;
+            float lw = s.size() * lcw * 0.7f;
+            add_screen_string(cv, -lw * 0.5f, label_top_y,
+                              lcw, lch, s);
+        }
+        int side_end = static_cast<int>(cv.size() / 5);
+
+        // Big clock text, snug below the side label.
+        std::string clock_text = format_clock_ms(clock_ms_remaining);
+        float ccw = 0.055f;
+        float cw_total = clock_text.size() * ccw * 0.7f;
+        add_screen_string(cv, -cw_total * 0.5f, clock_top_y,
+                          ccw, cch, clock_text);
+        int clock_end = static_cast<int>(cv.size() / 5);
+
+        if (!cv.empty()) {
+            GLuint cvao, cvbo;
+            glGenVertexArrays(1, &cvao); glGenBuffers(1, &cvbo);
+            glBindVertexArray(cvao); glBindBuffer(GL_ARRAY_BUFFER, cvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(cv.size() * sizeof(float)),
+                         cv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float),
+                                  (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            // Side label — subtle grey.
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                        0.82f, 0.82f, 0.86f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, side_end);
+
+            // Clock text — warm white normally, pulsing red in the
+            // last ten seconds. Pulse phase reuses the monotonic
+            // gs.anim_start_time (any time source works for sin).
+            bool low = clock_ms_remaining < 10000;
+            float r = 0.97f, g = 0.97f, b = 0.94f;
+            if (low) {
+                float t = static_cast<float>(
+                    (gs.anim_start_time % 1'000'000) / 1.0e6);
+                float pulse = 0.5f + 0.5f * std::sin(t * 6.28f * 2.0f);
+                r = 1.00f;
+                g = 0.20f + pulse * 0.20f;
+                b = 0.18f + pulse * 0.15f;
+            }
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                        r, g, b, 1.0f);
+            glDrawArrays(GL_TRIANGLES, side_end, clock_end - side_end);
+
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &cvbo); glDeleteVertexArrays(1, &cvao);
         }
 
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
@@ -2137,9 +2305,19 @@ static const float PG_TOGGLE_H = 0.10f;
 static const float PG_TOGGLE_X = -PG_TOGGLE_W * 0.5f;
 static const float PG_TOGGLE_Y =  0.25f;
 
+// Time-control dropdown. Sits between the toggle button and the ELO
+// label. When collapsed, only the head is visible; when open, a list
+// of TC_COUNT rows drops down below the head and overlaps the ELO
+// slider (clicks on it are suppressed while the dropdown is open).
+static const float PG_TC_HEAD_W =  0.60f;
+static const float PG_TC_HEAD_H =  0.08f;
+static const float PG_TC_HEAD_X = -PG_TC_HEAD_W * 0.5f;
+static const float PG_TC_HEAD_Y =  0.03f;  // top edge of the head
+static const float PG_TC_ROW_H  =  0.07f;
+
 static const float PG_SLIDER_X_LEFT  = -0.60f;  // mirrors APP_SLIDER_NDC_LEFT
 static const float PG_SLIDER_X_RIGHT = +0.60f;  // mirrors APP_SLIDER_NDC_RIGHT
-static const float PG_SLIDER_Y       = -0.22f;
+static const float PG_SLIDER_Y       = -0.30f;
 static const float PG_SLIDER_H       =  0.07f;   // pill height (rounded caps
                                                  // have radius = H/2).
 static const float PG_SLIDER_STROKE  =  0.006f;  // outline thickness (NDC)
@@ -2147,14 +2325,42 @@ static const float PG_SLIDER_STROKE  =  0.006f;  // outline thickness (NDC)
 static const float PG_START_W = 0.40f;
 static const float PG_START_H = 0.12f;
 static const float PG_START_X = -PG_START_W * 0.5f;
-static const float PG_START_Y = -0.55f;
+static const float PG_START_Y = -0.63f;
 
 // Back button reuses the challenge-select back-button NDC rectangle
 // (CS_BACK_* below).
 
-int pregame_hit_test(double mx, double my, int width, int height) {
+int pregame_hit_test(double mx, double my, int width, int height,
+                     bool dropdown_open, int* out_tc_index) {
+    if (out_tc_index) *out_tc_index = -1;
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+
+    // When the dropdown is open it is modal: rows are checked first,
+    // then the head (for a click-to-collapse), and finally we return 0
+    // so the caller can treat any other click as "click outside →
+    // collapse without changing selection". Crucially this means the
+    // Start / Toggle / Slider / Back buttons are NOT hit-testable
+    // while the dropdown is open, which prevents accidental clicks
+    // through the list.
+    if (dropdown_open) {
+        // Row list: five rows beneath the head.
+        float row_y_top = PG_TC_HEAD_Y - PG_TC_HEAD_H;
+        for (int i = 0; i < TC_COUNT; ++i) {
+            float top = row_y_top - static_cast<float>(i) * PG_TC_ROW_H;
+            float bot = top - PG_TC_ROW_H;
+            if (ndc_x >= PG_TC_HEAD_X && ndc_x <= PG_TC_HEAD_X + PG_TC_HEAD_W &&
+                ndc_y <= top && ndc_y >= bot) {
+                if (out_tc_index) *out_tc_index = i;
+                return 6;
+            }
+        }
+        // Head click while open → caller collapses.
+        if (ndc_x >= PG_TC_HEAD_X && ndc_x <= PG_TC_HEAD_X + PG_TC_HEAD_W &&
+            ndc_y >= PG_TC_HEAD_Y - PG_TC_HEAD_H && ndc_y <= PG_TC_HEAD_Y)
+            return 5;
+        return 0;
+    }
 
     // Back button (same rect as challenge-select back)
     static const float BACK_X = -0.95f, BACK_Y = 0.93f;
@@ -2173,6 +2379,11 @@ int pregame_hit_test(double mx, double my, int width, int height) {
         ndc_y >= PG_TOGGLE_Y - PG_TOGGLE_H && ndc_y <= PG_TOGGLE_Y)
         return 3;
 
+    // Time-control dropdown head (collapsed state).
+    if (ndc_x >= PG_TC_HEAD_X && ndc_x <= PG_TC_HEAD_X + PG_TC_HEAD_W &&
+        ndc_y >= PG_TC_HEAD_Y - PG_TC_HEAD_H && ndc_y <= PG_TC_HEAD_Y)
+        return 5;
+
     // Slider — widen the hit area a bit so clicks near the edges still
     // register. The visible bar spans y from (PG_SLIDER_Y) to
     // (PG_SLIDER_Y - PG_SLIDER_H); the hit box pads that by 0.02 NDC.
@@ -2187,6 +2398,9 @@ int pregame_hit_test(double mx, double my, int width, int height) {
 
 void renderer_draw_pregame(bool human_plays_white,
                            int elo, int elo_min, int elo_max,
+                           TimeControl time_control,
+                           bool dropdown_open,
+                           int tc_hover,
                            int width, int height, int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -2227,6 +2441,17 @@ void renderer_draw_pregame(bool human_plays_white,
     // Start button background
     add_quad(PG_START_X, PG_START_Y, PG_START_W, PG_START_H,
              0.20f, 0.60f, 0.30f, hover == 1 ? 0.75f : 0.55f);
+
+    // Time-control dropdown head background. Drawn in the collapsed
+    // state always; when the dropdown is expanded the expanded list
+    // overlay further down draws *on top* of the slider and start
+    // button so the user sees a continuous panel.
+    {
+        float r = 0.15f, g = 0.18f, b = 0.24f;
+        float a = (tc_hover == -2 || dropdown_open) ? 0.95f : 0.85f;
+        add_quad(PG_TC_HEAD_X, PG_TC_HEAD_Y,
+                 PG_TC_HEAD_W, PG_TC_HEAD_H, r, g, b, a);
+    }
 
     // ----- Upload + draw all flat-colored geometry -----
     GLuint bvao, bvbo;
@@ -2434,13 +2659,40 @@ void renderer_draw_pregame(bool human_plays_white,
                       PG_TOGGLE_Y - 0.025f, bcw, bch, toggle_text);
     int toggle_end = static_cast<int>(ui_verts.size() / 5);
 
+    // "Time control:" header above the dropdown head.
+    float hcw = 0.022f, hch = 0.033f;
+    std::string tc_header = "Time control";
+    float hw = tc_header.size() * hcw * 0.7f;
+    add_screen_string(ui_verts, -hw * 0.5f,
+                      PG_TC_HEAD_Y + 0.055f, hcw, hch, tc_header);
+    int tc_header_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Collapsed dropdown head label: "<Name>  <display>".
+    const TimeControlSpec& cur_spec = TIME_CONTROLS[time_control];
+    std::string head_label = std::string(cur_spec.short_name) +
+                             "  " + cur_spec.display;
+    float head_lw = head_label.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -head_lw * 0.5f,
+                      PG_TC_HEAD_Y - (PG_TC_HEAD_H - bch) * 0.5f - 0.005f,
+                      bcw, bch, head_label);
+    int tc_head_text_end = static_cast<int>(ui_verts.size() / 5);
+
+    // Small chevron (" v ") hinting at the dropdown.
+    float ccw = 0.022f, cch = 0.030f;
+    std::string chev = dropdown_open ? "^" : "v";
+    add_screen_string(ui_verts,
+                      PG_TC_HEAD_X + PG_TC_HEAD_W - 0.05f,
+                      PG_TC_HEAD_Y - (PG_TC_HEAD_H - cch) * 0.5f - 0.005f,
+                      ccw, cch, chev);
+    int tc_chev_end = static_cast<int>(ui_verts.size() / 5);
+
     // ELO label + current value
     float scw = 0.025f, sch = 0.038f;
     char elo_buf[64];
     std::snprintf(elo_buf, sizeof(elo_buf), "Stockfish strength  %d", elo);
     std::string elo_label = elo_buf;
     float ew = elo_label.size() * scw * 0.7f;
-    add_screen_string(ui_verts, -ew * 0.5f, -0.04f, scw, sch, elo_label);
+    add_screen_string(ui_verts, -ew * 0.5f, -0.12f, scw, sch, elo_label);
     int elo_end = static_cast<int>(ui_verts.size() / 5);
 
     // Start button label
@@ -2493,10 +2745,30 @@ void renderer_draw_pregame(bool human_plays_white,
     }
     glDrawArrays(GL_TRIANGLES, title_count, toggle_end - title_count);
 
+    // "Time control:" header — dim white
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.72f, 0.72f, 0.78f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, toggle_end, tc_header_end - toggle_end);
+
+    // Dropdown head label — bright white, slightly brighter on hover
+    {
+        float b = (tc_hover == -2 || dropdown_open) ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    b, b, b, 1.0f);
+        glDrawArrays(GL_TRIANGLES, tc_header_end,
+                     tc_head_text_end - tc_header_end);
+    }
+
+    // Chevron
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.80f, 0.80f, 0.85f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, tc_head_text_end,
+                 tc_chev_end - tc_head_text_end);
+
     // ELO label — subtle white
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                 0.85f, 0.85f, 0.85f, 1.0f);
-    glDrawArrays(GL_TRIANGLES, toggle_end, elo_end - toggle_end);
+    glDrawArrays(GL_TRIANGLES, tc_chev_end, elo_end - tc_chev_end);
 
     // Start label — bright white when hovered
     {
@@ -2516,6 +2788,154 @@ void renderer_draw_pregame(bool human_plays_white,
 
     glBindVertexArray(0);
     glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);
+
+    // ---------------------------------------------------------------
+    // Expanded dropdown list (drawn last so it overlays everything).
+    // ---------------------------------------------------------------
+    if (dropdown_open) {
+        // List rectangle: starts just below the head, extends
+        // TC_COUNT rows downward.
+        const float list_top    = PG_TC_HEAD_Y - PG_TC_HEAD_H;
+        const float list_bottom = list_top - PG_TC_ROW_H * TC_COUNT;
+        const float list_x0     = PG_TC_HEAD_X;
+        const float list_x1     = PG_TC_HEAD_X + PG_TC_HEAD_W;
+
+        glUseProgram(g_highlight_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 0);
+
+        auto push_rect = [](std::vector<float>& v,
+                            float x0, float y0, float x1, float y1) {
+            v.insert(v.end(),
+                {x0, y0, 0,  x1, y0, 0,  x1, y1, 0,
+                 x0, y0, 0,  x1, y1, 0,  x0, y1, 0});
+        };
+
+        // 1. Outline rectangle (slightly larger behind the list bg).
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.55f, 0.60f, 0.72f, 0.95f);
+        {
+            std::vector<float> ov;
+            push_rect(ov,
+                      list_x0 - 0.006f, list_bottom - 0.010f,
+                      list_x1 + 0.006f, list_top    + 0.003f);
+            GLuint ovao, ovbo;
+            glGenVertexArrays(1, &ovao); glGenBuffers(1, &ovbo);
+            glBindVertexArray(ovao); glBindBuffer(GL_ARRAY_BUFFER, ovbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(ov.size() * sizeof(float)),
+                         ov.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(ov.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &ovbo); glDeleteVertexArrays(1, &ovao);
+        }
+
+        // 2. List background.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.10f, 0.12f, 0.16f, 0.98f);
+        {
+            std::vector<float> bv;
+            push_rect(bv, list_x0, list_bottom, list_x1, list_top);
+            GLuint bvao, bvbo;
+            glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+            glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(bv.size() * sizeof(float)),
+                         bv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(bv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+        }
+
+        // 3. Row highlights: gold for the selected row, slate for
+        //    the hovered row. Drawn over the bg.
+        for (int i = 0; i < TC_COUNT; ++i) {
+            float top = list_top - static_cast<float>(i) * PG_TC_ROW_H;
+            float bot = top - PG_TC_ROW_H;
+            bool selected = (i == (int)time_control);
+            bool hovered  = (i == tc_hover);
+            if (!selected && !hovered) continue;
+
+            float r, g, b, a;
+            if (selected && hovered) {
+                r = 0.90f; g = 0.72f; b = 0.22f; a = 0.95f;
+            } else if (selected) {
+                r = 0.78f; g = 0.60f; b = 0.15f; a = 0.92f;
+            } else {
+                r = 0.22f; g = 0.28f; b = 0.38f; a = 0.75f;
+            }
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        r, g, b, a);
+            std::vector<float> rv;
+            push_rect(rv, list_x0, bot, list_x1, top);
+            GLuint rvao, rvbo;
+            glGenVertexArrays(1, &rvao); glGenBuffers(1, &rvbo);
+            glBindVertexArray(rvao); glBindBuffer(GL_ARRAY_BUFFER, rvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(rv.size() * sizeof(float)),
+                         rv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0,
+                         static_cast<GLsizei>(rv.size() / 3));
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &rvbo); glDeleteVertexArrays(1, &rvao);
+        }
+
+        // 4. Row labels.
+        std::vector<float> lv;
+        float rcw = 0.028f, rch = 0.042f;
+        for (int i = 0; i < TC_COUNT; ++i) {
+            float top = list_top - static_cast<float>(i) * PG_TC_ROW_H;
+            const TimeControlSpec& s = TIME_CONTROLS[i];
+            std::string label = std::string(s.short_name) + "  " + s.display;
+            float lw = label.size() * rcw * 0.7f;
+            add_screen_string(lv, -lw * 0.5f,
+                              top - (PG_TC_ROW_H - rch) * 0.5f - 0.005f,
+                              rcw, rch, label);
+        }
+        int lv_count = static_cast<int>(lv.size() / 5);
+        if (lv_count > 0) {
+            GLuint lvao, lvbo;
+            glGenVertexArrays(1, &lvao); glGenBuffers(1, &lvbo);
+            glBindVertexArray(lvao); glBindBuffer(GL_ARRAY_BUFFER, lvbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(lv.size() * sizeof(float)),
+                         lv.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                                  5 * sizeof(float),
+                                  (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+
+            glUseProgram(g_text_program);
+            glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                               1, GL_FALSE, id.m);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_font_tex);
+            glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+            glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                        0.97f, 0.97f, 0.94f, 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, lv_count);
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &lvbo); glDeleteVertexArrays(1, &lvao);
+        }
+    }
 
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }

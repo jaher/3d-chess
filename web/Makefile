@@ -33,7 +33,8 @@ SHARED_SRCS := \
     ../stl_model.cpp \
     ../shader.cpp \
     ../challenge.cpp \
-    ../ai_player.cpp
+    ../ai_player.cpp \
+    ../time_control.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp
