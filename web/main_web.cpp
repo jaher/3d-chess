@@ -123,6 +123,51 @@ static AppKey translate_key(SDL_Keycode k) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Touch state for pinch-zoom on mobile.
+// ---------------------------------------------------------------------------
+// SDL_HINT_TOUCH_MOUSE_EVENTS is disabled in chess_start() so touches
+// never synthesise mouse events — we handle SDL_FINGER* directly. One
+// or two fingers are tracked (anything past the second is ignored):
+//
+//   - One finger: behaves as a mouse — app_press/motion/release with
+//     the finger's pixel position.
+//   - Two fingers: enters pinch mode. The change in distance between
+//     the two fingers is fed into app_scroll(delta) (negative delta =
+//     fingers moving apart = zoom in closer, matching the wheel
+//     convention used above). Entering pinch mode also emits a
+//     synthetic app_release so the initial one-finger press doesn't
+//     linger as a board click when the user drops the second finger.
+static constexpr SDL_FingerID NO_FID = -1;
+static SDL_FingerID g_fid_a = NO_FID;
+static SDL_FingerID g_fid_b = NO_FID;
+static float g_fa_x = 0.0f, g_fa_y = 0.0f;  // normalised 0..1
+static float g_fb_x = 0.0f, g_fb_y = 0.0f;
+static bool  g_pinch_active = false;
+static float g_pinch_last_dist = 0.0f;
+
+static inline int fpx(float norm_x) {
+    return static_cast<int>(norm_x * static_cast<float>(g_width));
+}
+static inline int fpy(float norm_y) {
+    return static_cast<int>(norm_y * static_cast<float>(g_height));
+}
+
+// Pixel distance between the two tracked fingers. Uses pixels, not
+// normalised coords, so pinch sensitivity scales naturally with
+// viewport size.
+static inline float pinch_distance_px() {
+    float dx = (g_fa_x - g_fb_x) * static_cast<float>(g_width);
+    float dy = (g_fa_y - g_fb_y) * static_cast<float>(g_height);
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+// Converts a pinch pixel-delta into the scroll-delta units that
+// app_scroll understands. app_scroll halves the delta internally and
+// clamps zoom to [3, 40]. 0.035 makes a ~300 px pinch span the
+// noticeable part of the zoom range without feeling twitchy.
+static constexpr double PINCH_SENSITIVITY = 0.035;
+
 static void pump_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -145,6 +190,82 @@ static void pump_events() {
                 // "positive delta = zoom out" convention.
                 app_scroll(g_app, -static_cast<double>(ev.wheel.y));
                 break;
+            case SDL_FINGERDOWN: {
+                SDL_FingerID fid = ev.tfinger.fingerId;
+                if (g_fid_a == NO_FID) {
+                    g_fid_a = fid;
+                    g_fa_x  = ev.tfinger.x;
+                    g_fa_y  = ev.tfinger.y;
+                    app_press(g_app, fpx(g_fa_x), fpy(g_fa_y));
+                } else if (g_fid_b == NO_FID && fid != g_fid_a) {
+                    g_fid_b = fid;
+                    g_fb_x  = ev.tfinger.x;
+                    g_fb_y  = ev.tfinger.y;
+                    // Cancel the one-finger press so dropping the
+                    // second finger doesn't also register as a
+                    // board click.
+                    app_release(g_app, fpx(g_fa_x), fpy(g_fa_y),
+                                g_width, g_height);
+                    g_pinch_active = true;
+                    g_pinch_last_dist = pinch_distance_px();
+                }
+                // 3+ fingers: silently ignored.
+                break;
+            }
+            case SDL_FINGERMOTION: {
+                SDL_FingerID fid = ev.tfinger.fingerId;
+                if (fid == g_fid_a) {
+                    g_fa_x = ev.tfinger.x; g_fa_y = ev.tfinger.y;
+                } else if (fid == g_fid_b) {
+                    g_fb_x = ev.tfinger.x; g_fb_y = ev.tfinger.y;
+                } else {
+                    break;
+                }
+                if (g_pinch_active) {
+                    float cur = pinch_distance_px();
+                    float delta = cur - g_pinch_last_dist;
+                    g_pinch_last_dist = cur;
+                    // 0.5 px dead zone avoids feeding jitter into
+                    // the clamped zoom accumulator.
+                    if (std::fabs(delta) > 0.5f) {
+                        app_scroll(g_app,
+                                   -static_cast<double>(delta) *
+                                   PINCH_SENSITIVITY);
+                    }
+                } else if (fid == g_fid_a) {
+                    app_motion(g_app, fpx(g_fa_x), fpy(g_fa_y),
+                               g_width, g_height);
+                }
+                break;
+            }
+            case SDL_FINGERUP: {
+                SDL_FingerID fid = ev.tfinger.fingerId;
+                if (fid == g_fid_b) {
+                    // Second finger lifted. Exit pinch mode but
+                    // leave finger_a tracked — the user can still
+                    // rotate the camera by dragging finger_a,
+                    // though without a fresh app_press we won't
+                    // reselect a square.
+                    g_fid_b = NO_FID;
+                    g_pinch_active = false;
+                } else if (fid == g_fid_a) {
+                    if (g_pinch_active) {
+                        // Pinch ended by lifting finger_a. Promote
+                        // finger_b to be the primary finger.
+                        g_fa_x = g_fb_x; g_fa_y = g_fb_y;
+                        g_fid_a = g_fid_b;
+                        g_fid_b = NO_FID;
+                        g_pinch_active = false;
+                    } else {
+                        // Normal single-finger release.
+                        app_release(g_app,
+                                    fpx(ev.tfinger.x), fpy(ev.tfinger.y),
+                                    g_width, g_height);
+                        g_fid_a = NO_FID;
+                    }
+                }
+                break;
+            }
             case SDL_KEYDOWN:
                 app_key(g_app, translate_key(ev.key.keysym.sym));
                 break;
@@ -217,6 +338,13 @@ int chess_start(void) {
                      g_loaded_models[i].triangle_count());
     }
     js_log("models loaded");
+
+    // Disable synthetic mouse events from touch so we can handle
+    // SDL_FINGER* directly (for two-finger pinch-zoom on mobile).
+    // Must be set BEFORE SDL_Init. With this off, a tap on a mobile
+    // browser comes through as SDL_FINGERDOWN/UP only, which we
+    // translate back into app_press/release in pump_events.
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
