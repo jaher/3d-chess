@@ -3104,10 +3104,14 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
 
     Mat4 id = mat4_identity();
 
-    // Top-center info bar
+    // Top-center info bar. Width is just enough to enclose the
+    // longest realistic "Puzzle N/M   Colour to mate in N   Moves:
+    // N/M" string (~0.58 NDC wide at the current font) with a
+    // small padding. Previously this spanned x in [-0.6, 0.6],
+    // which overlapped the score graph at x = 0.55.
     std::vector<float> bg_verts;
-    bg_verts.insert(bg_verts.end(), {-0.6f, 0.85f, 0,  0.6f, 0.85f, 0,  0.6f, 0.97f, 0,
-                                       -0.6f, 0.85f, 0,  0.6f, 0.97f, 0,  -0.6f, 0.97f, 0});
+    bg_verts.insert(bg_verts.end(), {-0.36f, 0.85f, 0,  0.36f, 0.85f, 0,  0.36f, 0.97f, 0,
+                                       -0.36f, 0.85f, 0,  0.36f, 0.97f, 0,  -0.36f, 0.97f, 0});
     GLuint bvao, bvbo;
     glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
     glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
