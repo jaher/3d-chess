@@ -1000,8 +1000,9 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.5f,0.5f,0.4f);
         glLineWidth(1); glDrawArrays(GL_LINES, zl_start, zc);
 
-        // Score line (green)
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.3f,0.8f,0.3f,0.9f);
+        // Score line: 50% gray — the midpoint between the white and
+        // black fills below it, so it visually reads as "neither side".
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.5f,0.5f,0.9f);
         glLineWidth(2); glDrawArrays(GL_LINES, ls, lc);
 
         // Analysis dot
@@ -1640,24 +1641,6 @@ void renderer_draw_pregame(bool human_plays_white,
                  0.12f, 0.12f, 0.14f, hover == 3 ? 0.95f : 0.78f);
     }
 
-    // Gradient slider bar — N segments, green -> red.
-    {
-        const int N = 24;
-        float seg_w = (PG_SLIDER_X_RIGHT - PG_SLIDER_X_LEFT) / static_cast<float>(N);
-        for (int i = 0; i < N; i++) {
-            float t0 = static_cast<float>(i)     / static_cast<float>(N);
-            float t1 = static_cast<float>(i + 1) / static_cast<float>(N);
-            // Color from the midpoint of the segment so the quad fill
-            // is a good average of the gradient at that x.
-            float t = 0.5f * (t0 + t1);
-            float r = (1.0f - t) * 0.20f + t * 0.92f;
-            float g = (1.0f - t) * 0.85f + t * 0.20f;
-            float b = (1.0f - t) * 0.25f + t * 0.18f;
-            float x0 = PG_SLIDER_X_LEFT + i     * seg_w;
-            add_quad(x0, PG_SLIDER_Y, seg_w, PG_SLIDER_H, r, g, b, 1.0f);
-        }
-    }
-
     // Slider handle: square + downward triangle. Position centered at
     // handle_x based on current ELO.
     {
@@ -1704,6 +1687,8 @@ void renderer_draw_pregame(bool human_plays_white,
                        1, GL_FALSE, id.m);
     glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
     glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    // Flat-color mode for the buttons + handle.
+    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
     for (const auto& r : regions) {
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
                     r.r, r.g, r.b, r.a);
@@ -1711,6 +1696,98 @@ void renderer_draw_pregame(bool human_plays_white,
     }
     glBindVertexArray(0);
     glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // ----- Pill-shaped gradient slider bar -----
+    // A horizontal capsule: flat rectangle in the middle + two
+    // semicircular end caps, drawn as triangle fans around each cap's
+    // center. The fragment shader reads vLocalPos.x (which equals
+    // aPos.x for these vertices) and interpolates between uColor (green)
+    // on the left and uColorB (red) on the right. No stroke/outline —
+    // the pill is a solid filled shape.
+    {
+        const float R     = PG_SLIDER_H * 0.5f;
+        const float y_mid = PG_SLIDER_Y - R;
+        const float cap_l_cx = PG_SLIDER_X_LEFT  + R;
+        const float cap_r_cx = PG_SLIDER_X_RIGHT - R;
+
+        std::vector<float> pill_verts;  // 3 floats per vertex
+
+        auto emit_tri = [&](float x0, float y0,
+                            float x1, float y1,
+                            float x2, float y2) {
+            pill_verts.insert(pill_verts.end(),
+                {x0, y0, 0,  x1, y1, 0,  x2, y2, 0});
+        };
+
+        // Middle rectangle (two triangles).
+        float y_top = y_mid + R;
+        float y_bot = y_mid - R;
+        emit_tri(cap_l_cx, y_bot,  cap_r_cx, y_bot,  cap_r_cx, y_top);
+        emit_tri(cap_l_cx, y_bot,  cap_r_cx, y_top,  cap_l_cx, y_top);
+
+        // Left semicircle cap: fan around (cap_l_cx, y_mid), arc from
+        // +PI/2 (top of cap) counter-clockwise to +3PI/2 (bottom of cap),
+        // i.e. the left half of the circle.
+        const int CAP_SEGS = 24;
+        for (int i = 0; i < CAP_SEGS; i++) {
+            float a0 = static_cast<float>(M_PI) * 0.5f +
+                       (static_cast<float>(i)     / CAP_SEGS) * static_cast<float>(M_PI);
+            float a1 = static_cast<float>(M_PI) * 0.5f +
+                       (static_cast<float>(i + 1) / CAP_SEGS) * static_cast<float>(M_PI);
+            float p0x = cap_l_cx + std::cos(a0) * R;
+            float p0y = y_mid    + std::sin(a0) * R;
+            float p1x = cap_l_cx + std::cos(a1) * R;
+            float p1y = y_mid    + std::sin(a1) * R;
+            emit_tri(cap_l_cx, y_mid,  p0x, p0y,  p1x, p1y);
+        }
+
+        // Right semicircle cap: fan around (cap_r_cx, y_mid), arc from
+        // -PI/2 (bottom) counter-clockwise to +PI/2 (top), the right
+        // half of the circle.
+        for (int i = 0; i < CAP_SEGS; i++) {
+            float a0 = -static_cast<float>(M_PI) * 0.5f +
+                       (static_cast<float>(i)     / CAP_SEGS) * static_cast<float>(M_PI);
+            float a1 = -static_cast<float>(M_PI) * 0.5f +
+                       (static_cast<float>(i + 1) / CAP_SEGS) * static_cast<float>(M_PI);
+            float p0x = cap_r_cx + std::cos(a0) * R;
+            float p0y = y_mid    + std::sin(a0) * R;
+            float p1x = cap_r_cx + std::cos(a1) * R;
+            float p1y = y_mid    + std::sin(a1) * R;
+            emit_tri(cap_r_cx, y_mid,  p0x, p0y,  p1x, p1y);
+        }
+
+        GLuint pvao, pvbo;
+        glGenVertexArrays(1, &pvao); glGenBuffers(1, &pvbo);
+        glBindVertexArray(pvao);
+        glBindBuffer(GL_ARRAY_BUFFER, pvbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(pill_verts.size() * sizeof(float)),
+                     pill_verts.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        // Flip into gradient mode for this one draw. uInnerRadius/
+        // uOuterRadius are already 0 from above, keeping us on the
+        // flat-color path inside the shader.
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 1);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.20f, 0.85f, 0.25f, 1.0f);   // green (left)
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColorB"),
+                    0.92f, 0.20f, 0.18f, 1.0f);   // red   (right)
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX0"),
+                    PG_SLIDER_X_LEFT);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uGradX1"),
+                    PG_SLIDER_X_RIGHT);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<int>(pill_verts.size() / 3));
+
+        // Reset gradient mode so later draws in this frame (or in the
+        // next renderer pass) see a flat-color highlight program.
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &pvbo); glDeleteVertexArrays(1, &pvao);
+    }
 
     // ----- Text -----
     std::vector<float> ui_verts;  // 5 floats per vertex (xyz uv)

@@ -386,10 +386,27 @@ uniform vec4 uColor;
 uniform float uInnerRadius;
 uniform float uOuterRadius;
 
+// Optional horizontal gradient mode for flat UI overlays. Used by the
+// pregame ELO slider to paint the capsule with a green→red gradient
+// without needing a separate shader. When uUseGradient != 0 the flat
+// color branch mixes uColor and uColorB based on vLocalPos.x normalized
+// over [uGradX0, uGradX1]. Leave at 0 for ordinary flat-color draws.
+uniform int   uUseGradient;
+uniform vec4  uColorB;
+uniform float uGradX0;
+uniform float uGradX1;
+
 void main() {
     // Flat mode: when both radii are 0, draw solid color (for UI overlays)
     if (uInnerRadius <= 0.0 && uOuterRadius <= 0.0) {
-        FragColor = uColor;
+        if (uUseGradient != 0) {
+            float span = uGradX1 - uGradX0;
+            float t = (span > 0.0) ? (vLocalPos.x - uGradX0) / span : 0.0;
+            t = clamp(t, 0.0, 1.0);
+            FragColor = mix(uColor, uColorB, t);
+        } else {
+            FragColor = uColor;
+        }
         return;
     }
 
