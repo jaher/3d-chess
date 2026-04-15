@@ -2822,15 +2822,24 @@ void renderer_draw_pregame(bool human_plays_white,
     // The handle (square + triangle) is gone — the leading edge of
     // the gradient fill is the position indicator.
     {
-        // Slice-based pill mesh builder. Emits triangles into a vec3
-        // buffer for x in [x_from, x_to] sampled at N slices, with
-        // top/bottom y values computed from half_h() given the
-        // capsule (cap_l_cx, cap_r_cx, R) it belongs to.
+        // Slice-based pill mesh builder. The left and right caps
+        // each get their own dense slice count so the round edges
+        // are visually smooth (not polygonal) regardless of how
+        // narrow the caps are relative to the total pill width.
+        // The flat middle is a single quad — no tessellation
+        // needed for a constant-y strip. A uniform slicing across
+        // the whole pill would give the caps only a handful of
+        // slices (width of cap ≈ 3% of total pill), which is
+        // where the visible facets came from.
+        //
+        // cap_slices is the number of slices used to tessellate a
+        // full cap (width = R). Partial caps (when a fill ends
+        // inside the cap) scale this proportionally.
         auto emit_pill_slices = [](std::vector<float>& out,
                                    float x_from, float x_to,
                                    float y_mid,
                                    float cap_l_cx, float cap_r_cx,
-                                   float R, int slices) {
+                                   float R, int cap_slices) {
             if (x_to <= x_from) return;
             auto half_h = [&](float x) -> float {
                 if (x <= cap_l_cx) {
@@ -2845,19 +2854,47 @@ void renderer_draw_pregame(bool human_plays_white,
                 }
                 return R;
             };
-            for (int i = 0; i < slices; i++) {
-                float x0 = x_from + static_cast<float>(i)     / slices * (x_to - x_from);
-                float x1 = x_from + static_cast<float>(i + 1) / slices * (x_to - x_from);
-                float h0 = half_h(x0);
-                float h1 = half_h(x1);
-                // Quad (x0,y_mid-h0)-(x1,y_mid-h1)-(x1,y_mid+h1)-(x0,y_mid+h0).
-                out.insert(out.end(),
-                    {x0, y_mid - h0, 0,
-                     x1, y_mid - h1, 0,
-                     x1, y_mid + h1, 0,
-                     x0, y_mid - h0, 0,
-                     x1, y_mid + h1, 0,
-                     x0, y_mid + h0, 0});
+            auto emit_segment = [&](float xa, float xb, int n) {
+                if (xb <= xa || n < 1) return;
+                for (int i = 0; i < n; i++) {
+                    float x0 = xa + static_cast<float>(i)     / n * (xb - xa);
+                    float x1 = xa + static_cast<float>(i + 1) / n * (xb - xa);
+                    float h0 = half_h(x0);
+                    float h1 = half_h(x1);
+                    out.insert(out.end(),
+                        {x0, y_mid - h0, 0,
+                         x1, y_mid - h1, 0,
+                         x1, y_mid + h1, 0,
+                         x0, y_mid - h0, 0,
+                         x1, y_mid + h1, 0,
+                         x0, y_mid + h0, 0});
+                }
+            };
+
+            // Partition [x_from, x_to] into three regions, clipped
+            // to whatever the caller asked for: left cap (width up
+            // to R), flat middle (width cap_r_cx - cap_l_cx), and
+            // right cap (width up to R). Each gets its own slice
+            // count.
+            const float left_cap_start  = x_from;
+            const float left_cap_end    = std::min(x_to, cap_l_cx);
+            const float mid_start       = std::max(x_from, cap_l_cx);
+            const float mid_end         = std::min(x_to, cap_r_cx);
+            const float right_cap_start = std::max(x_from, cap_r_cx);
+            const float right_cap_end   = x_to;
+
+            if (left_cap_end > left_cap_start && R > 0.0f) {
+                float frac = (left_cap_end - left_cap_start) / R;
+                int n = std::max(1, static_cast<int>(std::ceil(cap_slices * frac)));
+                emit_segment(left_cap_start, left_cap_end, n);
+            }
+            if (mid_end > mid_start) {
+                emit_segment(mid_start, mid_end, 1);
+            }
+            if (right_cap_end > right_cap_start && R > 0.0f) {
+                float frac = (right_cap_end - right_cap_start) / R;
+                int n = std::max(1, static_cast<int>(std::ceil(cap_slices * frac)));
+                emit_segment(right_cap_start, right_cap_end, n);
             }
         };
 
@@ -2876,20 +2913,23 @@ void renderer_draw_pregame(bool human_plays_white,
         const float cap_l_out = x_left_out  + R_out;  // = cap_l_in
         const float cap_r_out = x_right_out - R_out;  // = cap_r_in
 
-        const int PILL_SLICES = 96;
+        // Slices across ONE cap's width. emit_pill_slices scales
+        // this down proportionally for partial caps. 32 gives a
+        // visibly smooth round edge at gameplay zoom.
+        const int CAP_SLICES = 32;
 
         // Build outer + inner meshes into one big flat-color VBO.
         std::vector<float> pill_verts;
         int outer_start = 0;
         emit_pill_slices(pill_verts,
             x_left_out, x_right_out,
-            y_mid_out, cap_l_out, cap_r_out, R_out, PILL_SLICES);
+            y_mid_out, cap_l_out, cap_r_out, R_out, CAP_SLICES);
         int outer_count = static_cast<int>(pill_verts.size() / 3) - outer_start;
 
         int inner_start = static_cast<int>(pill_verts.size() / 3);
         emit_pill_slices(pill_verts,
             PG_SLIDER_X_LEFT, PG_SLIDER_X_RIGHT,
-            y_mid_in, cap_l_in, cap_r_in, R_in, PILL_SLICES);
+            y_mid_in, cap_l_in, cap_r_in, R_in, CAP_SLICES);
         int inner_count = static_cast<int>(pill_verts.size() / 3) - inner_start;
 
         // Gradient fill: partial inner capsule from left edge up to
@@ -2903,14 +2943,12 @@ void renderer_draw_pregame(bool human_plays_white,
 
         int fill_start = static_cast<int>(pill_verts.size() / 3);
         if (fill_x > PG_SLIDER_X_LEFT) {
-            // Use the same slice count scaled by the fill fraction so
-            // each slice is roughly the same width as the full pill's
-            // slices — keeps the right edge smooth regardless of t.
-            int fill_slices = std::max(4,
-                static_cast<int>(std::ceil(PILL_SLICES * t)));
+            // Same cap slice density as the full pill. The builder
+            // handles partial caps automatically by scaling by the
+            // covered fraction of R.
             emit_pill_slices(pill_verts,
                 PG_SLIDER_X_LEFT, fill_x,
-                y_mid_in, cap_l_in, cap_r_in, R_in, fill_slices);
+                y_mid_in, cap_l_in, cap_r_in, R_in, CAP_SLICES);
         }
         int fill_count = static_cast<int>(pill_verts.size() / 3) - fill_start;
 
