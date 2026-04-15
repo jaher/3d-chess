@@ -1160,10 +1160,26 @@ void app_tick(AppState& a) {
             // Turn flip → the side that just moved gets the
             // Fischer increment. Detected here rather than inside
             // execute_move so the rules layer stays pure.
+            //
+            // Cap each clock at the initial budget so the displayed
+            // time never grows above the starting value (e.g. 30:00
+            // in Classical). Raw Fischer behaviour would let a fast
+            // player accumulate time above the cap, which combined
+            // with our adaptive AI move time made the clock visibly
+            // count UP during a classical game — surprising and
+            // hard to reason about. Capping preserves the
+            // incentive (play fast and you lose less time) without
+            // the "growing clock" artefact.
+            const int64_t base = TIME_CONTROLS[a.time_control].base_ms;
             if (cur != a.prev_white_turn) {
                 int64_t inc = TIME_CONTROLS[a.time_control].increment_ms;
-                if (a.prev_white_turn == 1) a.white_ms_left += inc;
-                else                        a.black_ms_left += inc;
+                if (a.prev_white_turn == 1) {
+                    a.white_ms_left += inc;
+                    if (a.white_ms_left > base) a.white_ms_left = base;
+                } else {
+                    a.black_ms_left += inc;
+                    if (a.black_ms_left > base) a.black_ms_left = base;
+                }
             }
             a.prev_white_turn = cur;
             // Time loss.
