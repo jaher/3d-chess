@@ -394,6 +394,18 @@ static void handle_board_click(AppState& a, double mx, double my,
         return;
     }
 
+    // Clicking the currently-selected piece again deselects it.
+    // Do this before the "is this a valid move?" loop so the
+    // click doesn't get interpreted as a no-op move to the same
+    // square (which wouldn't execute anyway, but this is the
+    // intent-level behaviour the user expects).
+    if (gs.selected_col == col && gs.selected_row == row) {
+        gs.selected_col = gs.selected_row = -1;
+        gs.valid_moves.clear();
+        queue_redraw(a);
+        return;
+    }
+
     if (gs.selected_col >= 0) {
         for (const auto& [mc, mr] : gs.valid_moves) {
             if (mc == col && mr == row) {
