@@ -4,8 +4,11 @@
 #include "shader.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <random>
 #include <vector>
 
 #ifndef __EMSCRIPTEN__
@@ -58,6 +61,13 @@ static GLuint g_capture_tex = 0;
 static GLuint g_capture_fbo = 0;
 #endif
 static int g_capture_w = 0, g_capture_h = 0;
+
+// Per-piece half-extents in GPU-normalised object space, one triple
+// per PieceType. Populated once from each loaded STL's bbox in
+// renderer_init. Used by menu_update_physics to build a rotated
+// world-space AABB for each tumbling piece so it collides with the
+// floor, walls, and neighbours at its actual silhouette.
+static float g_piece_half_extent[PIECE_COUNT][3] = {};
 
 // Cartoon-outline post-process. Scene FBO has color + depth
 // textures, both sampleable from g_outline_program. Size tracks
@@ -637,6 +647,28 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_shatter_program = create_program(shatter_vs_src, shatter_fs_src);
     g_outline_program = create_program(outline_vs_src, outline_fs_src);
     build_shatter_mesh();
+
+    // Per-piece half extents in GPU-normalised object space, used
+    // by the menu physics. Mirrors StlModel::build_vertex_buffer
+    // exactly: center-offset by bbox centre, scaled by
+    // 2 / max_extent. Because the bbox is not necessarily cubic,
+    // the longest axis ends up with a half-extent of 1.0 and the
+    // others are proportionally smaller.
+    for (int t = 0; t < PIECE_COUNT; ++t) {
+        const BoundingBox& bb = loaded_models[t].bounding_box();
+        float max_ext = bb.max_extent();
+        if (max_ext < 1e-6f) {
+            g_piece_half_extent[t][0] = 1.0f;
+            g_piece_half_extent[t][1] = 1.0f;
+            g_piece_half_extent[t][2] = 1.0f;
+            continue;
+        }
+        float norm_scale = 2.0f / max_ext;
+        Vertex c = bb.center();
+        g_piece_half_extent[t][0] = (bb.max.x - c.x) * norm_scale;
+        g_piece_half_extent[t][1] = (bb.max.y - c.y) * norm_scale;
+        g_piece_half_extent[t][2] = (bb.max.z - c.z) * norm_scale;
+    }
 
     // Two-triangle fullscreen quad in clip space for the outline
     // post-process. Position-only attribute at location 0 matches
@@ -2175,27 +2207,102 @@ void renderer_draw(GameState& gs, int width, int height,
 // ===========================================================================
 void menu_init_physics(std::vector<PhysicsPiece>& pieces) {
     pieces.clear();
-    PieceType types[12] = {KING,QUEEN,BISHOP,KNIGHT,ROOK,PAWN,KING,QUEEN,BISHOP,KNIGHT,ROOK,PAWN};
+
+    // Seeded from the wall clock so each time the main menu is
+    // entered the pieces fall in a fresh configuration — positions,
+    // velocities, rotations, spins, and spawn order are all
+    // randomised. Local mt19937 so we don't touch global rand state.
+    const auto seed = static_cast<uint32_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    std::mt19937 rng(seed);
+    auto rf = [&](float lo, float hi) {
+        std::uniform_real_distribution<float> d(lo, hi);
+        return d(rng);
+    };
+
+    // Shuffle the type list so which piece falls first / where in the
+    // stagger is different each time too.
+    std::array<PieceType, 12> types = {
+        KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN,
+        KING, QUEEN, BISHOP, KNIGHT, ROOK, PAWN,
+    };
+    std::shuffle(types.begin(), types.end(), rng);
+
     for (int i = 0; i < 12; i++) {
         PhysicsPiece p;
         p.type = types[i];
-        float angle = static_cast<float>(i) / 12.0f * 6.28f;
-        float radius = 2.0f + static_cast<float>(i % 5) * 0.8f;
-        p.x = std::cos(angle) * radius;
-        p.z = std::sin(angle) * radius;
-        p.y = 3.0f + static_cast<float>(i) * 1.5f;
-        p.vx = std::sin(angle * 3.7f) * 1.5f;
-        p.vy = 0.0f;
-        p.vz = std::cos(angle * 2.3f) * 1.5f;
-        p.rot_x = static_cast<float>(i * 47 % 360);
-        p.rot_y = static_cast<float>(i * 73 % 360);
-        p.rot_z = static_cast<float>(i * 31 % 360);
-        p.spin_x = (static_cast<float>(i % 3) - 1.0f) * 60.0f;
-        p.spin_y = (static_cast<float>(i % 5) - 2.0f) * 40.0f;
-        p.spin_z = (static_cast<float>(i % 4) - 1.5f) * 30.0f;
-        p.scale = 0.35f + static_cast<float>(i % 3) * 0.1f;
+        // Scatter across the play area (walls at ±6) with a 1.5
+        // margin so pieces don't clip immediately.
+        p.x = rf(-4.5f, 4.5f);
+        p.z = rf(-4.5f, 4.5f);
+        // Stagger heights so pieces enter the scene in a waterfall.
+        // A little per-piece jitter on top of the monotonic base
+        // keeps it from looking mechanical.
+        p.y = 3.0f + static_cast<float>(i) * 1.4f + rf(-0.4f, 0.4f);
+        // Gentle horizontal drift + a small vertical kick for variety.
+        p.vx = rf(-1.8f, 1.8f);
+        p.vy = rf(-0.5f, 0.5f);
+        p.vz = rf(-1.8f, 1.8f);
+        // Full 360° starting orientation on every axis.
+        p.rot_x = rf(0.0f, 360.0f);
+        p.rot_y = rf(0.0f, 360.0f);
+        p.rot_z = rf(0.0f, 360.0f);
+        // Spin rates across a wide range — some lazy, some rapid.
+        p.spin_x = rf(-80.0f, 80.0f);
+        p.spin_y = rf(-80.0f, 80.0f);
+        p.spin_z = rf(-60.0f, 60.0f);
+        // Scale buckets (0.35 / 0.45 / 0.55) kept for size variety
+        // but picked randomly instead of i%3 so it doesn't always
+        // correlate with stagger position.
+        static constexpr float scale_bucket[3] = {0.35f, 0.45f, 0.55f};
+        std::uniform_int_distribution<int> pick(0, 2);
+        p.scale = scale_bucket[pick(rng)];
         pieces.push_back(p);
     }
+}
+
+// Compute the world-space AABB half-extents for a tumbling menu
+// piece. Takes the piece's local half-extents (already normalised
+// to GPU space, one triple per PieceType in g_piece_half_extent),
+// scales them by the render-time physics scale, then applies the
+// abs-of-rotation trick to turn an OBB into its tight enclosing
+// AABB in one matmul. Output: world_half[x/y/z] = absolute world
+// half-extent measured from the piece's centre.
+//
+// This is the standard trick (Ericson, "Real-Time Collision
+// Detection", §4.2.6): for rotation matrix R and local half
+// extents h, the world AABB half extents are
+//   H.x = |R[0][0]|*h.x + |R[0][1]|*h.y + |R[0][2]|*h.z
+// and similarly for y and z. Cheaper than transforming the 8
+// corners explicitly.
+static void menu_piece_world_half_extents(const PhysicsPiece& p,
+                                          float out[3]) {
+    const float deg2rad = static_cast<float>(M_PI) / 180.0f;
+    const float s = BASE_PIECE_SCALE * piece_scale[p.type] * p.scale / 0.35f;
+
+    const float hx_loc = g_piece_half_extent[p.type][0] * s;
+    const float hy_loc = g_piece_half_extent[p.type][1] * s;
+    const float hz_loc = g_piece_half_extent[p.type][2] * s;
+
+    // R = Rz * Ry * Rx  (matches renderer_draw_menu rotation order).
+    Mat4 rot = mat4_multiply(
+        mat4_rotate_z(p.rot_z * deg2rad),
+        mat4_multiply(mat4_rotate_y(p.rot_y * deg2rad),
+                      mat4_rotate_x(p.rot_x * deg2rad)));
+    // Extract the 3x3 (column-major Mat4 indexing).
+    const float r00 = rot.m[0], r01 = rot.m[4], r02 = rot.m[8];
+    const float r10 = rot.m[1], r11 = rot.m[5], r12 = rot.m[9];
+    const float r20 = rot.m[2], r21 = rot.m[6], r22 = rot.m[10];
+
+    out[0] = std::fabs(r00) * hx_loc +
+             std::fabs(r01) * hy_loc +
+             std::fabs(r02) * hz_loc;
+    out[1] = std::fabs(r10) * hx_loc +
+             std::fabs(r11) * hy_loc +
+             std::fabs(r12) * hz_loc;
+    out[2] = std::fabs(r20) * hx_loc +
+             std::fabs(r21) * hy_loc +
+             std::fabs(r22) * hz_loc;
 }
 
 void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
@@ -2204,45 +2311,119 @@ void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
     const float bounce = 0.6f;
     const float wall = 6.0f;
     const float damping = 0.998f;
-    const float piece_radius = 0.5f;
 
+    // --- Integrate (gravity + ballistic motion + spin) ---
     for (auto& p : pieces) {
         p.vy += gravity * dt;
-        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
-        p.rot_x += p.spin_x * dt; p.rot_y += p.spin_y * dt; p.rot_z += p.spin_z * dt;
-
-        if (p.y < floor_y) {
-            p.y = floor_y; p.vy = std::abs(p.vy) * bounce;
-            p.spin_x *= 0.8f; p.spin_y *= 0.8f; p.spin_z *= 0.8f;
-            p.spin_x += (p.vx > 0 ? 1 : -1) * 20.0f;
-        }
-        if (p.x < -wall) { p.x = -wall; p.vx = std::abs(p.vx) * bounce; }
-        if (p.x >  wall) { p.x =  wall; p.vx = -std::abs(p.vx) * bounce; }
-        if (p.z < -wall) { p.z = -wall; p.vz = std::abs(p.vz) * bounce; }
-        if (p.z >  wall) { p.z =  wall; p.vz = -std::abs(p.vz) * bounce; }
-        p.vx *= damping; p.vz *= damping;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.z += p.vz * dt;
+        p.rot_x += p.spin_x * dt;
+        p.rot_y += p.spin_y * dt;
+        p.rot_z += p.spin_z * dt;
     }
 
-    // Piece-piece collisions
-    int n = static_cast<int>(pieces.size());
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            auto& a = pieces[i]; auto& b = pieces[j];
-            float dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z;
-            float dist2 = dx*dx+dy*dy+dz*dz;
-            float md = piece_radius * (a.scale+b.scale) / 0.35f;
-            if (dist2 < md*md && dist2 > 0.001f) {
-                float dist = std::sqrt(dist2);
-                float nx=dx/dist, ny=dy/dist, nz=dz/dist;
-                float ov = md-dist;
-                a.x-=nx*ov*0.5f; a.y-=ny*ov*0.5f; a.z-=nz*ov*0.5f;
-                b.x+=nx*ov*0.5f; b.y+=ny*ov*0.5f; b.z+=nz*ov*0.5f;
-                float rv=(a.vx-b.vx)*nx+(a.vy-b.vy)*ny+(a.vz-b.vz)*nz;
-                if (rv > 0) {
-                    float imp=rv*0.85f;
-                    a.vx-=imp*nx; a.vy-=imp*ny; a.vz-=imp*nz;
-                    b.vx+=imp*nx; b.vy+=imp*ny; b.vz+=imp*nz;
-                }
+    // --- World boundary collisions using each piece's rotated
+    //     world-space AABB. Pieces now sit flat on the floor at
+    //     their base (not at their centre) and bounce off the
+    //     walls at their silhouette. ---
+    for (auto& p : pieces) {
+        float h[3];
+        menu_piece_world_half_extents(p, h);
+
+        // Floor: piece bottom is at (p.y - h.y). Push up if below.
+        if (p.y - h[1] < floor_y) {
+            p.y = floor_y + h[1];
+            p.vy = std::abs(p.vy) * bounce;
+            p.spin_x *= 0.8f; p.spin_y *= 0.8f; p.spin_z *= 0.8f;
+            p.spin_x += (p.vx > 0 ? 1.0f : -1.0f) * 20.0f;
+        }
+        if (p.x - h[0] < -wall) {
+            p.x = -wall + h[0];
+            p.vx = std::abs(p.vx) * bounce;
+        }
+        if (p.x + h[0] > wall) {
+            p.x = wall - h[0];
+            p.vx = -std::abs(p.vx) * bounce;
+        }
+        if (p.z - h[2] < -wall) {
+            p.z = -wall + h[2];
+            p.vz = std::abs(p.vz) * bounce;
+        }
+        if (p.z + h[2] > wall) {
+            p.z = wall - h[2];
+            p.vz = -std::abs(p.vz) * bounce;
+        }
+        p.vx *= damping;
+        p.vz *= damping;
+    }
+
+    // --- Piece-piece collisions via rotated AABB overlap ---
+    //
+    // Build each piece's world half-extents once, then for every
+    // pair check for overlap on all three axes. If the pair
+    // overlaps, the contact normal is the axis with the smallest
+    // penetration depth — push the pair apart by half each and
+    // apply the existing impulse along that axis.
+    const int n = static_cast<int>(pieces.size());
+    std::vector<std::array<float, 3>> halves(n);
+    for (int i = 0; i < n; ++i) {
+        menu_piece_world_half_extents(pieces[i], halves[i].data());
+    }
+
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            PhysicsPiece& a = pieces[i];
+            PhysicsPiece& b = pieces[j];
+            const float dx = b.x - a.x;
+            const float dy = b.y - a.y;
+            const float dz = b.z - a.z;
+            const float sum_x = halves[i][0] + halves[j][0];
+            const float sum_y = halves[i][1] + halves[j][1];
+            const float sum_z = halves[i][2] + halves[j][2];
+            const float ox = sum_x - std::fabs(dx);
+            const float oy = sum_y - std::fabs(dy);
+            const float oz = sum_z - std::fabs(dz);
+            if (ox <= 0.0f || oy <= 0.0f || oz <= 0.0f) continue;
+
+            // Minimum penetration axis → contact normal. Normal
+            // points from a toward b on that axis.
+            float nx = 0.0f, ny = 0.0f, nz = 0.0f;
+            float depth;
+            if (ox <= oy && ox <= oz) {
+                nx = (dx >= 0.0f) ? 1.0f : -1.0f;
+                depth = ox;
+            } else if (oy <= oz) {
+                ny = (dy >= 0.0f) ? 1.0f : -1.0f;
+                depth = oy;
+            } else {
+                nz = (dz >= 0.0f) ? 1.0f : -1.0f;
+                depth = oz;
+            }
+
+            const float half_d = depth * 0.5f;
+            a.x -= nx * half_d;
+            a.y -= ny * half_d;
+            a.z -= nz * half_d;
+            b.x += nx * half_d;
+            b.y += ny * half_d;
+            b.z += nz * half_d;
+
+            // Impulse along the contact normal. Positive rv_n
+            // means a and b are approaching (a's velocity has a
+            // component toward b along the normal), so flip that
+            // component with 0.85 restitution.
+            const float rv_n = (a.vx - b.vx) * nx +
+                               (a.vy - b.vy) * ny +
+                               (a.vz - b.vz) * nz;
+            if (rv_n > 0.0f) {
+                const float imp = rv_n * 0.85f;
+                a.vx -= imp * nx;
+                a.vy -= imp * ny;
+                a.vz -= imp * nz;
+                b.vx += imp * nx;
+                b.vy += imp * ny;
+                b.vz += imp * nz;
             }
         }
     }
