@@ -1402,8 +1402,8 @@ void renderer_draw(GameState& gs, int width, int height,
         float graph_bottom = 0.55f;
         float ml_center = (gx0 + gx1) * 0.5f;
 
-        float ch_w = 0.020f, ch_h = 0.030f;
-        float line_h = 0.034f;
+        float ch_w = 0.024f, ch_h = 0.036f;
+        float line_h = 0.040f;
         float num_w = 0.055f;
         float col_gap = 0.01f;
         float half_row_w = 0.08f; // approx half-width of one move column
