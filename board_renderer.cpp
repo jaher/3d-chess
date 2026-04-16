@@ -338,31 +338,12 @@ static void char_uvs(char ch, float& u0, float& v0, float& u1, float& v1) {
     v1 = static_cast<float>(row + 1) / ATLAS_ROWS;
 }
 
-// ---------------------------------------------------------------------------
-// UI text scale. Set once per top-level render function from
-//   g_text_scale = std::max(1.0f, 768.0f / height)
-// so text stays at a readable pixel size on small screens (phones,
-// small windows) without growing on large screens. 768 is the
-// default desktop window height.
-// ---------------------------------------------------------------------------
-static float g_text_scale = 1.0f;
-
-// Convenience: width of a string in NDC at the current text scale.
-static float tw(const std::string& s, float base_cw) {
-    return static_cast<float>(s.size()) * base_cw * g_text_scale * 0.7f;
-}
-
-// Convenience: scaled character dimension.
-static float ts(float base) { return base * g_text_scale; }
-
-// Add a textured quad for a character in NDC (2D screen space).
-// Dimensions are multiplied by g_text_scale internally.
+// Add a textured quad for a character in NDC (2D screen space)
 static void add_screen_char(std::vector<float>& verts, float x, float y,
                             float w, float h, char ch) {
-    w *= g_text_scale;
-    h *= g_text_scale;
     float u0, v0, u1, v1;
     char_uvs(ch, u0, v0, u1, v1);
+    // Two triangles: BL, BR, TR, BL, TR, TL
     verts.insert(verts.end(), {x, y-h, 0, u0, v1});
     verts.insert(verts.end(), {x+w, y-h, 0, u1, v1});
     verts.insert(verts.end(), {x+w, y, 0, u1, v0});
@@ -371,14 +352,12 @@ static void add_screen_char(std::vector<float>& verts, float x, float y,
     verts.insert(verts.end(), {x, y, 0, u0, v0});
 }
 
-// Add a string of characters in NDC, returns x advance.
-// Char dimensions are scaled by g_text_scale internally.
+// Add a string of characters in NDC, returns x advance
 static float add_screen_string(std::vector<float>& verts, float x, float y,
                                float char_w, float char_h, const std::string& str) {
-    float advance = char_w * g_text_scale * 0.7f;
     for (char ch : str) {
         add_screen_char(verts, x, y, char_w, char_h, ch);
-        x += advance;
+        x += char_w * 0.7f; // tighter spacing
     }
     return x;
 }
@@ -934,8 +913,6 @@ void renderer_draw(GameState& gs, int width, int height,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
                    bool cartoon_outline) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -1380,7 +1357,7 @@ void renderer_draw(GameState& gs, int width, int height,
         int white_verts = static_cast<int>(tv.size() / 5);
 
         // Black percentage (right-aligned)
-        float bw = tw(bs, pch_w);
+        float bw = bs.size() * pch_w * 0.7f;
         add_screen_string(tv, gx1 - bw - 0.01f, pty, pch_w, pch_h, bs);
         int total_verts = static_cast<int>(tv.size() / 5);
 
@@ -1629,7 +1606,7 @@ void renderer_draw(GameState& gs, int width, int height,
             const char* label = clock_side_is_white ? "White" : "Black";
             std::string s = label;
             float lcw = 0.022f;
-            float lw = tw(s, lcw);
+            float lw = s.size() * lcw * 0.7f;
             add_screen_string(cv, -lw * 0.5f, label_top_y,
                               lcw, lch, s);
         }
@@ -1638,7 +1615,7 @@ void renderer_draw(GameState& gs, int width, int height,
         // Big clock text, snug below the side label.
         std::string clock_text = format_clock_ms(clock_ms_remaining);
         float ccw = 0.055f;
-        float cw_total = tw(clock_text, ccw);
+        float cw_total = clock_text.size() * ccw * 0.7f;
         add_screen_string(cv, -cw_total * 0.5f, clock_top_y,
                           ccw, cch, clock_text);
         int clock_end = static_cast<int>(cv.size() / 5);
@@ -1986,8 +1963,8 @@ void renderer_draw(GameState& gs, int width, int height,
         {
             std::string title = "Withdraw from game?";
             float cw = 0.036f, ch = 0.055f;
-            float title_w = tw(title, cw);
-            add_screen_string(tv, -title_w * 0.5f, 0.08f, cw, ch, title);
+            float tw = title.size() * cw * 0.7f;
+            add_screen_string(tv, -tw * 0.5f, 0.08f, cw, ch, title);
         }
         int title_count = static_cast<int>(tv.size() / 5);
 
@@ -1995,10 +1972,10 @@ void renderer_draw(GameState& gs, int width, int height,
         {
             std::string s = "Yes";
             float cw = 0.030f, ch = 0.045f;
-            float sw_px = tw(s, cw);
+            float sw = s.size() * cw * 0.7f;
             float cx = (WC_YES_X0 + WC_YES_X1) * 0.5f;
             float cy = (WC_YES_Y0 + WC_YES_Y1) * 0.5f;
-            add_screen_string(tv, cx - sw_px * 0.5f, cy + ch * 0.35f, cw, ch, s);
+            add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
         }
         int yes_end = static_cast<int>(tv.size() / 5);
         int yes_count = yes_end - title_count;
@@ -2007,10 +1984,10 @@ void renderer_draw(GameState& gs, int width, int height,
         {
             std::string s = "No";
             float cw = 0.030f, ch = 0.045f;
-            float sw_px = tw(s, cw);
+            float sw = s.size() * cw * 0.7f;
             float cx = (WC_NO_X0 + WC_NO_X1) * 0.5f;
             float cy = (WC_NO_Y0 + WC_NO_Y1) * 0.5f;
-            add_screen_string(tv, cx - sw_px * 0.5f, cy + ch * 0.35f, cw, ch, s);
+            add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
         }
         int no_end = static_cast<int>(tv.size() / 5);
         int no_count = no_end - yes_end;
@@ -2091,7 +2068,7 @@ void renderer_draw(GameState& gs, int width, int height,
         int go_count = 0;
         if (!overlay_is_analysis && !gs.game_result.empty()) {
             float go_cw = 0.045f, go_ch = 0.065f;
-            float go_w = tw(gs.game_result, go_cw);
+            float go_w = gs.game_result.size() * go_cw * 0.7f;
             // Result text pushed up a bit so the "Back to Menu" button
             // fits under it inside the backdrop.
             add_screen_string(go_verts, -go_w * 0.5f, 0.085f, go_cw, go_ch, gs.game_result);
@@ -2101,7 +2078,7 @@ void renderer_draw(GameState& gs, int width, int height,
         // "Back to Menu" button label
         float btn_cw = 0.028f, btn_ch = 0.042f;
         std::string btn_label = "Back to Menu";
-        float btn_lw = tw(btn_label, btn_cw);
+        float btn_lw = btn_label.size() * btn_cw * 0.7f;
         add_screen_string(go_verts, -btn_lw * 0.5f,
                           EG_MENU_BTN_Y - 0.018f, btn_cw, btn_ch, btn_label);
         int btn_label_end = static_cast<int>(go_verts.size() / 5);
@@ -2111,7 +2088,7 @@ void renderer_draw(GameState& gs, int width, int height,
         int cont_label_count = 0;
         if (overlay_is_analysis) {
             std::string cont_label = "Continue Playing";
-            float cont_lw = tw(cont_label, btn_cw);
+            float cont_lw = cont_label.size() * btn_cw * 0.7f;
             add_screen_string(go_verts, -cont_lw * 0.5f,
                               EG_CONT_BTN_Y - 0.018f,
                               btn_cw, btn_ch, cont_label);
@@ -2474,8 +2451,6 @@ int menu_hit_test(double mx, double my, int width, int height) {
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
                         int hover_button) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
 
@@ -2538,30 +2513,30 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     std::vector<float> ui_verts;
     float tcw = 0.07f, tch = 0.10f;
     std::string title = "3D CHESS";
-    float title_w = tw(title, tcw);
-    add_screen_string(ui_verts, -title_w*0.5f, 0.35f, tcw, tch, title);
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(ui_verts, -tw*0.5f, 0.35f, tcw, tch, title);
     int title_count = static_cast<int>(ui_verts.size() / 5);
 
     float scw = 0.018f, sch = 0.028f;
     std::string subtitle = "Play against stockfish";
-    float sub_w = tw(subtitle, scw);
-    add_screen_string(ui_verts, -sub_w*0.5f, 0.22f, scw, sch, subtitle);
+    float sw = subtitle.size() * scw * 0.7f;
+    add_screen_string(ui_verts, -sw*0.5f, 0.22f, scw, sch, subtitle);
     int subtitle_end = static_cast<int>(ui_verts.size() / 5);
 
     float bcw = 0.028f, bch = 0.042f;
     std::string start_text = "Start Game";
-    float stw = tw(start_text, bcw);
+    float stw = start_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -stw*0.5f, BTN_START_Y - 0.018f, bcw, bch, start_text);
     int start_end = static_cast<int>(ui_verts.size() / 5);
 
     std::string ch_text = "Challenges";
-    float chw = tw(ch_text, bcw);
+    float chw = ch_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -chw*0.5f, BTN_CHALLENGE_Y - 0.018f, bcw, bch, ch_text);
     int ch_end = static_cast<int>(ui_verts.size() / 5);
 
 #ifndef __EMSCRIPTEN__
     std::string quit_text = "Quit";
-    float qtw = tw(quit_text, bcw);
+    float qtw = quit_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -qtw*0.5f, BTN_QUIT_Y - 0.018f, bcw, bch, quit_text);
     int quit_end = static_cast<int>(ui_verts.size() / 5);
 #endif
@@ -2750,8 +2725,6 @@ void renderer_draw_pregame(bool human_plays_white,
                            bool dropdown_open,
                            int tc_hover,
                            int width, int height, int hover) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
 
@@ -3033,8 +3006,8 @@ void renderer_draw_pregame(bool human_plays_white,
     // Title
     float tcw = 0.07f, tch = 0.10f;
     std::string title = "Game Setup";
-    float title_w = tw(title, tcw);
-    add_screen_string(ui_verts, -title_w * 0.5f, 0.58f, tcw, tch, title);
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(ui_verts, -tw * 0.5f, 0.58f, tcw, tch, title);
     int title_count = static_cast<int>(ui_verts.size() / 5);
 
     // Toggle button label
@@ -3042,7 +3015,7 @@ void renderer_draw_pregame(bool human_plays_white,
     const char* toggle_text_c =
         human_plays_white ? "White moves first" : "Black moves first";
     std::string toggle_text = toggle_text_c;
-    float gw = tw(toggle_text, bcw);
+    float gw = toggle_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -gw * 0.5f,
                       PG_TOGGLE_Y - 0.025f, bcw, bch, toggle_text);
     int toggle_end = static_cast<int>(ui_verts.size() / 5);
@@ -3050,7 +3023,7 @@ void renderer_draw_pregame(bool human_plays_white,
     // "Time control:" header above the dropdown head.
     float hcw = 0.022f, hch = 0.033f;
     std::string tc_header = "Time control";
-    float hw = tw(tc_header, hcw);
+    float hw = tc_header.size() * hcw * 0.7f;
     add_screen_string(ui_verts, -hw * 0.5f,
                       PG_TC_HEAD_Y + 0.055f, hcw, hch, tc_header);
     int tc_header_end = static_cast<int>(ui_verts.size() / 5);
@@ -3059,7 +3032,7 @@ void renderer_draw_pregame(bool human_plays_white,
     const TimeControlSpec& cur_spec = TIME_CONTROLS[time_control];
     std::string head_label = std::string(cur_spec.short_name) +
                              "  " + cur_spec.display;
-    float head_lw = tw(head_label, bcw);
+    float head_lw = head_label.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -head_lw * 0.5f,
                       PG_TC_HEAD_Y - (PG_TC_HEAD_H - bch) * 0.5f - 0.005f,
                       bcw, bch, head_label);
@@ -3079,13 +3052,13 @@ void renderer_draw_pregame(bool human_plays_white,
     char elo_buf[64];
     std::snprintf(elo_buf, sizeof(elo_buf), "Stockfish strength  %d", elo);
     std::string elo_label = elo_buf;
-    float ew = tw(elo_label, scw);
+    float ew = elo_label.size() * scw * 0.7f;
     add_screen_string(ui_verts, -ew * 0.5f, -0.12f, scw, sch, elo_label);
     int elo_end = static_cast<int>(ui_verts.size() / 5);
 
     // Start button label
     std::string start_text = "Start";
-    float stw = tw(start_text, bcw);
+    float stw = start_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -stw * 0.5f,
                       PG_START_Y - 0.035f, bcw, bch, start_text);
     int start_end = static_cast<int>(ui_verts.size() / 5);
@@ -3290,7 +3263,7 @@ void renderer_draw_pregame(bool human_plays_white,
             float top = list_top - static_cast<float>(i) * PG_TC_ROW_H;
             const TimeControlSpec& s = TIME_CONTROLS[i];
             std::string label = std::string(s.short_name) + "  " + s.display;
-            float lw = tw(label, rcw);
+            float lw = label.size() * rcw * 0.7f;
             add_screen_string(lv, -lw * 0.5f,
                               top - (PG_TC_ROW_H - rch) * 0.5f - 0.005f,
                               rcw, rch, label);
@@ -3362,8 +3335,6 @@ int challenge_select_hit_test(double mx, double my, int width, int height, int n
 
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
                                     int width, int height, int hover_index) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
 
@@ -3417,8 +3388,8 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     // Title
     float tcw = 0.05f, tch = 0.075f;
     std::string title = "Select Challenge";
-    float title_w = tw(title, tcw);
-    add_screen_string(text_verts, -title_w*0.5f, 0.6f, tcw, tch, title);
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(text_verts, -tw*0.5f, 0.6f, tcw, tch, title);
     int title_count = static_cast<int>(text_verts.size() / 5);
 
     // Back button text
@@ -3432,7 +3403,7 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     std::vector<int> name_ends;
     for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
-        float nw = tw(challenge_names[i], cw);
+        float nw = challenge_names[i].size() * cw * 0.7f;
         add_screen_string(text_verts, -nw*0.5f, by - 0.025f, cw, ch, challenge_names[i]);
         name_ends.push_back(static_cast<int>(text_verts.size() / 5));
     }
@@ -3488,9 +3459,7 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      int puzzle_index, int total_puzzles,
                                      int moves_made, int max_moves,
                                      bool starts_white,
-                                     int /*width*/, int height) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
+                                     int /*width*/, int /*height*/) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -3525,7 +3494,7 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
 
     // Line 1: challenge name
     std::string line1 = challenge_name;
-    float w1 = tw(line1, cw);
+    float w1 = line1.size() * cw * 0.7f;
     add_screen_string(text_verts, -w1*0.5f, 0.945f, cw, ch, line1);
     int line1_end = static_cast<int>(text_verts.size() / 5);
 
@@ -3536,14 +3505,14 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                   starts_white ? "White" : "Black",
                   max_moves, moves_made, max_moves);
     std::string line2 = buf;
-    float w2 = tw(line2, cw);
+    float w2 = line2.size() * cw * 0.7f;
     add_screen_string(text_verts, -w2*0.5f, 0.895f, cw, ch, line2);
     int line2_end = static_cast<int>(text_verts.size() / 5);
 
     // Line 3: hint
     std::string line3 = "ESC: reset   M: menu";
     float cw3 = 0.014f, ch3 = 0.020f;
-    float w3 = tw(line3, cw3);
+    float w3 = line3.size() * cw3 * 0.7f;
     add_screen_string(text_verts, -w3*0.5f, -0.92f, cw3, ch3, line3);
     int line3_end = static_cast<int>(text_verts.size() / 5);
 
@@ -3590,9 +3559,7 @@ bool next_button_hit_test(double mx, double my, int width, int height) {
            ndc_y >= NEXT_BTN_Y - NEXT_BTN_H && ndc_y <= NEXT_BTN_Y;
 }
 
-void renderer_draw_next_button(int /*width*/, int height, bool hover) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
+void renderer_draw_next_button(int /*width*/, int /*height*/, bool hover) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -3602,14 +3569,14 @@ void renderer_draw_next_button(int /*width*/, int height, bool hover) {
     std::vector<float> text_verts;
     float lcw = 0.045f, lch = 0.065f;
     std::string label = "Solved!";
-    float lw = tw(label, lcw);
+    float lw = label.size() * lcw * 0.7f;
     add_screen_string(text_verts, -lw * 0.5f, 0.05f, lcw, lch, label);
     int label_count = static_cast<int>(text_verts.size() / 5);
 
     // "Next >" button text
     float bcw = 0.030f, bch = 0.045f;
     std::string btn_text = "Next >";
-    float btw = tw(btn_text, bcw);
+    float btw = btn_text.size() * bcw * 0.7f;
     add_screen_string(text_verts, -btw * 0.5f, NEXT_BTN_Y - 0.022f, bcw, bch, btn_text);
     int total_count = static_cast<int>(text_verts.size() / 5);
 
@@ -3675,8 +3642,6 @@ void renderer_draw_next_button(int /*width*/, int height, bool hover) {
 void renderer_draw_challenge_summary(const std::string& challenge_name,
                                      const std::vector<SummaryEntry>& entries,
                                      int width, int height) {
-    g_text_scale = std::max(1.0f, 768.0f / static_cast<float>(height));
-
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
 
@@ -3711,14 +3676,14 @@ void renderer_draw_challenge_summary(const std::string& challenge_name,
     // Title
     float tcw = 0.045f, tch = 0.065f;
     std::string title = "Challenge Complete!";
-    float title_w = tw(title, tcw);
-    add_screen_string(text_verts, -title_w*0.5f, 0.75f, tcw, tch, title);
+    float tw = title.size() * tcw * 0.7f;
+    add_screen_string(text_verts, -tw*0.5f, 0.75f, tcw, tch, title);
     title_count = static_cast<int>(text_verts.size() / 5);
 
     // Subtitle: challenge name
     float scw = 0.022f, sch = 0.032f;
-    float sub_w = tw(challenge_name, scw);
-    add_screen_string(text_verts, -sub_w*0.5f, 0.65f, scw, sch, challenge_name);
+    float sw = challenge_name.size() * scw * 0.7f;
+    add_screen_string(text_verts, -sw*0.5f, 0.65f, scw, sch, challenge_name);
     subtitle_end = static_cast<int>(text_verts.size() / 5);
 
     // Table header
@@ -3752,7 +3717,7 @@ void renderer_draw_challenge_summary(const std::string& challenge_name,
     // Footer hint
     float fcw = 0.016f, fch = 0.022f;
     std::string footer = "Click anywhere to return to menu";
-    float fw = tw(footer, fcw);
+    float fw = footer.size() * fcw * 0.7f;
     add_screen_string(text_verts, -fw*0.5f, -0.78f, fcw, fch, footer);
     int footer_end = static_cast<int>(text_verts.size() / 5);
 
