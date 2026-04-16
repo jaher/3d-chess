@@ -38,7 +38,7 @@ k1r5/1p6/1pq5/1N6/8/1Q6/1PP5/1K6 w - - 0 1
 4n1bk/4N3/6PK/8/8/8/8/8 w - - 0 1
 
 # Top Middle
-4N2k/p5n1/2np4/4p1pp/4q3/8/6PP/5RBK w - - 0 1
+4N2k/p5n1/2np2pp/4p3/4q3/8/6PP/5RBK w - - 0 1
 
 # Top Right
 r2nr1k1/pp3ppn/1q2p3/3p2N1/3P1N2/8/PP3PPP/RBB2RK1 w - - 0 1

@@ -213,10 +213,268 @@ def _rotate_image(img: Image.Image, degrees_cw: int) -> Image.Image:
     return img.rotate(-degrees_cw, expand=True)
 
 
+# ── FEN → image rendering (for self-verification) ──────────────────
+
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+)
+
+
+def _load_font(size: int):
+    from PIL import ImageFont
+    for path in _FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _render_fen_image(fen: str, size: int = 512) -> Image.Image:
+    """Render the placement portion of a FEN as an 8x8 board. Each
+    piece is a coloured disc with its letter inside: white pieces are
+    white discs with black uppercase letters, black pieces are black
+    discs with white uppercase letters. Files (a-h) and ranks (1-8)
+    are labelled around the edge. Pure PIL — no chess library needed."""
+    from PIL import ImageDraw
+
+    placement = fen.split()[0]
+    ranks = placement.split("/")
+    if len(ranks) != 8:
+        raise ValueError(f"FEN placement has {len(ranks)} ranks, expected 8")
+
+    margin = size // 20
+    board_size = size - 2 * margin
+    cell = board_size // 8
+    board_size = cell * 8
+    img = Image.new("RGB", (size, size), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    font = _load_font(int(cell * 0.6))
+    label_font = _load_font(max(10, int(cell * 0.3)))
+
+    LIGHT = (235, 215, 180)
+    DARK = (165, 120, 80)
+
+    ox, oy = margin, margin  # board origin
+
+    # Draw file labels (a-h) and rank labels (8-1 top to bottom)
+    for c in range(8):
+        file_letter = "abcdefgh"[c]
+        fbbox = d.textbbox((0, 0), file_letter, font=label_font)
+        fw = fbbox[2] - fbbox[0]
+        d.text(
+            (ox + c * cell + (cell - fw) // 2, oy + board_size + 2),
+            file_letter, fill=(80, 80, 80), font=label_font,
+        )
+    for r in range(8):
+        rank_digit = str(8 - r)
+        rbbox = d.textbbox((0, 0), rank_digit, font=label_font)
+        rh = rbbox[3] - rbbox[1]
+        d.text(
+            (2, oy + r * cell + (cell - rh) // 2 - rbbox[1]),
+            rank_digit, fill=(80, 80, 80), font=label_font,
+        )
+
+    for r, rank_str in enumerate(ranks):  # r=0 → rank 8 (top)
+        c = 0
+        for ch in rank_str:
+            if ch.isdigit():
+                for _ in range(int(ch)):
+                    fill = LIGHT if (r + c) % 2 == 0 else DARK
+                    d.rectangle(
+                        [ox + c * cell, oy + r * cell,
+                         ox + (c + 1) * cell, oy + (r + 1) * cell],
+                        fill=fill,
+                    )
+                    c += 1
+                continue
+            fill = LIGHT if (r + c) % 2 == 0 else DARK
+            d.rectangle(
+                [ox + c * cell, oy + r * cell,
+                 ox + (c + 1) * cell, oy + (r + 1) * cell],
+                fill=fill,
+            )
+            # Piece disc: white for uppercase (white pieces), dark grey
+            # for lowercase (black pieces). Letter in contrasting colour.
+            radius = int(cell * 0.40)
+            cx = ox + c * cell + cell // 2
+            cy = oy + r * cell + cell // 2
+            is_white_piece = ch.isupper()
+            disc_fill = (255, 255, 255) if is_white_piece else (30, 30, 30)
+            disc_outline = (0, 0, 0) if is_white_piece else (255, 255, 255)
+            d.ellipse(
+                [cx - radius, cy - radius, cx + radius, cy + radius],
+                fill=disc_fill, outline=disc_outline, width=2,
+            )
+
+            letter = ch.upper()
+            text_fill = (0, 0, 0) if is_white_piece else (255, 255, 255)
+            bbox = d.textbbox((0, 0), letter, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            tx = cx - tw // 2 - bbox[0]
+            ty = cy - th // 2 - bbox[1]
+            d.text((tx, ty), letter, fill=text_fill, font=font)
+            c += 1
+    return img
+
+
+def _compose_verify_image(
+    original: Image.Image, rendered: Image.Image
+) -> Image.Image:
+    """Stack ORIGINAL PHOTO beside RENDERED FEN with header labels."""
+    from PIL import ImageDraw
+
+    target_h = 512
+    ow, oh = original.size
+    left = original.resize(
+        (max(1, int(ow * target_h / oh)), target_h), Image.LANCZOS
+    )
+    right = rendered.resize((target_h, target_h), Image.LANCZOS)
+
+    gap = 20
+    label_h = 32
+    total_w = left.size[0] + gap + right.size[0]
+    total_h = target_h + label_h
+    out = Image.new("RGB", (total_w, total_h), (255, 255, 255))
+    out.paste(left, (0, label_h))
+    out.paste(right, (left.size[0] + gap, label_h))
+
+    d = ImageDraw.Draw(out)
+    font = _load_font(18)
+    d.text((10, 6), "ORIGINAL PHOTO", fill=(0, 0, 0), font=font)
+    d.text(
+        (left.size[0] + gap + 10, 6),
+        "EXTRACTED FEN (letters)",
+        fill=(0, 0, 0),
+        font=font,
+    )
+    return out
+
+
+_VERIFY_SYSTEM = """\
+You are a chess position verifier. You will see one image containing
+two boards side by side: ORIGINAL PHOTO on the left, and a
+disc-and-letter rendering of an already-extracted FEN on the right.
+White pieces appear as white discs with black letters; black pieces
+as black discs with white letters (K Q R B N P).
+
+Your job is STRICTLY to double-check the right board against the
+left, not to re-read from scratch. Assume the right board is mostly
+correct.
+
+For every square:
+  1. Look at the left (photo) square.
+  2. Look at the right (rendered) square.
+  3. If they match, leave it alone.
+  4. Only change a square when you are confident it is a mismatch —
+     e.g. the photo clearly shows a piece the rendering is missing,
+     or the rendering shows a piece the photo clearly doesn't have,
+     or the piece/colour is obviously different.
+
+Output rules:
+- Return ONLY the FEN string for the LEFT (original) board.
+- If you are NOT confident about any corrections, return the SAME
+  FEN as the rendering. DO NOT invent changes.
+- Every rank must have exactly 8 squares of content (digits + piece
+  letters summing to 8). Invalid FENs will be rejected.
+- Format: <placement> w - - 0 1
+"""
+
+_VERIFY_USER = (
+    "Compare the right rendering to the left photo and return the "
+    "corrected FEN. If the rendering is already correct, return the "
+    "same FEN verbatim."
+)
+
+
+def _is_valid_fen_placement(fen: str) -> bool:
+    """Validate just the placement field: 8 ranks, each summing to 8."""
+    try:
+        placement = fen.split()[0]
+    except IndexError:
+        return False
+    ranks = placement.split("/")
+    if len(ranks) != 8:
+        return False
+    for rank in ranks:
+        count = 0
+        for ch in rank:
+            if ch.isdigit():
+                count += int(ch)
+            elif ch in "KQRBNPkqrbnp":
+                count += 1
+            else:
+                return False
+        if count != 8:
+            return False
+    return True
+
+
+def _placement_diff_squares(a: str, b: str) -> int:
+    """Count squares that differ between two valid FEN placements."""
+    def expand(fen: str) -> list[str]:
+        out: list[str] = []
+        for rank in fen.split()[0].split("/"):
+            for ch in rank:
+                if ch.isdigit():
+                    out.extend(["."] * int(ch))
+                else:
+                    out.append(ch)
+        return out
+
+    ea, eb = expand(a), expand(b)
+    if len(ea) != 64 or len(eb) != 64:
+        return 64
+    return sum(1 for x, y in zip(ea, eb) if x != y)
+
+
+def _verify_fen(
+    original_tile: Image.Image,
+    fen: str,
+    model: str,
+    max_rounds: int = 1,
+    max_diff_squares: int = 4,
+) -> str:
+    """Render FEN → image, compare side-by-side with original, ask
+    the model for a corrected FEN.
+
+    Guards:
+      * If the returned FEN is syntactically invalid (not 8 ranks of
+        8 squares each), keep the original.
+      * If the correction diverges by more than ``max_diff_squares``
+        cells, treat it as hallucination and keep the original.
+
+    Returns the (possibly unchanged) verified FEN."""
+    current = fen
+    for _ in range(max_rounds):
+        try:
+            rendered = _render_fen_image(current)
+            combined = _compose_verify_image(original_tile, rendered)
+            jpeg = _to_jpeg_bytes(combined)
+            raw = _gemini_vision(jpeg, _VERIFY_SYSTEM, _VERIFY_USER, model)
+            corrected = _extract_fen(raw)
+        except Exception:
+            break
+        if not corrected or corrected == current:
+            break
+        if not _is_valid_fen_placement(corrected):
+            break
+        if _placement_diff_squares(current, corrected) > max_diff_squares:
+            break
+        current = corrected
+    return current
+
+
 # ── Core pipeline ───────────────────────────────────────────────────
 
-def _pil_to_fen(img: Image.Image, model: str, auto_rotate: bool) -> str:
-    """PIL image → FEN."""
+def _pil_to_fen(
+    img: Image.Image, model: str, auto_rotate: bool, verify: bool = False
+) -> str:
+    """PIL image → FEN. When `verify` is True, run one render-and-
+    compare pass to catch common mistakes (opt-in; currently gated
+    behind strict guards to avoid regressions)."""
     img = _resize_if_needed(img)
 
     if auto_rotate:
@@ -226,7 +484,11 @@ def _pil_to_fen(img: Image.Image, model: str, auto_rotate: bool) -> str:
 
     jpeg = _to_jpeg_bytes(img)
     raw = _gemini_vision(jpeg, _FEN_SYSTEM, _FEN_USER, model)
-    return _extract_fen(raw)
+    fen = _extract_fen(raw)
+
+    if verify:
+        fen = _verify_fen(img, fen, model)
+    return fen
 
 
 def image_to_fen(
@@ -234,6 +496,7 @@ def image_to_fen(
     *,
     model: str | None = None,
     auto_rotate: bool = True,
+    verify: bool = False,
 ) -> str:
     """Read a chess position from an image file and return its FEN."""
     path = Path(image_path).expanduser().resolve()
@@ -241,7 +504,7 @@ def image_to_fen(
         raise FileNotFoundError(f"Image not found: {path}")
 
     img = _prepare_image(path.read_bytes())
-    return _pil_to_fen(img, model or _DEFAULT_MODEL, auto_rotate)
+    return _pil_to_fen(img, model or _DEFAULT_MODEL, auto_rotate, verify)
 
 
 # ── Board detection (auto-slice) ────────────────────────────────────
@@ -344,6 +607,7 @@ def page_to_fens(
     image_path: str,
     *,
     model: str | None = None,
+    verify: bool = False,
 ) -> list[tuple[str, str]]:
     """Auto-detect every board on a page, read each FEN, and return
     (positional_label, fen) pairs in row-major order."""
@@ -372,7 +636,7 @@ def page_to_fens(
             min(img.size[1], y1 + pad_y),
         )
         tile = img.crop(crop_box)
-        fen = _pil_to_fen(tile, mdl, auto_rotate=False)
+        fen = _pil_to_fen(tile, mdl, auto_rotate=False, verify=verify)
 
         r = idx // cols if cols else 0
         c = idx % cols if cols else 0
@@ -422,6 +686,57 @@ def write_homework_md(
     output_path.write_text("\n".join(lines))
 
 
+def parse_homework_md(path: Path) -> list[list[tuple[str, str]]]:
+    """Parse a homework<N>.md file and return a list of pages, where
+    each page is a list of (label, fen) pairs.
+
+    The format is:
+      type: / side: header lines (ignored)
+      # Page <N>      -> starts a new page
+      # <label>       -> label for the following FEN (e.g. "Top Left")
+      <fen line>      -> bare FEN placement + metadata
+
+    Labels without a preceding ``# Page`` end up on page 1."""
+    text = Path(path).expanduser().read_text()
+    pages: list[list[tuple[str, str]]] = []
+    current_page: list[tuple[str, str]] = []
+    pending_label: str | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            comment = line.lstrip("#").strip()
+            if not comment:
+                continue
+            page_match = re.fullmatch(r"Page\s+\d+", comment, re.IGNORECASE)
+            if page_match:
+                if current_page:
+                    pages.append(current_page)
+                    current_page = []
+                pending_label = None
+                continue
+            pending_label = comment
+            continue
+        if ":" in line and _FEN_FULL.search(line) is None:
+            # metadata line like "type: mate_in_2" — skip
+            continue
+        fen_match = _FEN_FULL.search(line) or _FEN_PLACEMENT.search(line)
+        if not fen_match:
+            continue
+        fen = fen_match.group(0)
+        if _FEN_FULL.fullmatch(fen) is None and not fen.endswith(" 1"):
+            fen = fen.strip() + " w - - 0 1"
+        label = pending_label or f"Board {len(current_page) + 1}"
+        current_page.append((label, fen))
+        pending_label = None
+
+    if current_page:
+        pages.append(current_page)
+    return pages
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -442,12 +757,20 @@ def main() -> None:
              "Defaults to the next unused ./challenges/homework<N>.md "
              "(or ./homework<N>.md if challenges/ is absent).",
     )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Enable the experimental render-and-compare verification "
+             "pass (one extra API call per board; currently gated "
+             "behind strict guards to avoid regressions).",
+    )
     args = parser.parse_args()
 
     pages: list[list[tuple[str, str]]] = []
     for image_path in args.images:
         try:
-            entries = page_to_fens(image_path, model=args.model)
+            entries = page_to_fens(
+                image_path, model=args.model, verify=args.verify,
+            )
         except FileNotFoundError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

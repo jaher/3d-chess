@@ -39,6 +39,11 @@ or a homework-style **page of boards** — and writes FENs to a
 - **Auto-rotation for single boards**: an extra API call detects
   90°/180°/270° rotation and corrects it with Pillow before
   reading, so phone photos taken sideways still work.
+- **Optional self-verification** (`--verify`): renders the extracted
+  FEN as a letter-based board and asks the model to compare it
+  side-by-side with the original photo. Currently experimental and
+  gated by strict guards (rejects invalid FENs or large diffs) so
+  it never replaces a good answer with a worse one. Off by default.
 - **Automatic image resizing**: Phone camera JPEGs (5-10 MB) are
   downscaled and re-compressed to fit within the 5 MB API limit.
 - **FEN regex extraction**: If the model outputs reasoning prose
@@ -77,6 +82,9 @@ python tools/image_to_fen.py --output challenges/homework3.md page1.jpg page2.jp
 
 # Pick a different Gemini model (e.g. the cheaper flash tier)
 python tools/image_to_fen.py --model gemini-2.5-flash page.jpg
+
+# Opt into the experimental render-and-compare verification pass
+python tools/image_to_fen.py --verify page.jpg
 ```
 
 When invoked with multiple images (or a single multi-board page),
@@ -111,3 +119,31 @@ write_homework_md([page], Path("challenges/homework2.md"))
 - Handwritten answers or annotations on the page are ignored, but
   if a handwritten mark overlaps a board square the model may
   mistake it for a piece.
+
+---
+
+## `fen_to_images.py`
+
+Reverse of `image_to_fen.py`: takes a `homework<N>.md` challenge
+file and renders every FEN as a PNG. Pure PIL — no vision APIs
+required.
+
+### Usage
+
+```bash
+# One composite PNG per page (3×2 grid mirroring the original layout)
+python tools/fen_to_images.py challenges/homework1.md
+# → challenges/homework1_page1.png, challenges/homework1_page2.png
+
+# One PNG per position instead
+python tools/fen_to_images.py --per-board challenges/homework1.md
+# → challenges/homework1_page1_top-left.png, ...
+
+# Bigger boards, different output dir
+python tools/fen_to_images.py --board-size 600 -o /tmp challenges/homework1.md
+```
+
+Each piece is rendered as a coloured disc with its letter inside:
+white pieces are white discs with black letters, black pieces are
+black discs with white letters. Files and ranks are labelled around
+the edge.
