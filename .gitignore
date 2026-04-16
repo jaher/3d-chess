@@ -1,2 +1,3 @@
 *.o
 chess
+__pycache__/
