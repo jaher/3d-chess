@@ -428,7 +428,10 @@ class HomeworkWizard(Gtk.Window):
 
             ebox = Gtk.EventBox()
             ebox.set_visible_window(False)
-            ebox.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            ebox.add_events(
+                Gdk.EventMask.BUTTON_PRESS_MASK
+                | Gdk.EventMask.BUTTON_RELEASE_MASK
+            )
             gimg = Gtk.Image()
             ebox.add(gimg)
             vbox.pack_start(ebox, False, False, 0)
@@ -438,9 +441,11 @@ class HomeworkWizard(Gtk.Window):
             state = {
                 "board_idx": idx, "gtk_image": gimg,
                 "event_box": ebox, "board_px": _BOARD_PX,
+                "drag_start": None,
             }
             self._board_widgets.append(state)
-            ebox.connect("button-press-event", self._on_board_click, idx)
+            ebox.connect("button-press-event", self._on_board_press, idx)
+            ebox.connect("button-release-event", self._on_board_release, idx)
 
             self._redraw_board(idx)
 
@@ -458,21 +463,68 @@ class HomeworkWizard(Gtk.Window):
             _pil_to_pixbuf(pil)
         )
 
-    def _on_board_click(self, event_box, event, board_idx: int) -> bool:
-        """Convert a click on a rendered board into (row, col) and
-        show the piece-picker popover."""
-        state = self._board_widgets[board_idx]
+    def _square_from_coords(self, x: float, y: float) -> tuple[int, int] | None:
+        """Map a pixel coordinate inside a rendered board to (row, col).
+        Returns ``None`` if the point falls outside the 8x8 grid."""
         px = _BOARD_PX
         margin = px // 20
         cell = (px - 2 * margin) // 8
-        bx = int(event.x) - margin
-        by = int(event.y) - margin
+        bx = int(x) - margin
+        by = int(y) - margin
         col = bx // cell
         row = by // cell
-        if not (0 <= col < 8 and 0 <= row < 8):
+        if 0 <= col < 8 and 0 <= row < 8:
+            return row, col
+        return None
+
+    def _on_board_press(self, _event_box, event, board_idx: int) -> bool:
+        """Remember where a mouse-press happened so the release handler
+        can decide between 'click → edit' and 'drag → move'."""
+        sq = self._square_from_coords(event.x, event.y)
+        self._board_widgets[board_idx]["drag_start"] = sq
+        return False
+
+    def _on_board_release(self, event_box, event, board_idx: int) -> bool:
+        """Route release events: same square → open piece picker,
+        different square → move the piece."""
+        state = self._board_widgets[board_idx]
+        start = state["drag_start"]
+        state["drag_start"] = None
+        if start is None:
             return False
-        self._show_piece_picker(state["event_box"], board_idx, row, col)
+
+        end = self._square_from_coords(event.x, event.y)
+        if end is None or end == start:
+            self._show_piece_picker(
+                state["event_box"], board_idx, start[0], start[1]
+            )
+            return True
+
+        self._apply_move(board_idx, start, end)
         return True
+
+    def _apply_move(
+        self,
+        board_idx: int,
+        src: tuple[int, int],
+        dst: tuple[int, int],
+    ) -> None:
+        """Move the piece at ``src`` to ``dst`` (replacing any piece
+        already there). No-op if ``src`` is empty."""
+        _, _, entries = self.pages[self.page_idx]
+        label, fen = entries[board_idx]
+        parts = fen.split(maxsplit=1)
+        placement = parts[0]
+        rest = parts[1] if len(parts) > 1 else "w - - 0 1"
+
+        board = _expand_placement(placement)
+        piece = board[src[0]][src[1]]
+        if piece == ".":
+            return
+        board[src[0]][src[1]] = "."
+        board[dst[0]][dst[1]] = piece
+        entries[board_idx] = (label, f"{_pack_placement(board)} {rest}")
+        self._redraw_board(board_idx)
 
     def _show_piece_picker(
         self, anchor: Gtk.Widget, board_idx: int, row: int, col: int
