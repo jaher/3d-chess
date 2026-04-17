@@ -147,3 +147,31 @@ Each piece is rendered as a coloured disc with its letter inside:
 white pieces are white discs with black letters, black pieces are
 black discs with white letters. Files and ranks are labelled around
 the edge.
+
+---
+
+## `homework_viewer.py`
+
+GTK viewer that shows the original homework photo side-by-side
+with the corresponding composite rendered from `homework<N>.md`.
+Handy for eyeballing which positions `image_to_fen` got wrong.
+
+**Dependencies:** PyGObject with GTK 3 (already installed if you can
+build the main 3d_chess desktop app); Pillow.
+
+```bash
+sudo apt install python3-gi gir1.2-gtk-3.0   # if missing
+```
+
+### Usage
+
+```bash
+python tools/homework_viewer.py \
+    challenges/homework1.md \
+    ~/chess_homework/full_pages/page1.jpeg \
+    ~/chess_homework/full_pages/page2.jpeg
+```
+
+The Nth photo pairs with the Nth `# Page N` section in the markdown.
+Navigate with the Prev/Next buttons or Left/Right arrows; press
+**Q** or **Esc** to quit.
