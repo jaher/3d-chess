@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 try:
@@ -608,9 +609,14 @@ def page_to_fens(
     *,
     model: str | None = None,
     verify: bool = False,
+    max_workers: int = 6,
 ) -> list[tuple[str, str]]:
     """Auto-detect every board on a page, read each FEN, and return
-    (positional_label, fen) pairs in row-major order."""
+    (positional_label, fen) pairs in row-major order.
+
+    ``max_workers`` controls how many FEN extraction calls run in
+    parallel (one Gemini request per board). Detection itself is a
+    single serial call."""
     path = Path(image_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Image not found: {path}")
@@ -642,8 +648,9 @@ def page_to_fens(
 
     rows, cols, sorted_boxes = _infer_layout(boxes)
 
-    results: list[tuple[str, str]] = []
-    for idx, (x0, y0, x1, y1) in enumerate(sorted_boxes):
+    # Pre-crop every tile, then extract FENs in parallel.
+    tiles: list[Image.Image] = []
+    for (x0, y0, x1, y1) in sorted_boxes:
         pad_x = int((x1 - x0) * 0.03)
         pad_y = int((y1 - y0) * 0.03)
         crop_box = (
@@ -652,13 +659,21 @@ def page_to_fens(
             min(original.size[0], x1 + pad_x),
             min(original.size[1], y1 + pad_y),
         )
-        tile = original.crop(crop_box)
-        fen = _pil_to_fen(tile, mdl, auto_rotate=False, verify=verify)
+        tiles.append(original.crop(crop_box))
 
+    def _extract(tile: Image.Image) -> str:
+        return _pil_to_fen(tile, mdl, auto_rotate=False, verify=verify)
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(max_workers, len(tiles)))
+    ) as pool:
+        fens = list(pool.map(_extract, tiles))
+
+    results: list[tuple[str, str]] = []
+    for idx, fen in enumerate(fens):
         r = idx // cols if cols else 0
         c = idx % cols if cols else 0
         results.append((_position_label(r, c, rows, cols), fen))
-
     return results
 
 

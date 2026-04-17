@@ -22,6 +22,7 @@ import io
 import os
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
@@ -257,28 +258,40 @@ class HomeworkWizard(Gtk.Window):
     def _process_thread(
         self, images: list[Path]
     ) -> None:
-        """Run on a background thread so the UI stays responsive."""
-        results: list[tuple[Path, Image.Image, list[tuple[str, str]]]] = []
+        """Run every image through ``page_to_fens`` in parallel so the
+        wall-clock time is bounded by the slowest page, not their sum.
+        Inside each page, the 6-or-so tile extractions are already
+        parallelized by ``page_to_fens``."""
         total = len(images)
-        for idx, img_path in enumerate(images):
-            try:
-                entries = page_to_fens(str(img_path))
-            except Exception as e:
-                GLib.idle_add(
-                    self._show_error, f"{img_path.name}: {e}"
-                )
-                return
-            try:
-                photo = Image.open(img_path)
-                photo = ImageOps.exif_transpose(photo).convert("RGB")
-            except Exception as e:
-                GLib.idle_add(
-                    self._show_error, f"{img_path.name}: {e}"
-                )
-                return
-            results.append((img_path, photo, entries))
-            GLib.idle_add(self._progress_update, idx + 1, total)
+        per_path: dict[Path, tuple[Image.Image, list[tuple[str, str]]]] = {}
 
+        def _do_one(img_path: Path):
+            entries = page_to_fens(str(img_path))
+            photo = Image.open(img_path)
+            photo = ImageOps.exif_transpose(photo).convert("RGB")
+            return img_path, photo, entries
+
+        # Cap per-page concurrency at 4 — each page already issues up
+        # to 6 parallel FEN calls internally, so too-many-pages × 6 can
+        # burst past Gemini's rate limits.
+        with ThreadPoolExecutor(max_workers=min(4, total)) as pool:
+            futures = {pool.submit(_do_one, p): p for p in images}
+            done = 0
+            for fut in as_completed(futures):
+                img_path = futures[fut]
+                try:
+                    path, photo, entries = fut.result()
+                except Exception as e:
+                    GLib.idle_add(
+                        self._show_error, f"{img_path.name}: {e}"
+                    )
+                    return
+                per_path[path] = (photo, entries)
+                done += 1
+                GLib.idle_add(self._progress_update, done, total)
+
+        # Preserve input order (sorted filenames).
+        results = [(p, *per_path[p]) for p in images if p in per_path]
         GLib.idle_add(self._on_processing_done, results)
 
     def _progress_update(self, done: int, total: int) -> bool:
