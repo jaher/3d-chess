@@ -602,8 +602,35 @@ class HomeworkWizard(Gtk.Window):
     def _save(self) -> None:
         if not self.pages:
             return
+
+        default = _next_homework_path()
+        dlg = Gtk.FileChooserDialog(
+            title="Save challenge file",
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dlg.add_buttons(
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "Save", Gtk.ResponseType.OK,
+        )
+        dlg.set_do_overwrite_confirmation(True)
+        try:
+            dlg.set_current_folder(str(default.parent.resolve()))
+        except Exception:
+            pass
+        dlg.set_current_name(default.name)
+
+        resp = dlg.run()
+        chosen = dlg.get_filename() if resp == Gtk.ResponseType.OK else None
+        dlg.destroy()
+        if not chosen:
+            return
+
+        out = Path(chosen)
+        if not out.suffix:
+            out = out.with_suffix(".md")
+
         pages_md = [entries for _, _, entries in self.pages]
-        out = _next_homework_path()
         write_homework_md(pages_md, out)
         n_boards = sum(len(e) for e in pages_md)
         self.saved_label.set_markup(
