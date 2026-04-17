@@ -41,7 +41,7 @@ k1r5/1p6/1pq5/1N6/8/1Q6/1PP5/1K6 w - - 0 1
 4N2k/p5n1/2np2pp/4p3/4q3/8/6PP/5RBK w - - 0 1
 
 # Top Right
-r2nr1k1/pp3ppn/1q2p3/3p2N1/3P1N2/8/PP3PPP/RBB2RK1 w - - 0 1
+r2nr1k1/pp4pn/1q2p3/3p2N1/3P1N2/8/PP3PPP/RBB2RK1 w - - 0 1
 
 # Bottom Left
 r1bq1k1r/pp1pRp1p/6p1/n2N4/2Bn4/5N2/PP3PPP/R1B3K1 w - - 0 1
@@ -50,4 +50,4 @@ r1bq1k1r/pp1pRp1p/6p1/n2N4/2Bn4/5N2/PP3PPP/R1B3K1 w - - 0 1
 2NN1nk1/6pp/8/8/3q4/2p5/2P5/R1K5 w - - 0 1
 
 # Bottom Right
-4n2R/R5bk/8/6KN/8/8/8/8 w - - 0 1
+4n2r/R5bk/8/6KN/8/8/8/8 w - - 0 1
