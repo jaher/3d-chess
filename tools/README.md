@@ -23,6 +23,32 @@ at the top of the script (currently 80,000). Output goes to
 
 ---
 
+## `homework_wizard.py`  ← recommended entry point
+
+End-to-end GTK app: pick a folder of chess homework photos → the
+tool runs Gemini FEN extraction on a background thread → shows each
+photo side-by-side with a rendering of the extracted positions →
+**Accept** writes `challenges/homework<N>.md`.
+
+```bash
+python tools/homework_wizard.py
+```
+
+Dependencies: `google-genai`, `Pillow`, and GTK 3 bindings (see
+*Dependencies* under `homework_viewer.py` below). The
+`GOOGLE_API_KEY` / `GEMINI_API_KEY` environment variable must be
+set before the "Select directory…" button works.
+
+If the wizard's accept-or-retry flow isn't what you want, the three
+scripts below cover the same ground as standalone CLIs:
+
+* `image_to_fen.py` – recognition only (photos → FEN text).
+* `fen_to_images.py` – rendering only (FEN markdown → PNGs).
+* `homework_viewer.py` – visual diff only (already-extracted FENs
+  vs. the original photos).
+
+---
+
 ## `image_to_fen.py`
 
 Recognizes chess positions from photographs — either a single board
