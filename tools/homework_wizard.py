@@ -47,11 +47,70 @@ from image_to_fen import (  # noqa: E402
     page_to_fens,
     write_homework_md,
     _next_homework_path,
+    _render_fen_image,
 )
-from fen_to_images import _compose_page  # noqa: E402
 
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_BOARD_PX = 320  # rendered board size for the review grid
+
+# FEN letters shown in the piece picker popover.
+_PIECES = [
+    ("K", "K"), ("Q", "Q"), ("R", "R"),
+    ("B", "B"), ("N", "N"), ("P", "P"),
+]
+
+
+def _expand_placement(placement: str) -> list[list[str]]:
+    """FEN placement → 8x8 grid of single-char codes ('.' for empty)."""
+    ranks = placement.split("/")
+    board = [["."] * 8 for _ in range(8)]
+    for r, rank_str in enumerate(ranks):
+        c = 0
+        for ch in rank_str:
+            if ch.isdigit():
+                c += int(ch)
+            else:
+                if 0 <= c < 8 and 0 <= r < 8:
+                    board[r][c] = ch
+                c += 1
+    return board
+
+
+def _pack_placement(board: list[list[str]]) -> str:
+    """8x8 grid → FEN placement string."""
+    out: list[str] = []
+    for r in range(8):
+        s = ""
+        empty = 0
+        for c in range(8):
+            ch = board[r][c]
+            if ch == ".":
+                empty += 1
+            else:
+                if empty:
+                    s += str(empty)
+                    empty = 0
+                s += ch
+        if empty:
+            s += str(empty)
+        out.append(s)
+    return "/".join(out)
+
+
+def _edit_fen(fen: str, row: int, col: int, piece: str) -> str:
+    """Return a new FEN with the (row, col) square replaced by
+    ``piece`` (single char like 'K', 'k', ... or '.' for empty).
+
+    ``row`` is 0 at the top (rank 8), ``col`` is 0 at the left (file a).
+    The side-to-move / castling / etc. metadata is preserved."""
+    parts = fen.split(maxsplit=1)
+    placement = parts[0]
+    rest = parts[1] if len(parts) > 1 else "w - - 0 1"
+
+    board = _expand_placement(placement)
+    board[row][col] = piece
+    return f"{_pack_placement(board)} {rest}"
 
 
 def _pil_to_pixbuf(img: Image.Image) -> GdkPixbuf.Pixbuf:
@@ -160,16 +219,36 @@ class HomeworkWizard(Gtk.Window):
         self.header.set_xalign(0.5)
         v.pack_start(self.header, False, False, 0)
 
+        hint = Gtk.Label()
+        hint.set_markup(
+            "<i>Click any square on an extracted board to correct it.</i>"
+        )
+        hint.set_xalign(0.5)
+        v.pack_start(hint, False, False, 0)
+
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         v.pack_start(hbox, True, True, 0)
 
+        # Left pane: scrollable original photo.
         self.orig_image = Gtk.Image()
-        self.rend_image = Gtk.Image()
+        left_scroll = Gtk.ScrolledWindow()
+        left_scroll.add(self.orig_image)
         left_frame = Gtk.Frame(label="Original photo")
-        left_frame.add(self.orig_image)
-        right_frame = Gtk.Frame(label="Extracted positions")
-        right_frame.add(self.rend_image)
+        left_frame.add(left_scroll)
         hbox.pack_start(left_frame, True, True, 0)
+
+        # Right pane: scrollable grid of clickable boards.
+        self.rend_grid = Gtk.Grid()
+        self.rend_grid.set_row_spacing(12)
+        self.rend_grid.set_column_spacing(12)
+        self.rend_grid.set_halign(Gtk.Align.CENTER)
+        # Per-board state populated by _refresh_review.
+        self._board_widgets: list[dict] = []
+
+        right_scroll = Gtk.ScrolledWindow()
+        right_scroll.add(self.rend_grid)
+        right_frame = Gtk.Frame(label="Extracted positions (click to edit)")
+        right_frame.add(right_scroll)
         hbox.pack_start(right_frame, True, True, 0)
 
         nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -320,22 +399,151 @@ class HomeworkWizard(Gtk.Window):
         if alloc_w == 0 or alloc_h == 0:
             alloc_w, alloc_h = 1600, 900
         pane_w = max(200, alloc_w // 2 - 40)
-        pane_h = max(200, alloc_h - 240)
+        pane_h = max(200, alloc_h - 260)
 
-        rendered = _compose_page(
-            entries, board_size=260,
-            title=f"Page {self.page_idx + 1}",
+        # Left: photo scaled to fit.
+        w, h = photo.size
+        scale = min(pane_w / w, pane_h / h, 1.0)
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        self.orig_image.set_from_pixbuf(
+            _pil_to_pixbuf(photo.resize((nw, nh), Image.LANCZOS))
         )
 
-        for pil_img, gtk_img in (
-            (photo, self.orig_image),
-            (rendered, self.rend_image),
-        ):
-            w, h = pil_img.size
-            scale = min(pane_w / w, pane_h / h, 1.0)
-            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-            scaled = pil_img.resize((nw, nh), Image.LANCZOS)
-            gtk_img.set_from_pixbuf(_pil_to_pixbuf(scaled))
+        # Right: clickable board grid. Rebuild from scratch each
+        # refresh so navigation between pages shows the right set.
+        for child in self.rend_grid.get_children():
+            self.rend_grid.remove(child)
+        self._board_widgets = []
+
+        cols = 3 if len(entries) > 2 else max(1, len(entries))
+        for idx, (label, fen) in enumerate(entries):
+            r, c = divmod(idx, cols)
+
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            vbox.set_halign(Gtk.Align.CENTER)
+
+            lbl = Gtk.Label()
+            lbl.set_markup(f"<b>{GLib.markup_escape_text(label)}</b>")
+            vbox.pack_start(lbl, False, False, 0)
+
+            ebox = Gtk.EventBox()
+            ebox.set_visible_window(False)
+            ebox.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+            gimg = Gtk.Image()
+            ebox.add(gimg)
+            vbox.pack_start(ebox, False, False, 0)
+
+            self.rend_grid.attach(vbox, c, r, 1, 1)
+
+            state = {
+                "board_idx": idx, "gtk_image": gimg,
+                "event_box": ebox, "board_px": _BOARD_PX,
+            }
+            self._board_widgets.append(state)
+            ebox.connect("button-press-event", self._on_board_click, idx)
+
+            self._redraw_board(idx)
+
+        self.rend_grid.show_all()
+
+    def _redraw_board(self, board_idx: int) -> None:
+        """Re-render a single board's Gtk.Image from its current FEN."""
+        _, _, entries = self.pages[self.page_idx]
+        _, fen = entries[board_idx]
+        try:
+            pil = _render_fen_image(fen, size=_BOARD_PX)
+        except ValueError:
+            pil = Image.new("RGB", (_BOARD_PX, _BOARD_PX), (240, 200, 200))
+        self._board_widgets[board_idx]["gtk_image"].set_from_pixbuf(
+            _pil_to_pixbuf(pil)
+        )
+
+    def _on_board_click(self, event_box, event, board_idx: int) -> bool:
+        """Convert a click on a rendered board into (row, col) and
+        show the piece-picker popover."""
+        state = self._board_widgets[board_idx]
+        px = _BOARD_PX
+        margin = px // 20
+        cell = (px - 2 * margin) // 8
+        bx = int(event.x) - margin
+        by = int(event.y) - margin
+        col = bx // cell
+        row = by // cell
+        if not (0 <= col < 8 and 0 <= row < 8):
+            return False
+        self._show_piece_picker(state["event_box"], board_idx, row, col)
+        return True
+
+    def _show_piece_picker(
+        self, anchor: Gtk.Widget, board_idx: int, row: int, col: int
+    ) -> None:
+        """Pop up a small grid of piece buttons. White row on top,
+        black row below, plus a Delete button."""
+        pop = Gtk.Popover.new(anchor)
+        pop.set_position(Gtk.PositionType.BOTTOM)
+
+        grid = Gtk.Grid()
+        grid.set_row_spacing(4)
+        grid.set_column_spacing(4)
+        grid.set_margin_top(8); grid.set_margin_bottom(8)
+        grid.set_margin_start(8); grid.set_margin_end(8)
+
+        hdr = Gtk.Label()
+        file_letter = "abcdefgh"[col]
+        rank_digit = 8 - row
+        hdr.set_markup(
+            f"<b>{file_letter}{rank_digit}</b> — choose piece"
+        )
+        grid.attach(hdr, 0, 0, len(_PIECES), 1)
+
+        grid.attach(Gtk.Label(label="White"), 0, 1, len(_PIECES), 1)
+        for c, (code, glyph) in enumerate(_PIECES):
+            btn = Gtk.Button(label=glyph)
+            btn.set_size_request(44, 44)
+            btn.connect(
+                "clicked",
+                lambda _b, ch=code.upper(): self._apply_edit(
+                    pop, board_idx, row, col, ch
+                ),
+            )
+            grid.attach(btn, c, 2, 1, 1)
+
+        grid.attach(Gtk.Label(label="Black"), 0, 3, len(_PIECES), 1)
+        for c, (code, glyph) in enumerate(_PIECES):
+            btn = Gtk.Button(label=glyph.lower())
+            btn.set_size_request(44, 44)
+            btn.connect(
+                "clicked",
+                lambda _b, ch=code.lower(): self._apply_edit(
+                    pop, board_idx, row, col, ch
+                ),
+            )
+            grid.attach(btn, c, 4, 1, 1)
+
+        clear_btn = Gtk.Button(label="✕ Clear square")
+        clear_btn.connect(
+            "clicked",
+            lambda _b: self._apply_edit(pop, board_idx, row, col, "."),
+        )
+        grid.attach(clear_btn, 0, 5, len(_PIECES), 1)
+
+        pop.add(grid)
+        pop.show_all()
+        pop.popup()
+
+    def _apply_edit(
+        self,
+        popover: Gtk.Popover,
+        board_idx: int,
+        row: int,
+        col: int,
+        piece: str,
+    ) -> None:
+        _, _, entries = self.pages[self.page_idx]
+        label, fen = entries[board_idx]
+        entries[board_idx] = (label, _edit_fen(fen, row, col, piece))
+        self._redraw_board(board_idx)
+        popover.popdown()
 
     # ─── Save + errors ──────────────────────────────────────────────
 

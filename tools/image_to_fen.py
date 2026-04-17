@@ -158,6 +158,23 @@ Output ONLY the JSON array. No prose, no code fence, no keys.
 Example for two boards: [[100, 50, 400, 350], [100, 600, 400, 900]]
 """
 
+_CORNERS_PROMPT = """\
+Look at this image of a chess board. Return the pixel coordinates
+of the 4 OUTER corners of the 8x8 playing grid. These are the
+corners of the outer border around the 64 squares — EXCLUDE any
+rank/file labels printed outside the grid.
+
+Return the 4 corners in this exact order:
+  1. Top-left     (the top-left corner of square a8)
+  2. Top-right    (the top-right corner of square h8)
+  3. Bottom-right (the bottom-right corner of square h1)
+  4. Bottom-left  (the bottom-left corner of square a1)
+
+Output format: a JSON array of 4 [y, x] pairs, normalized to the
+0-1000 range (y top-to-bottom, x left-to-right). Output ONLY the
+JSON array. Example: [[80, 100], [80, 900], [920, 900], [920, 100]]
+"""
+
 
 # ── Gemini vision call ──────────────────────────────────────────────
 
@@ -468,20 +485,127 @@ def _verify_fen(
     return current
 
 
+# ── Grid corner detection + perspective rectification ─────────────
+
+def _detect_board_corners(
+    img: Image.Image, model: str
+) -> list[tuple[int, int]]:
+    """Ask Gemini for the 4 outer corners of the 8x8 grid.
+    Returns 4 (x, y) pixel coords in [TL, TR, BR, BL] order. Raises
+    on parse failure so callers can fall back to an un-rectified
+    crop."""
+    jpeg = _to_jpeg_bytes(img)
+    raw = _gemini_vision(jpeg, "", _CORNERS_PROMPT, model)
+    match = re.search(r"\[\s*\[[\s\S]*?\]\s*\]", raw)
+    if not match:
+        raise RuntimeError(f"Could not parse corners: {raw[:200]!r}")
+    data = json.loads(match.group(0))
+    if not isinstance(data, list) or len(data) != 4:
+        raise RuntimeError(f"Expected 4 corners, got {data!r}")
+    w, h = img.size
+    corners: list[tuple[int, int]] = []
+    for entry in data:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            raise RuntimeError(f"Bad corner entry: {entry!r}")
+        y_n, x_n = entry
+        x = max(0, min(w, int(x_n * w / 1000)))
+        y = max(0, min(h, int(y_n * h / 1000)))
+        corners.append((x, y))
+    return corners
+
+
+def _solve_linear(A: list[list[float]], B: list[float]) -> list[float]:
+    """Gaussian elimination solver for small N×N systems."""
+    n = len(A)
+    M = [row[:] + [b] for row, b in zip(A, B)]
+    for i in range(n):
+        pivot_row = max(range(i, n), key=lambda r: abs(M[r][i]))
+        M[i], M[pivot_row] = M[pivot_row], M[i]
+        pivot = M[i][i]
+        if abs(pivot) < 1e-12:
+            raise ValueError("Singular matrix in perspective solve")
+        for j in range(i, n + 1):
+            M[i][j] /= pivot
+        for r in range(n):
+            if r != i and M[r][i]:
+                factor = M[r][i]
+                for j in range(i, n + 1):
+                    M[r][j] -= factor * M[i][j]
+    return [M[i][n] for i in range(n)]
+
+
+def _perspective_coeffs(
+    src_corners: list[tuple[int, int]], dst_size: int
+) -> list[float]:
+    """Compute the 8 coefficients ``Image.transform(PERSPECTIVE)``
+    wants. PIL's perspective transform maps DESTINATION pixels back
+    to SOURCE, so we solve for the inverse homography: given target
+    corners [(0,0),(s,0),(s,s),(0,s)], find (a..h) such that
+
+        x_src = (a*X + b*Y + c) / (g*X + h*Y + 1)
+        y_src = (d*X + e*Y + f) / (g*X + h*Y + 1)
+
+    matches each source corner."""
+    dst = [(0, 0), (dst_size, 0), (dst_size, dst_size), (0, dst_size)]
+    A: list[list[float]] = []
+    B: list[float] = []
+    for (x, y), (X, Y) in zip(src_corners, dst):
+        A.append([X, Y, 1, 0, 0, 0, -x * X, -x * Y])
+        A.append([0, 0, 0, X, Y, 1, -y * X, -y * Y])
+        B.append(float(x))
+        B.append(float(y))
+    return _solve_linear(A, B)
+
+
+def _rectify_board(
+    img: Image.Image,
+    corners: list[tuple[int, int]],
+    size: int = 1024,
+) -> Image.Image:
+    """Warp the 4-corner quad to a ``size × size`` square via PIL
+    perspective transform."""
+    coeffs = _perspective_coeffs(corners, size)
+    return img.transform(
+        (size, size),
+        Image.PERSPECTIVE,
+        coeffs,
+        Image.BICUBIC,
+    )
+
+
 # ── Core pipeline ───────────────────────────────────────────────────
 
 def _pil_to_fen(
-    img: Image.Image, model: str, auto_rotate: bool, verify: bool = False
+    img: Image.Image,
+    model: str,
+    auto_rotate: bool,
+    verify: bool = False,
+    rectify: bool = True,
 ) -> str:
-    """PIL image → FEN. When `verify` is True, run one render-and-
-    compare pass to catch common mistakes (opt-in; currently gated
-    behind strict guards to avoid regressions)."""
+    """PIL image → FEN.
+
+    When ``rectify`` is True (the default), the function first asks
+    the model for the 4 outer grid corners of the board in the crop
+    and applies a perspective transform so the 8×8 grid fills a
+    1024-pixel square exactly. This eliminates off-by-one rank/file
+    mistakes caused by loose bounding boxes or perspective distortion
+    in the page photo.
+
+    When ``verify`` is True, run one render-and-compare pass to catch
+    common mistakes (opt-in; currently gated behind strict guards)."""
     img = _resize_if_needed(img)
 
     if auto_rotate:
         degrees = _detect_rotation(img, model)
         if degrees:
             img = _rotate_image(img, degrees)
+
+    if rectify:
+        try:
+            corners = _detect_board_corners(img, model)
+            img = _rectify_board(img, corners, size=1024)
+        except Exception:
+            pass  # fall through with the un-rectified crop
 
     jpeg = _to_jpeg_bytes(img)
     raw = _gemini_vision(jpeg, _FEN_SYSTEM, _FEN_USER, model)
