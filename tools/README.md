@@ -34,18 +34,19 @@ photo side-by-side with a rendering of the extracted positions →
 python tools/homework_wizard.py
 ```
 
-Dependencies: `google-genai`, `Pillow`, and GTK 3 bindings (see
-*Dependencies* under `homework_viewer.py` below). The
-`GOOGLE_API_KEY` / `GEMINI_API_KEY` environment variable must be
-set before the "Select directory…" button works.
+Dependencies: `google-genai`, `Pillow`, and GTK 3 bindings.
 
-If the wizard's accept-or-retry flow isn't what you want, the three
-scripts below cover the same ground as standalone CLIs:
+```bash
+pip install google-genai Pillow
+sudo apt install python3-gi gir1.2-gtk-3.0   # if missing
+export GOOGLE_API_KEY="AIza..."              # required before "Select directory…"
+```
+
+If the wizard's accept-or-retry flow isn't what you want, two
+lower-level CLIs are still available:
 
 * `image_to_fen.py` – recognition only (photos → FEN text).
 * `fen_to_images.py` – rendering only (FEN markdown → PNGs).
-* `homework_viewer.py` – visual diff only (already-extracted FENs
-  vs. the original photos).
 
 ---
 
@@ -173,31 +174,3 @@ Each piece is rendered as a coloured disc with its letter inside:
 white pieces are white discs with black letters, black pieces are
 black discs with white letters. Files and ranks are labelled around
 the edge.
-
----
-
-## `homework_viewer.py`
-
-GTK viewer that shows the original homework photo side-by-side
-with the corresponding composite rendered from `homework<N>.md`.
-Handy for eyeballing which positions `image_to_fen` got wrong.
-
-**Dependencies:** PyGObject with GTK 3 (already installed if you can
-build the main 3d_chess desktop app); Pillow.
-
-```bash
-sudo apt install python3-gi gir1.2-gtk-3.0   # if missing
-```
-
-### Usage
-
-```bash
-python tools/homework_viewer.py \
-    challenges/homework1.md \
-    ~/chess_homework/full_pages/page1.jpeg \
-    ~/chess_homework/full_pages/page2.jpeg
-```
-
-The Nth photo pairs with the Nth `# Page N` section in the markdown.
-Navigate with the Prev/Next buttons or Left/Right arrows; press
-**Q** or **Esc** to quit.

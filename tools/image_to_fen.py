@@ -616,12 +616,29 @@ def page_to_fens(
         raise FileNotFoundError(f"Image not found: {path}")
 
     mdl = model or _DEFAULT_MODEL
-    img = _prepare_image(path.read_bytes())
-    img = _resize_if_needed(img)
 
-    boxes = _detect_boards(img, mdl)
-    if not boxes:
+    # Keep the full-resolution image around for cropping. Detection
+    # runs on a smaller copy so the request stays under the API size
+    # limit; the returned boxes are rescaled back to the original.
+    original = _prepare_image(path.read_bytes())
+    detect_img = _resize_if_needed(original)
+    sx = original.size[0] / detect_img.size[0]
+    sy = original.size[1] / detect_img.size[1]
+
+    boxes_small = _detect_boards(detect_img, mdl)
+    if not boxes_small:
         raise RuntimeError(f"No chess boards detected in {image_path}")
+
+    # Rescale each detection box to original-resolution pixels.
+    boxes = [
+        (
+            max(0, min(original.size[0], int(x0 * sx))),
+            max(0, min(original.size[1], int(y0 * sy))),
+            max(0, min(original.size[0], int(x1 * sx))),
+            max(0, min(original.size[1], int(y1 * sy))),
+        )
+        for (x0, y0, x1, y1) in boxes_small
+    ]
 
     rows, cols, sorted_boxes = _infer_layout(boxes)
 
@@ -632,10 +649,10 @@ def page_to_fens(
         crop_box = (
             max(0, x0 - pad_x),
             max(0, y0 - pad_y),
-            min(img.size[0], x1 + pad_x),
-            min(img.size[1], y1 + pad_y),
+            min(original.size[0], x1 + pad_x),
+            min(original.size[1], y1 + pad_y),
         )
-        tile = img.crop(crop_box)
+        tile = original.crop(crop_box)
         fen = _pil_to_fen(tile, mdl, auto_rotate=False, verify=verify)
 
         r = idx // cols if cols else 0
