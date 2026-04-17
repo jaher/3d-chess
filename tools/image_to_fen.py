@@ -609,7 +609,7 @@ def page_to_fens(
     *,
     model: str | None = None,
     verify: bool = False,
-    max_workers: int = 6,
+    max_workers: int = 3,
 ) -> list[tuple[str, str]]:
     """Auto-detect every board on a page, read each FEN, and return
     (positional_label, fen) pairs in row-major order.
