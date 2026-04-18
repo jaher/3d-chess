@@ -848,34 +848,91 @@ def _next_homework_path() -> Path:
 
 
 def _coerce_page(page) -> dict:
-    """Normalise a page input into the dict form.
+    """Normalise a page input into the canonical dict form.
 
-    Accepts either the new dict (``{"type", "side", "entries"}``) or
-    the legacy ``list[(label, fen)]`` — legacy pages default to
-    ``mate_in_2`` / ``white``."""
-    if isinstance(page, dict):
-        return {
-            "type": page.get("type", DEFAULT_PUZZLE_TYPE) or DEFAULT_PUZZLE_TYPE,
-            "side": page.get("side", DEFAULT_PUZZLE_SIDE) or DEFAULT_PUZZLE_SIDE,
-            "entries": list(page.get("entries", [])),
+    Canonical shape::
+        {
+          "entries":      list[(label, fen)],
+          "entry_types":  list[str],   # same length as entries
+          "entry_sides":  list[str],   # same length as entries
         }
+
+    Accepts:
+      * the new shape directly;
+      * a dict with a single page-level ``type`` / ``side`` (the
+        values are broadcast to every entry);
+      * a legacy ``list[(label, fen)]`` (defaults applied).
+    """
+    if isinstance(page, dict):
+        entries = list(page.get("entries", []))
+        if "entry_types" in page:
+            entry_types = list(page["entry_types"])
+        else:
+            default_t = page.get("type", DEFAULT_PUZZLE_TYPE) or DEFAULT_PUZZLE_TYPE
+            entry_types = [default_t] * len(entries)
+        if "entry_sides" in page:
+            entry_sides = list(page["entry_sides"])
+        else:
+            default_s = page.get("side", DEFAULT_PUZZLE_SIDE) or DEFAULT_PUZZLE_SIDE
+            entry_sides = [default_s] * len(entries)
+        # Pad if the parallel arrays are short.
+        while len(entry_types) < len(entries):
+            entry_types.append(DEFAULT_PUZZLE_TYPE)
+        while len(entry_sides) < len(entries):
+            entry_sides.append(DEFAULT_PUZZLE_SIDE)
+        return {
+            "entries": entries,
+            "entry_types": entry_types,
+            "entry_sides": entry_sides,
+        }
+    entries = list(page)
     return {
-        "type": DEFAULT_PUZZLE_TYPE,
-        "side": DEFAULT_PUZZLE_SIDE,
-        "entries": list(page),
+        "entries": entries,
+        "entry_types": [DEFAULT_PUZZLE_TYPE] * len(entries),
+        "entry_sides": [DEFAULT_PUZZLE_SIDE] * len(entries),
     }
 
 
 def write_homework_md(pages, output_path: Path) -> None:
-    """Write a homework<N>.md file. ``pages`` is a list of either
-    new-style dicts or legacy ``list[(label, fen)]`` — both work."""
+    """Write a homework<N>.md file.
+
+    Each page starts with a fresh ``type:`` / ``side:`` block derived
+    from its first entry, even when two consecutive pages share the
+    same type — this matches the requested output where every
+    ``# Page N`` header is immediately followed by explicit puzzle
+    metadata. Per-entry overrides are emitted when the running value
+    changes within a page, matching the persistent-state semantics of
+    the C++ challenge loader."""
     lines: list[str] = [_HOMEWORK_HEADER]
     for page_idx, raw_page in enumerate(pages, start=1):
         page = _coerce_page(raw_page)
+        entries = page["entries"]
+        entry_types = page["entry_types"]
+        entry_sides = page["entry_sides"]
+
         lines.append(f"# Page {page_idx}\n")
-        lines.append(f"type: {page['type']}")
-        lines.append(f"side: {page['side']}\n")
-        for label, fen in page["entries"]:
+
+        if not entries:
+            continue
+
+        # Always emit the page's opening type/side, even when it
+        # matches the previous page's.
+        page_type = entry_types[0]
+        page_side = entry_sides[0]
+        lines.append(f"type: {page_type}")
+        lines.append(f"side: {page_side}\n")
+
+        current_type = page_type
+        current_side = page_side
+        for (label, fen), et, es in zip(entries, entry_types, entry_sides):
+            # Entry-level override only when the value has changed
+            # since the last emitted type:/side: line within the page.
+            if et != current_type:
+                lines.append(f"type: {et}")
+                current_type = et
+            if es != current_side:
+                lines.append(f"side: {es}")
+                current_side = es
             lines.append(f"# {label}\n{fen}\n")
     output_path.write_text("\n".join(lines))
 
@@ -883,29 +940,35 @@ def write_homework_md(pages, output_path: Path) -> None:
 def parse_homework_md(path: Path) -> list[dict]:
     """Parse a homework<N>.md file and return a list of pages.
 
-    Each returned page is a dict with keys ``type``, ``side`` and
-    ``entries`` (a list of ``(label, fen)`` pairs in file order).
+    Each page is a dict with:
+      * ``entries``     — ``list[(label, fen)]`` in file order
+      * ``entry_types`` — ``list[str]`` of same length
+      * ``entry_sides`` — ``list[str]`` of same length
 
-    The parser accepts both layouts:
-      * Legacy: single top-level ``type:`` / ``side:`` applying to
-        every page in the file.
-      * Multi-type: per-page ``type:`` / ``side:`` lines inside each
-        ``# Page N`` section.
-
-    Per-page metadata, when present, overrides the file-level default.
-    Labels without a preceding ``# Page`` fall on page 1."""
+    ``type:`` / ``side:`` lines act as persistent state — they set
+    the current value for every subsequent FEN in the file until
+    overridden. That mirrors the C++ loader. File-level metadata
+    before the first ``# Page`` marker becomes the page default,
+    reset at every Page boundary."""
     text = Path(path).expanduser().read_text()
     pages: list[dict] = []
     default_type = DEFAULT_PUZZLE_TYPE
     default_side = DEFAULT_PUZZLE_SIDE
+    current_type = default_type
+    current_side = default_side
     current: dict | None = None
     pending_label: str | None = None
+    pages_seen = 0
 
     def start_page() -> None:
-        nonlocal current
+        nonlocal current, current_type, current_side
         if current is not None:
             pages.append(current)
-        current = {"type": default_type, "side": default_side, "entries": []}
+        current = {"entries": [], "entry_types": [], "entry_sides": []}
+        # Each page inherits the file-level default. Per-page
+        # ``type:`` / ``side:`` lines that follow will override.
+        current_type = default_type
+        current_side = default_side
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -917,6 +980,7 @@ def parse_homework_md(path: Path) -> list[dict]:
                 continue
             if re.fullmatch(r"Page\s+\d+", comment, re.IGNORECASE):
                 start_page()
+                pages_seen += 1
                 pending_label = None
                 continue
             pending_label = comment
@@ -926,16 +990,14 @@ def parse_homework_md(path: Path) -> list[dict]:
             key, _, value = line.partition(":")
             key, value = key.strip().lower(), value.strip()
             if key == "type":
-                if current is None:
+                if pages_seen == 0:
                     default_type = value
-                else:
-                    current["type"] = value
+                current_type = value
                 continue
             if key == "side":
-                if current is None:
+                if pages_seen == 0:
                     default_side = value
-                else:
-                    current["side"] = value
+                current_side = value
                 continue
             # unknown "key:" line — ignore
             continue
@@ -950,6 +1012,8 @@ def parse_homework_md(path: Path) -> list[dict]:
             fen = fen.strip() + " w - - 0 1"
         label = pending_label or f"Board {len(current['entries']) + 1}"
         current["entries"].append((label, fen))
+        current["entry_types"].append(current_type)
+        current["entry_sides"].append(current_side)
         pending_label = None
 
     if current is not None:

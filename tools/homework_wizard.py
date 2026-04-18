@@ -115,6 +115,24 @@ def _edit_fen(fen: str, row: int, col: int, piece: str) -> str:
     return f"{_pack_placement(board)} {rest}"
 
 
+def _set_fen_side(fen: str, side: str) -> str:
+    """Rewrite the side-to-move field of a FEN ('w' or 'b')."""
+    side_char = "b" if side.lower().startswith("b") else "w"
+    fields = fen.split()
+    if len(fields) < 2:
+        return fields[0] + f" {side_char} - - 0 1"
+    fields[1] = side_char
+    return " ".join(fields)
+
+
+def _side_from_fen(fen: str) -> str:
+    """Read the side-to-move field of a FEN → 'white' or 'black'."""
+    fields = fen.split()
+    if len(fields) >= 2 and fields[1].lower().startswith("b"):
+        return "black"
+    return "white"
+
+
 def _pil_to_pixbuf(img: Image.Image) -> GdkPixbuf.Pixbuf:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -131,14 +149,17 @@ class HomeworkWizard(Gtk.Window):
 
         # Each entry: (photo_path, photo_pil, [(label, fen), ...])
         self.pages: list[tuple[Path, Image.Image, list[tuple[str, str]]]] = []
-        # Parallel list: per-page puzzle type (user-editable in the
-        # review screen via the type combo box).
-        self.page_types: list[str] = []
+        # Parallel to ``pages[*][2]`` (entries): one type / side per
+        # individual board, editable via combo boxes in the review
+        # grid. On save these become per-entry metadata in the
+        # generated homework<N>.md.
+        self.entry_types: list[list[str]] = []
+        self.entry_sides: list[list[str]] = []
         self.page_idx = 0
         self._last_alloc = (0, 0)
-        # Set when the combo box is being programmatically updated so
+        # Set when a combo box is being programmatically updated so
         # its changed-signal doesn't fight our own state writes.
-        self._suppress_type_signal = False
+        self._suppress_combo_signal = False
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -227,22 +248,14 @@ class HomeworkWizard(Gtk.Window):
         self.header.set_xalign(0.5)
         v.pack_start(self.header, False, False, 0)
 
-        # Per-page puzzle type selector.
-        type_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        type_row.set_halign(Gtk.Align.CENTER)
-        type_row.pack_start(Gtk.Label(label="Puzzle type:"), False, False, 0)
-        self.type_combo = Gtk.ComboBoxText()
-        for t in KNOWN_PUZZLE_TYPES:
-            self.type_combo.append_text(t)
-        self.type_combo.connect("changed", self._on_type_changed)
-        type_row.pack_start(self.type_combo, False, False, 0)
-        v.pack_start(type_row, False, False, 0)
-
         hint = Gtk.Label()
         hint.set_markup(
-            "<i>Click a square to edit a single piece · drag to move a piece.</i>"
+            "<i>Per-board: pick the puzzle type and who moves first above "
+            "each board.  Click a square to edit a single piece, drag to "
+            "move a piece.</i>"
         )
         hint.set_xalign(0.5)
+        hint.set_line_wrap(True)
         v.pack_start(hint, False, False, 0)
 
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -388,18 +401,20 @@ class HomeworkWizard(Gtk.Window):
         results: list[tuple[Path, Image.Image, list[tuple[str, str]]]],
     ) -> bool:
         self.pages = results
-        self.page_types = [DEFAULT_PUZZLE_TYPE] * len(results)
+        # Per-board defaults: every board starts as mate_in_2 / white
+        # (side is also re-derived from the FEN to pick up anything
+        # the vision model detected).
+        self.entry_types = [
+            [DEFAULT_PUZZLE_TYPE] * len(entries) for _, _, entries in results
+        ]
+        self.entry_sides = [
+            [_side_from_fen(fen) for _, fen in entries]
+            for _, _, entries in results
+        ]
         self.page_idx = 0
         self.stack.set_visible_child_name("review")
         self._refresh_review()
         return False
-
-    def _on_type_changed(self, combo: Gtk.ComboBoxText) -> None:
-        if self._suppress_type_signal or not self.pages:
-            return
-        t = combo.get_active_text()
-        if t:
-            self.page_types[self.page_idx] = t
 
     # ─── Review screen ──────────────────────────────────────────────
 
@@ -421,23 +436,6 @@ class HomeworkWizard(Gtk.Window):
                 i=self.page_idx + 1, n=len(self.pages), k=len(entries),
             )
         )
-
-        # Sync the type combo to the current page without triggering
-        # our own changed-handler.
-        cur_type = self.page_types[self.page_idx]
-        self._suppress_type_signal = True
-        try:
-            model = self.type_combo.get_model()
-            active_idx = next(
-                (i for i, row in enumerate(model) if row[0] == cur_type),
-                -1,
-            )
-            if active_idx < 0:
-                self.type_combo.append_text(cur_type)
-                active_idx = len(model)
-            self.type_combo.set_active(active_idx)
-        finally:
-            self._suppress_type_signal = False
 
         alloc_w, alloc_h = self._last_alloc
         if alloc_w == 0 or alloc_h == 0:
@@ -470,6 +468,35 @@ class HomeworkWizard(Gtk.Window):
             lbl.set_markup(f"<b>{GLib.markup_escape_text(label)}</b>")
             vbox.pack_start(lbl, False, False, 0)
 
+            # Per-board type + side dropdowns.
+            meta_row = Gtk.Box(
+                orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+            )
+            meta_row.set_halign(Gtk.Align.CENTER)
+
+            type_combo = Gtk.ComboBoxText()
+            for t in KNOWN_PUZZLE_TYPES:
+                type_combo.append_text(t)
+            self._select_combo_value(
+                type_combo, self.entry_types[self.page_idx][idx]
+            )
+            type_combo.connect(
+                "changed", self._on_entry_type_changed, idx
+            )
+            meta_row.pack_start(type_combo, False, False, 0)
+
+            side_combo = Gtk.ComboBoxText()
+            for s in ("white", "black"):
+                side_combo.append_text(s)
+            self._select_combo_value(
+                side_combo, self.entry_sides[self.page_idx][idx]
+            )
+            side_combo.connect(
+                "changed", self._on_entry_side_changed, idx
+            )
+            meta_row.pack_start(side_combo, False, False, 0)
+            vbox.pack_start(meta_row, False, False, 0)
+
             ebox = Gtk.EventBox()
             ebox.set_visible_window(False)
             ebox.add_events(
@@ -486,6 +513,8 @@ class HomeworkWizard(Gtk.Window):
                 "board_idx": idx, "gtk_image": gimg,
                 "event_box": ebox, "board_px": _BOARD_PX,
                 "drag_start": None,
+                "type_combo": type_combo,
+                "side_combo": side_combo,
             }
             self._board_widgets.append(state)
             ebox.connect("button-press-event", self._on_board_press, idx)
@@ -494,6 +523,50 @@ class HomeworkWizard(Gtk.Window):
             self._redraw_board(idx)
 
         self.rend_grid.show_all()
+
+    def _select_combo_value(
+        self, combo: Gtk.ComboBoxText, value: str
+    ) -> None:
+        """Select ``value`` in the combo (adding it if missing) without
+        firing the changed-signal."""
+        self._suppress_combo_signal = True
+        try:
+            model = combo.get_model()
+            target = -1
+            for i, row in enumerate(model):
+                if row[0] == value:
+                    target = i
+                    break
+            if target < 0:
+                combo.append_text(value)
+                target = len(model)
+            combo.set_active(target)
+        finally:
+            self._suppress_combo_signal = False
+
+    def _on_entry_type_changed(
+        self, combo: Gtk.ComboBoxText, board_idx: int
+    ) -> None:
+        if self._suppress_combo_signal or not self.pages:
+            return
+        t = combo.get_active_text()
+        if t:
+            self.entry_types[self.page_idx][board_idx] = t
+
+    def _on_entry_side_changed(
+        self, combo: Gtk.ComboBoxText, board_idx: int
+    ) -> None:
+        if self._suppress_combo_signal or not self.pages:
+            return
+        s = combo.get_active_text()
+        if not s:
+            return
+        self.entry_sides[self.page_idx][board_idx] = s
+        # Also rewrite the FEN's side-to-move field so it matches.
+        _, _, entries = self.pages[self.page_idx]
+        label, fen = entries[board_idx]
+        entries[board_idx] = (label, _set_fen_side(fen, s))
+        self._redraw_board(board_idx)
 
     def _redraw_board(self, board_idx: int) -> None:
         """Re-render a single board's Gtk.Image from its current FEN."""
@@ -676,9 +749,9 @@ class HomeworkWizard(Gtk.Window):
 
         pages_md = [
             {
-                "type": self.page_types[i],
-                "side": "white",
                 "entries": entries,
+                "entry_types": self.entry_types[i],
+                "entry_sides": self.entry_sides[i],
             }
             for i, (_, _, entries) in enumerate(self.pages)
         ]
