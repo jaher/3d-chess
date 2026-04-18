@@ -896,13 +896,11 @@ def _coerce_page(page) -> dict:
 def write_homework_md(pages, output_path: Path) -> None:
     """Write a homework<N>.md file.
 
-    Each page starts with a fresh ``type:`` / ``side:`` block derived
-    from its first entry, even when two consecutive pages share the
-    same type — this matches the requested output where every
-    ``# Page N`` header is immediately followed by explicit puzzle
-    metadata. Per-entry overrides are emitted when the running value
-    changes within a page, matching the persistent-state semantics of
-    the C++ challenge loader."""
+    Every FEN is preceded by its own ``type:`` / ``side:`` block so
+    the file is completely self-describing: any single board can
+    declare a different puzzle type without relying on running
+    state. The C++ loader already treats those lines as
+    persistent-state updates, so the format round-trips cleanly."""
     lines: list[str] = [_HOMEWORK_HEADER]
     for page_idx, raw_page in enumerate(pages, start=1):
         page = _coerce_page(raw_page)
@@ -912,28 +910,11 @@ def write_homework_md(pages, output_path: Path) -> None:
 
         lines.append(f"# Page {page_idx}\n")
 
-        if not entries:
-            continue
-
-        # Always emit the page's opening type/side, even when it
-        # matches the previous page's.
-        page_type = entry_types[0]
-        page_side = entry_sides[0]
-        lines.append(f"type: {page_type}")
-        lines.append(f"side: {page_side}\n")
-
-        current_type = page_type
-        current_side = page_side
         for (label, fen), et, es in zip(entries, entry_types, entry_sides):
-            # Entry-level override only when the value has changed
-            # since the last emitted type:/side: line within the page.
-            if et != current_type:
-                lines.append(f"type: {et}")
-                current_type = et
-            if es != current_side:
-                lines.append(f"side: {es}")
-                current_side = es
-            lines.append(f"# {label}\n{fen}\n")
+            lines.append(f"# {label}")
+            lines.append(f"type: {et}")
+            lines.append(f"side: {es}")
+            lines.append(f"{fen}\n")
     output_path.write_text("\n".join(lines))
 
 
