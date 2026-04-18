@@ -37,6 +37,45 @@ static std::string trim(const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
+// Type → max_moves table
+// ---------------------------------------------------------------------------
+static int max_moves_for_type(const std::string& t) {
+    if (t == "mate_in_1")  return 1;
+    if (t == "mate_in_2")  return 2;
+    if (t == "mate_in_3")  return 3;
+    if (t == "find_forks") return 1;
+    if (t == "find_pins")  return 1;
+    return 0;
+}
+
+// Match a comment like "Page 1", "Page  3" — case-insensitive.
+static bool is_page_marker(const std::string& comment) {
+    if (comment.size() < 5) return false;
+    auto starts_with_ci = [](const std::string& s, const char* prefix) {
+        size_t n = std::strlen(prefix);
+        if (s.size() < n) return false;
+        for (size_t i = 0; i < n; ++i) {
+            if (std::tolower(static_cast<unsigned char>(s[i])) !=
+                std::tolower(static_cast<unsigned char>(prefix[i])))
+                return false;
+        }
+        return true;
+    };
+    if (!starts_with_ci(comment, "page")) return false;
+    size_t i = 4;
+    if (i >= comment.size() ||
+        !std::isspace(static_cast<unsigned char>(comment[i]))) return false;
+    while (i < comment.size() &&
+           std::isspace(static_cast<unsigned char>(comment[i]))) ++i;
+    bool any = false;
+    while (i < comment.size() &&
+           std::isdigit(static_cast<unsigned char>(comment[i]))) {
+        any = true; ++i;
+    }
+    return any;
+}
+
+// ---------------------------------------------------------------------------
 // Parse a challenge .md file
 // ---------------------------------------------------------------------------
 Challenge load_challenge(const std::string& path) {
@@ -52,38 +91,101 @@ Challenge load_challenge(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) return ch;
 
+    // File-level defaults (set by top-level type:/side: lines before
+    // the first "# Page N" marker). Per-page lines override.
+    std::string file_type;
+    std::string file_side;
+    std::string current_type;
+    std::string current_side;
+    int pages_seen = 0;
+
     std::string line;
     while (std::getline(file, line)) {
         std::string t = trim(line);
-        if (t.empty() || t[0] == '#') continue;
+        if (t.empty()) continue;
 
-        // Try to parse as key:value
+        if (t[0] == '#') {
+            std::string comment = trim(t.substr(1));
+            if (is_page_marker(comment)) {
+                // Reset per-page state back to file defaults before
+                // the page's own metadata arrives.
+                current_type = file_type;
+                current_side = file_side;
+                ++pages_seen;
+            }
+            continue;
+        }
+
         size_t colon = t.find(':');
         if (colon != std::string::npos && colon < 20) {
-            // Check that what's before the colon looks like a key (no spaces, no slashes)
             std::string key = trim(t.substr(0, colon));
             std::string value = trim(t.substr(colon + 1));
             bool is_key = !key.empty() && key.find(' ') == std::string::npos &&
                           key.find('/') == std::string::npos;
             if (is_key) {
                 if (key == "type") {
-                    ch.type = value;
-                    if (value == "mate_in_2") ch.max_moves = 2;
-                    else if (value == "mate_in_1") ch.max_moves = 1;
-                    else if (value == "mate_in_3") ch.max_moves = 3;
-                } else if (key == "side") {
-                    ch.starts_white = (value == "white" || value == "w");
-                } else if (key == "name") {
-                    ch.name = value;
+                    if (pages_seen == 0) {
+                        file_type = value;
+                        current_type = value;
+                    } else {
+                        current_type = value;
+                    }
+                    continue;
                 }
-                continue;
+                if (key == "side") {
+                    if (pages_seen == 0) {
+                        file_side = value;
+                        current_side = value;
+                    } else {
+                        current_side = value;
+                    }
+                    continue;
+                }
+                if (key == "name") {
+                    ch.name = value;
+                    continue;
+                }
             }
         }
 
-        // Otherwise treat as a FEN line
+        // FEN line — stamp it with the active per-page type/side.
+        const std::string& resolved_type =
+            !current_type.empty() ? current_type
+            : (!file_type.empty() ? file_type : std::string("mate_in_2"));
+        const std::string& resolved_side =
+            !current_side.empty() ? current_side
+            : (!file_side.empty() ? file_side : std::string("white"));
         ch.fens.push_back(t);
+        ch.fen_types.push_back(resolved_type);
+        ch.fen_starts_white.push_back(
+            resolved_side == "white" || resolved_side == "w"
+        );
+    }
+
+    // Default current-puzzle pointer to the first FEN.
+    if (!ch.fens.empty()) {
+        challenge_apply_current(ch, 0);
+    } else {
+        // Preserve the old single-type semantics for empty files so
+        // callers see ``ch.type`` reflect the file-level default.
+        ch.type = !file_type.empty() ? file_type : std::string();
+        ch.starts_white = (file_side.empty() || file_side == "white" ||
+                           file_side == "w");
+        ch.max_moves = max_moves_for_type(ch.type);
     }
     return ch;
+}
+
+void challenge_apply_current(Challenge& ch, int index) {
+    if (index < 0 || index >= static_cast<int>(ch.fens.size())) return;
+    ch.current_index = index;
+    if (index < static_cast<int>(ch.fen_types.size())) {
+        ch.type = ch.fen_types[index];
+    }
+    if (index < static_cast<int>(ch.fen_starts_white.size())) {
+        ch.starts_white = ch.fen_starts_white[index];
+    }
+    ch.max_moves = max_moves_for_type(ch.type);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,4 +275,80 @@ void apply_fen_to_state(GameState& gs, const ParsedFEN& parsed) {
     gs.rebuild_grid();
     gs.score_history.push_back(evaluate_position(gs));
     gs.take_snapshot();
+}
+
+// ---------------------------------------------------------------------------
+// Tactic detection: forks & pins
+// ---------------------------------------------------------------------------
+static int piece_value_pts(PieceType t) {
+    switch (t) {
+    case PAWN:   return 1;
+    case KNIGHT: return 3;
+    case BISHOP: return 3;
+    case ROOK:   return 5;
+    case QUEEN:  return 9;
+    case KING:   return 100;  // absolute pins always count
+    default:     return 0;
+    }
+}
+
+bool move_is_fork(const GameState& gs, int to_col, int to_row) {
+    if (to_col < 0 || to_col >= 8 || to_row < 0 || to_row >= 8) return false;
+    int idx = gs.grid[to_row][to_col];
+    if (idx < 0) return false;
+    bool attacker_white = gs.pieces[idx].is_white;
+
+    // generate_moves is color-aware via the piece itself, so this
+    // works even though gs.white_turn has flipped after the move.
+    auto moves = generate_moves(gs, to_col, to_row);
+    int victims = 0;
+    for (const auto& m : moves) {
+        int vi = gs.grid[m.second][m.first];
+        if (vi >= 0 && gs.pieces[vi].is_white != attacker_white)
+            ++victims;
+    }
+    return victims >= 2;
+}
+
+bool move_is_pin(const GameState& gs, int to_col, int to_row) {
+    if (to_col < 0 || to_col >= 8 || to_row < 0 || to_row >= 8) return false;
+    int idx = gs.grid[to_row][to_col];
+    if (idx < 0) return false;
+    const BoardPiece& attacker = gs.pieces[idx];
+    if (attacker.type != BISHOP && attacker.type != ROOK &&
+        attacker.type != QUEEN) return false;
+
+    struct Dir { int dc, dr; };
+    std::vector<Dir> dirs;
+    if (attacker.type == BISHOP || attacker.type == QUEEN) {
+        dirs.push_back({ 1,  1}); dirs.push_back({ 1, -1});
+        dirs.push_back({-1,  1}); dirs.push_back({-1, -1});
+    }
+    if (attacker.type == ROOK || attacker.type == QUEEN) {
+        dirs.push_back({0,  1}); dirs.push_back({0, -1});
+        dirs.push_back({1,  0}); dirs.push_back({-1, 0});
+    }
+
+    for (const auto& d : dirs) {
+        int c = to_col + d.dc, r = to_row + d.dr;
+        int first = -1;
+        while (c >= 0 && c < 8 && r >= 0 && r < 8) {
+            int i = gs.grid[r][c];
+            if (i >= 0) {
+                const BoardPiece& p = gs.pieces[i];
+                if (p.is_white == attacker.is_white) break;  // own piece: blocked
+                if (first < 0) {
+                    first = i;                // record the pinned piece
+                } else {
+                    // Second enemy behind the first along the same line.
+                    int v1 = piece_value_pts(gs.pieces[first].type);
+                    int v2 = piece_value_pts(p.type);
+                    if (v2 > v1) return true;
+                    break;
+                }
+            }
+            c += d.dc; r += d.dr;
+        }
+    }
+    return false;
 }

@@ -803,20 +803,37 @@ def page_to_fens(
 
 # ── Homework markdown emission ──────────────────────────────────────
 
+# Each page in the new format is a dict:
+#   {"type": <str>, "side": "white"|"black", "entries": [(label, fen), ...]}
+# Types recognised by the C++ challenge loader:
+#   mate_in_1, mate_in_2, mate_in_3, find_forks, find_pins.
+
+DEFAULT_PUZZLE_TYPE = "mate_in_2"
+DEFAULT_PUZZLE_SIDE = "white"
+
+KNOWN_PUZZLE_TYPES = (
+    "mate_in_1",
+    "mate_in_2",
+    "mate_in_3",
+    "find_forks",
+    "find_pins",
+)
+
 _HOMEWORK_HEADER = """\
-# Challenge: Mate in 2 (White to move)
+# Multi-page chess challenge
 #
 # Each non-comment, non-empty line below is a FEN position.
-# The challenge is the same for every position: WHITE TO MOVE,
-# find the move sequence that delivers checkmate in 2 moves.
+# Every page declares its own `type:` and `side:` metadata so a
+# single file can mix tactics types.
 #
-# Format (parseable by the chess application):
-#   type: mate_in_2
-#   side: white
-#   one FEN per line, comments start with #
-
-type: mate_in_2
-side: white
+# Recognised types:
+#   mate_in_1 / mate_in_2 / mate_in_3 — deliver checkmate in N moves.
+#   find_forks                        — play a move that forks two+
+#                                       enemy pieces.
+#   find_pins                         — play a move that pins an enemy
+#                                       piece against a more valuable one.
+#
+# Comments start with '#'. Blank lines are ignored.
 """
 
 
@@ -830,33 +847,65 @@ def _next_homework_path() -> Path:
     return base / f"homework{n}.md"
 
 
-def write_homework_md(
-    pages: list[list[tuple[str, str]]],
-    output_path: Path,
-) -> None:
+def _coerce_page(page) -> dict:
+    """Normalise a page input into the dict form.
+
+    Accepts either the new dict (``{"type", "side", "entries"}``) or
+    the legacy ``list[(label, fen)]`` — legacy pages default to
+    ``mate_in_2`` / ``white``."""
+    if isinstance(page, dict):
+        return {
+            "type": page.get("type", DEFAULT_PUZZLE_TYPE) or DEFAULT_PUZZLE_TYPE,
+            "side": page.get("side", DEFAULT_PUZZLE_SIDE) or DEFAULT_PUZZLE_SIDE,
+            "entries": list(page.get("entries", [])),
+        }
+    return {
+        "type": DEFAULT_PUZZLE_TYPE,
+        "side": DEFAULT_PUZZLE_SIDE,
+        "entries": list(page),
+    }
+
+
+def write_homework_md(pages, output_path: Path) -> None:
+    """Write a homework<N>.md file. ``pages`` is a list of either
+    new-style dicts or legacy ``list[(label, fen)]`` — both work."""
     lines: list[str] = [_HOMEWORK_HEADER]
-    for page_idx, page in enumerate(pages, start=1):
+    for page_idx, raw_page in enumerate(pages, start=1):
+        page = _coerce_page(raw_page)
         lines.append(f"# Page {page_idx}\n")
-        for label, fen in page:
+        lines.append(f"type: {page['type']}")
+        lines.append(f"side: {page['side']}\n")
+        for label, fen in page["entries"]:
             lines.append(f"# {label}\n{fen}\n")
     output_path.write_text("\n".join(lines))
 
 
-def parse_homework_md(path: Path) -> list[list[tuple[str, str]]]:
-    """Parse a homework<N>.md file and return a list of pages, where
-    each page is a list of (label, fen) pairs.
+def parse_homework_md(path: Path) -> list[dict]:
+    """Parse a homework<N>.md file and return a list of pages.
 
-    The format is:
-      type: / side: header lines (ignored)
-      # Page <N>      -> starts a new page
-      # <label>       -> label for the following FEN (e.g. "Top Left")
-      <fen line>      -> bare FEN placement + metadata
+    Each returned page is a dict with keys ``type``, ``side`` and
+    ``entries`` (a list of ``(label, fen)`` pairs in file order).
 
-    Labels without a preceding ``# Page`` end up on page 1."""
+    The parser accepts both layouts:
+      * Legacy: single top-level ``type:`` / ``side:`` applying to
+        every page in the file.
+      * Multi-type: per-page ``type:`` / ``side:`` lines inside each
+        ``# Page N`` section.
+
+    Per-page metadata, when present, overrides the file-level default.
+    Labels without a preceding ``# Page`` fall on page 1."""
     text = Path(path).expanduser().read_text()
-    pages: list[list[tuple[str, str]]] = []
-    current_page: list[tuple[str, str]] = []
+    pages: list[dict] = []
+    default_type = DEFAULT_PUZZLE_TYPE
+    default_side = DEFAULT_PUZZLE_SIDE
+    current: dict | None = None
     pending_label: str | None = None
+
+    def start_page() -> None:
+        nonlocal current
+        if current is not None:
+            pages.append(current)
+        current = {"type": default_type, "side": default_side, "entries": []}
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -866,30 +915,45 @@ def parse_homework_md(path: Path) -> list[list[tuple[str, str]]]:
             comment = line.lstrip("#").strip()
             if not comment:
                 continue
-            page_match = re.fullmatch(r"Page\s+\d+", comment, re.IGNORECASE)
-            if page_match:
-                if current_page:
-                    pages.append(current_page)
-                    current_page = []
+            if re.fullmatch(r"Page\s+\d+", comment, re.IGNORECASE):
+                start_page()
                 pending_label = None
                 continue
             pending_label = comment
             continue
+
         if ":" in line and _FEN_FULL.search(line) is None:
-            # metadata line like "type: mate_in_2" — skip
+            key, _, value = line.partition(":")
+            key, value = key.strip().lower(), value.strip()
+            if key == "type":
+                if current is None:
+                    default_type = value
+                else:
+                    current["type"] = value
+                continue
+            if key == "side":
+                if current is None:
+                    default_side = value
+                else:
+                    current["side"] = value
+                continue
+            # unknown "key:" line — ignore
             continue
+
         fen_match = _FEN_FULL.search(line) or _FEN_PLACEMENT.search(line)
         if not fen_match:
             continue
+        if current is None:
+            start_page()
         fen = fen_match.group(0)
         if _FEN_FULL.fullmatch(fen) is None and not fen.endswith(" 1"):
             fen = fen.strip() + " w - - 0 1"
-        label = pending_label or f"Board {len(current_page) + 1}"
-        current_page.append((label, fen))
+        label = pending_label or f"Board {len(current['entries']) + 1}"
+        current["entries"].append((label, fen))
         pending_label = None
 
-    if current_page:
-        pages.append(current_page)
+    if current is not None:
+        pages.append(current)
     return pages
 
 

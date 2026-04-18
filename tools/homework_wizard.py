@@ -48,6 +48,8 @@ from image_to_fen import (  # noqa: E402
     write_homework_md,
     _next_homework_path,
     _render_fen_image,
+    DEFAULT_PUZZLE_TYPE,
+    KNOWN_PUZZLE_TYPES,
 )
 
 
@@ -129,8 +131,14 @@ class HomeworkWizard(Gtk.Window):
 
         # Each entry: (photo_path, photo_pil, [(label, fen), ...])
         self.pages: list[tuple[Path, Image.Image, list[tuple[str, str]]]] = []
+        # Parallel list: per-page puzzle type (user-editable in the
+        # review screen via the type combo box).
+        self.page_types: list[str] = []
         self.page_idx = 0
         self._last_alloc = (0, 0)
+        # Set when the combo box is being programmatically updated so
+        # its changed-signal doesn't fight our own state writes.
+        self._suppress_type_signal = False
 
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -219,9 +227,20 @@ class HomeworkWizard(Gtk.Window):
         self.header.set_xalign(0.5)
         v.pack_start(self.header, False, False, 0)
 
+        # Per-page puzzle type selector.
+        type_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        type_row.set_halign(Gtk.Align.CENTER)
+        type_row.pack_start(Gtk.Label(label="Puzzle type:"), False, False, 0)
+        self.type_combo = Gtk.ComboBoxText()
+        for t in KNOWN_PUZZLE_TYPES:
+            self.type_combo.append_text(t)
+        self.type_combo.connect("changed", self._on_type_changed)
+        type_row.pack_start(self.type_combo, False, False, 0)
+        v.pack_start(type_row, False, False, 0)
+
         hint = Gtk.Label()
         hint.set_markup(
-            "<i>Click any square on an extracted board to correct it.</i>"
+            "<i>Click a square to edit a single piece · drag to move a piece.</i>"
         )
         hint.set_xalign(0.5)
         v.pack_start(hint, False, False, 0)
@@ -369,10 +388,18 @@ class HomeworkWizard(Gtk.Window):
         results: list[tuple[Path, Image.Image, list[tuple[str, str]]]],
     ) -> bool:
         self.pages = results
+        self.page_types = [DEFAULT_PUZZLE_TYPE] * len(results)
         self.page_idx = 0
         self.stack.set_visible_child_name("review")
         self._refresh_review()
         return False
+
+    def _on_type_changed(self, combo: Gtk.ComboBoxText) -> None:
+        if self._suppress_type_signal or not self.pages:
+            return
+        t = combo.get_active_text()
+        if t:
+            self.page_types[self.page_idx] = t
 
     # ─── Review screen ──────────────────────────────────────────────
 
@@ -394,6 +421,23 @@ class HomeworkWizard(Gtk.Window):
                 i=self.page_idx + 1, n=len(self.pages), k=len(entries),
             )
         )
+
+        # Sync the type combo to the current page without triggering
+        # our own changed-handler.
+        cur_type = self.page_types[self.page_idx]
+        self._suppress_type_signal = True
+        try:
+            model = self.type_combo.get_model()
+            active_idx = next(
+                (i for i, row in enumerate(model) if row[0] == cur_type),
+                -1,
+            )
+            if active_idx < 0:
+                self.type_combo.append_text(cur_type)
+                active_idx = len(model)
+            self.type_combo.set_active(active_idx)
+        finally:
+            self._suppress_type_signal = False
 
         alloc_w, alloc_h = self._last_alloc
         if alloc_w == 0 or alloc_h == 0:
@@ -630,9 +674,16 @@ class HomeworkWizard(Gtk.Window):
         if not out.suffix:
             out = out.with_suffix(".md")
 
-        pages_md = [entries for _, _, entries in self.pages]
+        pages_md = [
+            {
+                "type": self.page_types[i],
+                "side": "white",
+                "entries": entries,
+            }
+            for i, (_, _, entries) in enumerate(self.pages)
+        ]
         write_homework_md(pages_md, out)
-        n_boards = sum(len(e) for e in pages_md)
+        n_boards = sum(len(p["entries"]) for p in pages_md)
         self.saved_label.set_markup(
             "<span size='x-large'>Saved "
             f"<b>{n_boards}</b> FEN(s) across "

@@ -429,6 +429,19 @@ static void handle_board_click(AppState& a, double mx, double my,
                             a.challenge_solutions[pi].push_back(alg);
                         }
                     }
+                    // Tactic-puzzle success checks: fork / pin puzzles
+                    // end after the starter plays one move that
+                    // produces the required motif.
+                    if (was_starter) {
+                        const std::string& ct = a.current_challenge.type;
+                        if (ct == "find_forks") {
+                            if (move_is_fork(gs, col, row))
+                                a.challenge_solved = true;
+                        } else if (ct == "find_pins") {
+                            if (move_is_pin(gs, col, row))
+                                a.challenge_solved = true;
+                        }
+                    }
                     if (gs.game_over) {
                         bool solved = false;
                         if (a.current_challenge.starts_white &&
@@ -577,7 +590,10 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     if (puzzle_index < 0 ||
         puzzle_index >= static_cast<int>(a.current_challenge.fens.size()))
         return;
-    a.current_challenge.current_index = puzzle_index;
+    // Sync ch.type/max_moves/starts_white to the active puzzle so a
+    // multi-page homework file with mixed tactic types behaves
+    // correctly on navigation.
+    challenge_apply_current(a.current_challenge, puzzle_index);
     a.challenge_moves_made = 0;
     a.challenge_solved = false;
     a.challenge_next_hover = false;

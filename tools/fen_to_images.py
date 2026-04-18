@@ -141,8 +141,11 @@ def render_homework(
     written: list[Path] = []
 
     for page_idx, page in enumerate(pages, start=1):
+        # parse_homework_md now returns dicts with {type, side, entries};
+        # fall back to a plain list for backward compatibility.
+        entries = page["entries"] if isinstance(page, dict) else page
         if per_board:
-            for label, fen in page:
+            for label, fen in entries:
                 out = (
                     output_dir
                     / f"{stem}_page{page_idx}_{_slugify(label)}.png"
@@ -156,7 +159,8 @@ def render_homework(
         else:
             out = output_dir / f"{stem}_page{page_idx}.png"
             composite = _compose_page(
-                page, board_size=board_size, title=f"{stem} — Page {page_idx}"
+                entries, board_size=board_size,
+                title=f"{stem} — Page {page_idx}"
             )
             composite.save(out)
             written.append(out)
