@@ -5,6 +5,7 @@
 #include "cloth_flag.h"
 #include "linalg.h"
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -429,17 +430,59 @@ static void handle_board_click(AppState& a, double mx, double my,
                             a.challenge_solutions[pi].push_back(alg);
                         }
                     }
-                    // Tactic-puzzle success checks: fork / pin puzzles
-                    // end after the starter plays one move that
-                    // produces the required motif.
+                    // Tactic-puzzle success: find_forks / find_pins
+                    // require the user to enumerate EVERY legal move
+                    // that creates the motif. Each attempt is checked
+                    // against the precomputed required-move list,
+                    // then the board is reset so they can play the
+                    // next candidate from the original position.
                     if (was_starter) {
                         const std::string& ct = a.current_challenge.type;
-                        if (ct == "find_forks") {
-                            if (move_is_fork(gs, col, row))
+                        bool is_tactic = (ct == "find_forks" ||
+                                           ct == "find_pins");
+                        if (is_tactic) {
+                            std::string uci = gs.move_history.empty()
+                                ? std::string()
+                                : gs.move_history.back();
+                            const auto& req =
+                                a.current_challenge.required_moves;
+                            auto& found =
+                                a.current_challenge.found_moves;
+                            bool is_required = std::find(
+                                req.begin(), req.end(), uci) != req.end();
+                            bool already_found = std::find(
+                                found.begin(), found.end(), uci) != found.end();
+                            if (is_required && !already_found) {
+                                found.push_back(uci);
+                            }
+
+                            // Reset the board to the puzzle's starting
+                            // FEN so the user can play the next move.
+                            int pi = a.current_challenge.current_index;
+                            ParsedFEN p = parse_fen(
+                                a.current_challenge.fens[pi]);
+                            if (p.valid) apply_fen_to_state(a.game, p);
+                            a.challenge_moves_made = 0;
+
+                            if (!req.empty() && found.size() >= req.size()) {
                                 a.challenge_solved = true;
-                        } else if (ct == "find_pins") {
-                            if (move_is_pin(gs, col, row))
-                                a.challenge_solved = true;
+                            }
+
+                            char buf[160];
+                            const char* noun =
+                                (ct == "find_forks") ? "forks" : "pins";
+                            std::snprintf(
+                                buf, sizeof(buf),
+                                "%s — found %d / %d %s",
+                                is_required ? "Good!"
+                                             : "Not a match — try again",
+                                static_cast<int>(found.size()),
+                                static_cast<int>(req.size()),
+                                noun
+                            );
+                            set_status(a, buf);
+                            queue_redraw(a);
+                            return;
                         }
                     }
                     if (gs.game_over) {
@@ -599,6 +642,16 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     a.challenge_next_hover = false;
     ParsedFEN parsed = parse_fen(a.current_challenge.fens[puzzle_index]);
     if (parsed.valid) apply_fen_to_state(a.game, parsed);
+
+    // For find_forks / find_pins puzzles, pre-compute every legal
+    // move that produces the target motif so we can track progress
+    // as the user plays them one at a time.
+    const std::string& ct = a.current_challenge.type;
+    if (ct == "find_forks" || ct == "find_pins") {
+        a.current_challenge.required_moves = find_tactic_moves(
+            a.game, a.current_challenge.starts_white, ct
+        );
+    }
     char buf[160];
     std::snprintf(buf, sizeof(buf), "Challenge: %s [%d/%d]",
                   a.current_challenge.name.c_str(),

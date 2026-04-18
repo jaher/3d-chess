@@ -19,6 +19,14 @@ struct Challenge {
     std::vector<std::string> fen_types;        // per-puzzle type
     std::vector<bool> fen_starts_white;        // per-puzzle side-to-move
     int current_index = 0;     // currently active puzzle within fens
+
+    // Populated for ``find_forks`` / ``find_pins`` puzzles on load.
+    // ``required_moves`` lists every UCI move the starter can play
+    // to create the target motif; ``found_moves`` is the subset the
+    // user has already played. The puzzle is solved when the two
+    // sets are equal.
+    std::vector<std::string> required_moves;
+    std::vector<std::string> found_moves;
 };
 
 struct ParsedFEN {
@@ -49,6 +57,13 @@ void challenge_apply_current(Challenge& ch, int index);
 //                  relative pin).
 bool move_is_fork(const GameState& gs, int to_col, int to_row);
 bool move_is_pin(const GameState& gs, int to_col, int to_row);
+
+// Enumerate every legal move for ``white_side`` that produces the
+// given motif. Returned as UCI strings in no particular order.
+// ``tactic_type`` must be ``"find_forks"`` or ``"find_pins"``; any
+// other value returns an empty list.
+std::vector<std::string> find_tactic_moves(
+    GameState& gs, bool white_side, const std::string& tactic_type);
 
 // Convert a FEN string into a board state (uses internal column mapping)
 ParsedFEN parse_fen(const std::string& fen);

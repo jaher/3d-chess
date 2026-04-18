@@ -1,4 +1,5 @@
 #include "challenge.h"
+#include "ai_player.h"
 #include "chess_rules.h"
 
 #include <algorithm>
@@ -186,6 +187,11 @@ void challenge_apply_current(Challenge& ch, int index) {
         ch.starts_white = ch.fen_starts_white[index];
     }
     ch.max_moves = max_moves_for_type(ch.type);
+    // Tactic state is populated by app_load_challenge_puzzle once
+    // the board is actually set up; always clear here so a stale
+    // list from a previous puzzle never leaks into the new one.
+    ch.required_moves.clear();
+    ch.found_moves.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +314,43 @@ bool move_is_fork(const GameState& gs, int to_col, int to_row) {
             ++victims;
     }
     return victims >= 2;
+}
+
+std::vector<std::string> find_tactic_moves(
+    GameState& gs, bool white_side, const std::string& tactic_type) {
+    std::vector<std::string> out;
+    if (tactic_type != "find_forks" && tactic_type != "find_pins") return out;
+
+    // Copy of the starting pieces — execute_move mutates the grid
+    // and captures lists, so we enumerate from this snapshot instead
+    // of iterating ``gs.pieces`` directly while poking copies of
+    // ``gs`` underneath.
+    std::vector<BoardPiece> snapshot = gs.pieces;
+
+    for (const auto& piece : snapshot) {
+        if (!piece.alive || piece.is_white != white_side) continue;
+
+        int from_col = piece.col;
+        int from_row = piece.row;
+        auto legal = generate_legal_moves(gs, from_col, from_row);
+        for (const auto& mv : legal) {
+            int to_col = mv.first;
+            int to_row = mv.second;
+            GameState test = gs;
+            execute_move(test, from_col, from_row, to_col, to_row);
+
+            bool hit = false;
+            if (tactic_type == "find_forks") {
+                hit = move_is_fork(test, to_col, to_row);
+            } else {
+                hit = move_is_pin(test, to_col, to_row);
+            }
+            if (hit) {
+                out.push_back(move_to_uci(from_col, from_row, to_col, to_row));
+            }
+        }
+    }
+    return out;
 }
 
 bool move_is_pin(const GameState& gs, int to_col, int to_row) {
