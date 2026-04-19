@@ -715,6 +715,16 @@ void app_press(AppState& a, double mx, double my) {
     a.last_mouse_x = a.press_x = mx;
     a.last_mouse_y = a.press_y = my;
 
+    // Browsers block audio playback until a user gesture. Kick the
+    // music track on every "menu-ish" screen press so the intro
+    // loop actually starts on web — the call is idempotent, so
+    // subsequent presses are no-ops.
+    if (a.mode == MODE_MENU ||
+        a.mode == MODE_PREGAME ||
+        a.mode == MODE_CHALLENGE_SELECT) {
+        audio_music_play("intro_music.wav");
+    }
+
     // On the pregame screen, pressing inside the slider hit area begins
     // a drag. We need the canvas size to know where the slider is, but
     // app_press doesn't receive it — use the last known size from
@@ -1002,6 +1012,15 @@ void app_scroll(AppState& a, double delta) {
 
 void app_key(AppState& a, AppKey key) {
     GameState& gs = a.game;
+
+    // First key in a menu-ish mode acts as the user gesture browsers
+    // require before audio can start. Idempotent — no-op if already
+    // looping.
+    if (a.mode == MODE_MENU ||
+        a.mode == MODE_PREGAME ||
+        a.mode == MODE_CHALLENGE_SELECT) {
+        audio_music_play("intro_music.wav");
+    }
 
     // Modal takes priority over every other key handler — ESC closes
     // it, everything else is swallowed.
