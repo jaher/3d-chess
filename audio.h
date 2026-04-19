@@ -7,7 +7,6 @@ enum class SoundEffect {
     Move,
     Capture,
     Check,
-    Castle,
     _Count,
 };
 

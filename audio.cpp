@@ -31,7 +31,6 @@ const char* clip_filename(SoundEffect e) {
     case SoundEffect::Move:    return "move.wav";
     case SoundEffect::Capture: return "capture.wav";
     case SoundEffect::Check:   return "check.wav";
-    case SoundEffect::Castle:  return "castle.wav";
     case SoundEffect::_Count:  return nullptr;
     }
     return nullptr;
