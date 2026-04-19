@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -275,8 +276,9 @@ public:
 
         int deadline_budget = movetime_ms + 3000;
         while (true) {
-            std::string line = read_line(deadline_budget);
-            if (line.empty()) { stop(); return INT_MIN; }
+            auto line_opt = read_line(deadline_budget);
+            if (!line_opt) { stop(); return INT_MIN; }
+            const std::string& line = *line_opt;
             if (line.rfind("bestmove ", 0) == 0) break;
 
             if (line.rfind("info ", 0) != 0) continue;
@@ -340,48 +342,49 @@ private:
         return true;
     }
 
-    // Returns the first complete line read from stdout, waiting up to
-    // timeout_ms. Returns "" on error/EOF/timeout.
-    std::string read_line(int timeout_ms) {
+    // Returns the next complete line from Stockfish's stdout (empty
+    // string for a blank line, which Stockfish does emit between
+    // sections of the ``uci`` response), or ``std::nullopt`` if the
+    // pipe times out / closes.
+    std::optional<std::string> read_line(int timeout_ms) {
         while (true) {
             size_t nl = read_buf_.find('\n');
             if (nl != std::string::npos) {
                 std::string line = read_buf_.substr(0, nl);
                 read_buf_.erase(0, nl + 1);
-                // trim \r
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 return line;
             }
-            if (out_fd_ < 0) return "";
+            if (out_fd_ < 0) return std::nullopt;
 
             struct pollfd pfd;
             pfd.fd = out_fd_;
             pfd.events = POLLIN;
             int pr = poll(&pfd, 1, timeout_ms);
-            if (pr <= 0) return ""; // timeout or error
-            if (!(pfd.revents & POLLIN)) return "";
+            if (pr <= 0) return std::nullopt;
+            if (!(pfd.revents & POLLIN)) return std::nullopt;
 
             char buf[4096];
             ssize_t n = ::read(out_fd_, buf, sizeof(buf));
-            if (n <= 0) return "";
+            if (n <= 0) return std::nullopt;
             read_buf_.append(buf, static_cast<size_t>(n));
         }
     }
 
     std::string wait_for_contains(const std::string& needle, int timeout_ms) {
-        while (true) {
-            std::string line = read_line(timeout_ms);
-            if (line.empty()) return "";
+        while (auto line_opt = read_line(timeout_ms)) {
+            const std::string& line = *line_opt;
             if (line.find(needle) != std::string::npos) return line;
         }
+        return "";
     }
 
     std::string wait_for_prefix(const std::string& prefix, int timeout_ms) {
-        while (true) {
-            std::string line = read_line(timeout_ms);
-            if (line.empty()) return "";
+        while (auto line_opt = read_line(timeout_ms)) {
+            const std::string& line = *line_opt;
             if (line.rfind(prefix, 0) == 0) return line;
         }
+        return "";
     }
 
     bool handshake() {
