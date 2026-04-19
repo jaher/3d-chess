@@ -588,7 +588,11 @@ void app_enter_pregame(AppState& a) {
 // ---------------------------------------------------------------------------
 // Pregame slider helpers
 // ---------------------------------------------------------------------------
-static constexpr int APP_ELO_MIN = 1320;
+// The slider covers both Stockfish operating modes: at elo >= 1320
+// the engine uses UCI_LimitStrength + UCI_Elo (documented floor),
+// below that it switches to the Skill Level option to reach weaker
+// play. See ai_player.cpp::apply_elo for the mapping.
+static constexpr int APP_ELO_MIN = 800;
 static constexpr int APP_ELO_MAX = 2850;
 
 // Convert a mouse x coordinate in pixel space to an ELO value.

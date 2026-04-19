@@ -106,12 +106,34 @@ window.StockfishBridge = (function () {
     }
   };
 
+  // Apply the right Stockfish strength knob for a given requested
+  // ELO. UCI_Elo's documented floor is 1320; below that we use the
+  // Skill Level option (0..20) which reaches ~800 ELO at level 0.
+  // Must match ai_player.cpp::apply_elo on the desktop path so both
+  // builds feel identical at the same slider position.
+  function applyElo(elo) {
+    elo = elo | 0;
+    if (elo >= 1320) {
+      elo = Math.min(3190, elo);
+      worker.postMessage('setoption name Skill Level value 20');
+      worker.postMessage('setoption name UCI_LimitStrength value true');
+      worker.postMessage('setoption name UCI_Elo value ' + elo);
+    } else {
+      if (elo < 800) elo = 800;
+      // elo ∈ [800, 1320) → skill ∈ [0, 12].
+      var skill = Math.floor(((elo - 800) * 12) / (1320 - 800));
+      if (skill < 0) skill = 0;
+      if (skill > 19) skill = 19;
+      worker.postMessage('setoption name UCI_LimitStrength value false');
+      worker.postMessage('setoption name Skill Level value ' + skill);
+    }
+  }
+
   // UCI handshake — fire-and-forget; queue requests will start streaming
   // after handshakeDone is set, but we don't strictly block on it because
   // the worker processes messages in order anyway.
   worker.postMessage('uci');
-  worker.postMessage('setoption name UCI_LimitStrength value true');
-  worker.postMessage('setoption name UCI_Elo value 1400');
+  applyElo(1400);
   worker.postMessage('isready');
 
   return {
@@ -123,14 +145,6 @@ window.StockfishBridge = (function () {
       queue.push({ kind: 'eval', fen: fen, movetime: movetime, idx: idx });
       startNext();
     },
-    // Update the engine's UCI_Elo. Takes effect on the next `go` — the
-    // worker queues these messages after any in-flight search completes.
-    // Defensive clamp: the lite-net single-threaded build accepts a
-    // narrower range than mainline Stockfish and silently clamps anyway.
-    setElo: function (elo) {
-      elo = Math.max(1320, Math.min(3190, elo | 0));
-      worker.postMessage('setoption name UCI_LimitStrength value true');
-      worker.postMessage('setoption name UCI_Elo value ' + elo);
-    },
+    setElo: applyElo,
   };
 })();

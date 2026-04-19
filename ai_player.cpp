@@ -387,25 +387,49 @@ private:
     bool handshake() {
         if (!write_line("uci")) return false;
         if (wait_for_contains("uciok", 3000).empty()) return false;
-        if (!write_line("setoption name UCI_LimitStrength value true")) return false;
         int elo = g_requested_elo > 0
             ? g_requested_elo
             : env_int("CHESS_AI_ELO", 1400);
-        if (!write_line("setoption name UCI_Elo value " + std::to_string(elo)))
-            return false;
+        if (!apply_elo(elo)) return false;
         if (!write_line("isready")) return false;
         if (wait_for_contains("readyok", 3000).empty()) return false;
+        return true;
+    }
+
+    // Stockfish's UCI_Elo is only documented-accurate down to 1320.
+    // Below that we fall back to the Skill Level option (0..20),
+    // which Stockfish docs describe as roughly covering 800..2800 in
+    // playing strength. The crossover at 1320 is where UCI_Elo's
+    // floor starts and Skill Level ~12 (per community tuning); the
+    // two settings are mutually exclusive, so whichever path we
+    // take, we also explicitly turn off the other.
+    bool apply_elo(int elo) {
+        if (elo >= 1320) {
+            if (!write_line("setoption name Skill Level value 20"))
+                return false;
+            if (!write_line("setoption name UCI_LimitStrength value true"))
+                return false;
+            if (!write_line("setoption name UCI_Elo value " +
+                            std::to_string(elo)))
+                return false;
+        } else {
+            // Map elo ∈ [800, 1320) → skill ∈ [0, 12].
+            int skill = (elo - 800) * 12 / (1320 - 800);
+            if (skill < 0) skill = 0;
+            if (skill > 19) skill = 19;
+            if (!write_line("setoption name UCI_LimitStrength value false"))
+                return false;
+            if (!write_line("setoption name Skill Level value " +
+                            std::to_string(skill)))
+                return false;
+        }
         return true;
     }
 
 public:
     // Send an ELO update to an already-running engine. Called by
     // ai_player_set_elo() with g_engine_mu held.
-    bool set_elo(int elo) {
-        if (!write_line("setoption name UCI_LimitStrength value true")) return false;
-        if (!write_line("setoption name UCI_Elo value " + std::to_string(elo))) return false;
-        return true;
-    }
+    bool set_elo(int elo) { return apply_elo(elo); }
 };
 
 std::mutex g_engine_mu;
