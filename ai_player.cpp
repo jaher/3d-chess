@@ -489,7 +489,9 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
 }
 
 void ai_player_set_elo(int elo) {
-    if (elo < 1320) elo = 1320;
+    // Slider floor is 800 (Skill Level 0 mode); UCI_Elo's own floor
+    // kicks in at 1320 inside apply_elo.
+    if (elo < 800)  elo = 800;
     if (elo > 3190) elo = 3190;
     std::lock_guard<std::mutex> lk(g_engine_mu);
     g_requested_elo = elo;
