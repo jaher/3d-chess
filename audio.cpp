@@ -3,9 +3,26 @@
 #include <SDL2/SDL.h>
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
+
+// The audio layer opens a single SDL audio device in callback mode
+// and mixes everything in software. That sidesteps two problems the
+// earlier queue-mode + second-device design had on web:
+//   * Emscripten's SDL backend doesn't reliably open a second
+//     SDL_AudioDevice (the browser exposes one AudioContext and
+//     ``SDL_OpenAudioDevice`` in the web port is essentially a
+//     singleton).
+//   * ``SDL_ClearQueuedAudio`` used to wipe any music that was
+//     queued alongside SFX, so dual-stream playback via a shared
+//     queue wasn't possible.
+//
+// The device is opened with S16_LSB mono at 22050 Hz. Every clip is
+// converted to that format at load time, so the mixer only has to
+// sum int16 samples and clip the result.
 
 namespace {
 
@@ -16,28 +33,40 @@ constexpr const char* SOUND_DIR = "sounds/";
 #endif
 
 struct Clip {
-    // Owned buffer in the device's spec (format / channels / rate),
-    // so SDL_QueueAudio can copy straight through without having to
-    // resample on every play.
     Uint8* buf = nullptr;
     Uint32 len = 0;
     bool   loaded = false;
     bool   owned_by_free = false;  // allocated via SDL_malloc vs SDL_LoadWAV
 };
 
-SDL_AudioDeviceID g_device = 0;        // SFX device
-SDL_AudioDeviceID g_music_device = 0;  // background-music device
-SDL_AudioSpec     g_have{};
-std::array<Clip, static_cast<size_t>(SoundEffect::_Count)> g_clips{};
+struct Voice {
+    const Uint8* buf = nullptr;
+    Uint32 len = 0;
+    Uint32 pos = 0;
+    bool   active = false;
+};
 
 struct MusicTrack {
     Uint8* buf = nullptr;
     Uint32 len = 0;
+    Uint32 pos = 0;  // byte offset inside buf
     bool   owned_by_free = false;
-    std::string name;       // filename we last loaded
+    std::string name;
     bool   playing = false;
 };
-MusicTrack g_music{};
+
+// Maximum number of overlapping SFX voices. Four is enough for a
+// chess game — you rarely get more than one or two sounds on top of
+// the music at a time.
+constexpr size_t VOICE_COUNT = 8;
+
+SDL_AudioDeviceID g_device = 0;
+SDL_AudioSpec     g_have{};
+
+std::array<Clip, static_cast<size_t>(SoundEffect::_Count)> g_clips{};
+std::array<Voice, VOICE_COUNT>                              g_voices{};
+MusicTrack                                                  g_music{};
+std::mutex                                                  g_audio_mu;
 
 const char* clip_filename(SoundEffect e) {
     switch (e) {
@@ -50,11 +79,6 @@ const char* clip_filename(SoundEffect e) {
     return nullptr;
 }
 
-// Load a WAV at ``path``, resampling / downmixing to the output
-// device spec (g_have) if needed. Returns a buffer caller must
-// eventually free — ``out_owned_by_free`` says whether to call
-// ``SDL_free`` (true) or ``SDL_FreeWAV`` (false). Returns false on
-// failure, in which case no output is written.
 bool load_wav_to_device_spec(const std::string& path,
                               Uint8** out_buf, Uint32* out_len,
                               bool* out_owned_by_free) {
@@ -126,43 +150,92 @@ void load_clip(SoundEffect e) {
     }
 }
 
+// Mix a mono S16 source into the output, clipping the sum to [-1, 1].
+void mix_into(int16_t* out, int out_samples, const Uint8* src, Uint32 src_bytes) {
+    const int16_t* src16 = reinterpret_cast<const int16_t*>(src);
+    int src_samples = static_cast<int>(src_bytes / 2);
+    int n = (src_samples < out_samples) ? src_samples : out_samples;
+    for (int i = 0; i < n; ++i) {
+        int32_t sum = static_cast<int32_t>(out[i]) + src16[i];
+        if (sum > INT16_MAX) sum = INT16_MAX;
+        else if (sum < INT16_MIN) sum = INT16_MIN;
+        out[i] = static_cast<int16_t>(sum);
+    }
+}
+
+// SDL pulls this on its own audio thread whenever the device needs
+// more samples. Everything inside runs under ``g_audio_mu`` so main-
+// thread calls into ``audio_play`` / ``audio_music_*`` never race a
+// buffer that's being read.
+void SDLCALL audio_callback(void* /*user*/, Uint8* stream, int len) {
+    std::memset(stream, 0, static_cast<size_t>(len));
+    std::lock_guard<std::mutex> lk(g_audio_mu);
+
+    int16_t* out = reinterpret_cast<int16_t*>(stream);
+    int out_samples = len / 2;  // S16 mono
+
+    // Music: loop by wrapping ``pos`` back to 0 once it hits the end.
+    if (g_music.playing && g_music.buf && g_music.len > 1) {
+        int written = 0;
+        while (written < out_samples) {
+            Uint32 remaining = g_music.len - g_music.pos;
+            int chunk_samples =
+                static_cast<int>(remaining / 2);
+            if (chunk_samples > out_samples - written)
+                chunk_samples = out_samples - written;
+            mix_into(out + written, chunk_samples,
+                     g_music.buf + g_music.pos,
+                     static_cast<Uint32>(chunk_samples * 2));
+            g_music.pos += static_cast<Uint32>(chunk_samples * 2);
+            written += chunk_samples;
+            if (g_music.pos >= g_music.len) g_music.pos = 0;
+        }
+    }
+
+    // SFX voices: mix each active one, deactivate when it's drained.
+    for (auto& v : g_voices) {
+        if (!v.active || !v.buf) continue;
+        Uint32 remaining = (v.pos < v.len) ? v.len - v.pos : 0;
+        int chunk_samples = static_cast<int>(remaining / 2);
+        if (chunk_samples > out_samples) chunk_samples = out_samples;
+        mix_into(out, chunk_samples,
+                 v.buf + v.pos,
+                 static_cast<Uint32>(chunk_samples * 2));
+        v.pos += static_cast<Uint32>(chunk_samples * 2);
+        if (v.pos >= v.len) {
+            v.active = false;
+            v.buf = nullptr;
+        }
+    }
+}
+
 }  // namespace
 
+
+// ───────────────────────────────────────────────────────────────────
+// Public API
+// ───────────────────────────────────────────────────────────────────
+
 bool audio_init() {
-    // SDL_Init is OK to call multiple times on independent subsystems
-    // — the web build already initialises SDL_VIDEO / SDL_EVENTS in
-    // main_web.cpp, the desktop build is GTK-native so audio is the
-    // first (and only) SDL subsystem it touches.
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
         std::fprintf(stderr, "audio: init failed: %s\n", SDL_GetError());
         return false;
     }
+
     SDL_AudioSpec want{};
     want.freq     = 22050;
     want.format   = AUDIO_S16LSB;
     want.channels = 1;
-    want.samples  = 512;
+    want.samples  = 1024;
+    want.callback = audio_callback;
+    want.userdata = nullptr;
+
     g_device = SDL_OpenAudioDevice(nullptr, 0, &want, &g_have, 0);
     if (g_device == 0) {
         std::fprintf(stderr, "audio: open device failed: %s\n", SDL_GetError());
         return false;
     }
     SDL_PauseAudioDevice(g_device, 0);
-
-    // Second device for music, matching the SFX spec. Keeps SFX
-    // clears from wiping the music queue.
-    SDL_AudioSpec music_want = want;
-    SDL_AudioSpec music_have{};
-    g_music_device = SDL_OpenAudioDevice(
-        nullptr, 0, &music_want, &music_have, 0);
-    if (g_music_device == 0) {
-        std::fprintf(stderr, "audio: open music device failed: %s\n",
-                     SDL_GetError());
-        // Not fatal — SFX still works.
-    } else {
-        // Keep paused until audio_music_play() starts a track.
-        SDL_PauseAudioDevice(g_music_device, 1);
-    }
 
     for (size_t i = 0; i < g_clips.size(); ++i) {
         load_clip(static_cast<SoundEffect>(i));
@@ -172,6 +245,12 @@ bool audio_init() {
 
 void audio_shutdown() {
     audio_music_stop();
+    if (g_device) {
+        SDL_CloseAudioDevice(g_device);
+        g_device = 0;
+    }
+    // Clips are read by the audio callback; the device must be
+    // closed before we free their buffers.
     for (auto& c : g_clips) {
         if (c.buf) {
             if (c.owned_by_free) SDL_free(c.buf);
@@ -181,61 +260,7 @@ void audio_shutdown() {
         c.loaded = false;
         c.owned_by_free = false;
     }
-    if (g_music_device) {
-        SDL_CloseAudioDevice(g_music_device);
-        g_music_device = 0;
-    }
-    if (g_device) {
-        SDL_CloseAudioDevice(g_device);
-        g_device = 0;
-    }
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
-}
-
-bool audio_music_play(const char* filename) {
-    if (!filename || !*filename || g_music_device == 0) return false;
-    // Idempotent: same track already playing → do nothing.
-    if (g_music.playing && g_music.name == filename) return true;
-
-    audio_music_stop();
-
-    std::string path = std::string(SOUND_DIR) + filename;
-    if (!load_wav_to_device_spec(path, &g_music.buf, &g_music.len,
-                                  &g_music.owned_by_free)) {
-        return false;
-    }
-    g_music.name = filename;
-    g_music.playing = true;
-    SDL_ClearQueuedAudio(g_music_device);
-    SDL_QueueAudio(g_music_device, g_music.buf, g_music.len);
-    SDL_PauseAudioDevice(g_music_device, 0);
-    return true;
-}
-
-void audio_music_stop() {
-    if (g_music_device) {
-        SDL_PauseAudioDevice(g_music_device, 1);
-        SDL_ClearQueuedAudio(g_music_device);
-    }
-    if (g_music.buf) {
-        if (g_music.owned_by_free) SDL_free(g_music.buf);
-        else                        SDL_FreeWAV(g_music.buf);
-        g_music.buf = nullptr;
-    }
-    g_music.len = 0;
-    g_music.owned_by_free = false;
-    g_music.name.clear();
-    g_music.playing = false;
-}
-
-void audio_music_tick() {
-    if (!g_music.playing || g_music_device == 0 || !g_music.buf) return;
-    // Keep at least one full clip length queued so there's no gap
-    // at the loop point.
-    Uint32 queued = SDL_GetQueuedAudioSize(g_music_device);
-    if (queued < g_music.len) {
-        SDL_QueueAudio(g_music_device, g_music.buf, g_music.len);
-    }
 }
 
 void audio_play(SoundEffect effect) {
@@ -244,8 +269,93 @@ void audio_play(SoundEffect effect) {
     if (i >= g_clips.size()) return;
     const Clip& c = g_clips[i];
     if (!c.loaded) return;
-    // Clear the queue so a new move's sound interrupts the lingering
-    // tail of the previous one — keeps rapid moves from stacking.
-    SDL_ClearQueuedAudio(g_device);
-    SDL_QueueAudio(g_device, c.buf, c.len);
+
+    std::lock_guard<std::mutex> lk(g_audio_mu);
+    // Grab a free voice slot, or the one that's closest to finishing
+    // if none are free (the older sound gets cut, which is the same
+    // behaviour the old ClearQueuedAudio path had for rapid moves).
+    Voice* chosen = nullptr;
+    for (auto& v : g_voices) {
+        if (!v.active) { chosen = &v; break; }
+    }
+    if (!chosen) {
+        Uint32 best_remaining = UINT32_MAX;
+        for (auto& v : g_voices) {
+            Uint32 r = (v.pos < v.len) ? v.len - v.pos : 0;
+            if (r < best_remaining) { best_remaining = r; chosen = &v; }
+        }
+    }
+    if (!chosen) return;
+
+    chosen->buf    = c.buf;
+    chosen->len    = c.len;
+    chosen->pos    = 0;
+    chosen->active = true;
+}
+
+bool audio_music_play(const char* filename) {
+    if (!filename || !*filename || g_device == 0) return false;
+
+    {
+        std::lock_guard<std::mutex> lk(g_audio_mu);
+        // Idempotent: same track already looping → nothing to do.
+        if (g_music.playing && g_music.name == filename) return true;
+    }
+
+    // Load outside the lock — SDL_LoadWAV can do real I/O.
+    Uint8* buf = nullptr;
+    Uint32 len = 0;
+    bool   owned_by_free = false;
+    std::string path = std::string(SOUND_DIR) + filename;
+    if (!load_wav_to_device_spec(path, &buf, &len, &owned_by_free)) {
+        return false;
+    }
+
+    // Swap the new track in under the lock. Free the previous buffer
+    // AFTER the swap so the callback can never read a freed pointer.
+    Uint8* old_buf = nullptr;
+    bool   old_free = false;
+    {
+        std::lock_guard<std::mutex> lk(g_audio_mu);
+        old_buf  = g_music.buf;
+        old_free = g_music.owned_by_free;
+
+        g_music.buf = buf;
+        g_music.len = len;
+        g_music.pos = 0;
+        g_music.owned_by_free = owned_by_free;
+        g_music.name = filename;
+        g_music.playing = true;
+    }
+    if (old_buf) {
+        if (old_free) SDL_free(old_buf);
+        else          SDL_FreeWAV(old_buf);
+    }
+    return true;
+}
+
+void audio_music_stop() {
+    Uint8* old_buf = nullptr;
+    bool   old_free = false;
+    {
+        std::lock_guard<std::mutex> lk(g_audio_mu);
+        old_buf  = g_music.buf;
+        old_free = g_music.owned_by_free;
+        g_music.buf = nullptr;
+        g_music.len = 0;
+        g_music.pos = 0;
+        g_music.owned_by_free = false;
+        g_music.name.clear();
+        g_music.playing = false;
+    }
+    if (old_buf) {
+        if (old_free) SDL_free(old_buf);
+        else          SDL_FreeWAV(old_buf);
+    }
+}
+
+void audio_music_tick() {
+    // Retained for API compatibility — the audio callback now loops
+    // the track by wrapping ``g_music.pos`` back to 0 at end-of-clip,
+    // so there's nothing to do on the main thread.
 }
