@@ -1,3 +1,4 @@
 *.o
 chess
 __pycache__/
+.claude_resume.md

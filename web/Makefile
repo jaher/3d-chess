@@ -25,6 +25,7 @@ LDFLAGS   := \
     -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js \
     --preload-file ../models-web@/models \
     --preload-file ../challenges@/challenges \
+    --preload-file ../sounds@/sounds \
     --preload-file DejaVuSans-Bold.ttf@/DejaVuSans-Bold.ttf \
     --shell-file index.html
 
@@ -41,7 +42,8 @@ SHARED_SRCS := \
     ../shader.cpp \
     ../challenge.cpp \
     ../ai_player.cpp \
-    ../time_control.cpp
+    ../time_control.cpp \
+    ../audio.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp

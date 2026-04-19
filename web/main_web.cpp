@@ -17,6 +17,7 @@
 #include <GLES3/gl3.h>
 
 #include "../app_state.h"
+#include "../audio.h"
 #include "../board_renderer.h"
 #include "../chess_types.h"
 #include "../stl_model.h"
@@ -347,12 +348,14 @@ int chess_start(void) {
     // translate back into app_press/release in pump_events.
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         js_log("SDL_Init failed");
         return 1;
     }
     js_log("SDL_Init ok");
+
+    audio_init();
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);

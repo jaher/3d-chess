@@ -15,17 +15,17 @@ else
     PKG_CONFIG := pkg-config
 endif
 
-CXXFLAGS += $(shell $(PKG_CONFIG) --cflags gtk+-3.0 epoxy)
-LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy) -lm
+CXXFLAGS += $(shell $(PKG_CONFIG) --cflags gtk+-3.0 epoxy sdl2)
+LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy sdl2) -lm
 
 TARGET   := chess
 SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cpp \
             board_renderer.cpp challenge.cpp cloth_flag.cpp linalg.cpp \
-            stl_model.cpp shader.cpp ai_player.cpp time_control.cpp
+            stl_model.cpp shader.cpp ai_player.cpp time_control.cpp audio.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
             challenge.h cloth_flag.h linalg.h shader.h stl_model.h ai_player.h \
-            time_control.h
+            time_control.h audio.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish

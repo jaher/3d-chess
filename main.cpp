@@ -13,6 +13,7 @@
 
 #include "ai_player.h"
 #include "app_state.h"
+#include "audio.h"
 #include "board_renderer.h"
 #include "chess_rules.h"
 #include "chess_types.h"
@@ -213,6 +214,8 @@ int main(int argc, char* argv[]) {
 
     app_init(g_app, &g_platform);
     g_app.loaded_models = g_loaded_models;
+
+    audio_init();
 
     gtk_init(&argc, &argv);
 

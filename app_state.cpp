@@ -1,6 +1,7 @@
 #include "app_state.h"
 
 #include "ai_player.h"
+#include "audio.h"
 #include "chess_rules.h"
 #include "cloth_flag.h"
 #include "linalg.h"
@@ -147,6 +148,25 @@ static void trigger_eval(AppState& a, int score_index) {
     int movetime = env_int("CHESS_EVAL_MOVETIME_MS", 150);
     if (a.platform && a.platform->trigger_eval)
         a.platform->trigger_eval(fen.c_str(), movetime, score_index);
+}
+
+// Play the appropriate SFX for a move that's already been applied to
+// ``gs``. ``from_*`` is the mover's origin, ``to_*`` is the
+// destination. The caller passes the capture / castle flags it read
+// from the position BEFORE calling ``execute_move`` — after the move,
+// that info is gone from the grid (the mover now occupies the
+// destination square). Check is computed from the post-move state.
+// Priority: check > capture > castle > plain move.
+static void play_move_sfx(const GameState& gs_after,
+                          bool was_capture, bool was_castle) {
+    // ``gs_after.white_turn`` is the OPPONENT of whoever just moved,
+    // so testing their king tells us whether the move delivered check.
+    bool opponent_white = gs_after.white_turn;
+    bool in_check = is_in_check(gs_after, opponent_white);
+    if (in_check)         audio_play(SoundEffect::Check);
+    else if (was_capture) audio_play(SoundEffect::Capture);
+    else if (was_castle)  audio_play(SoundEffect::Castle);
+    else                  audio_play(SoundEffect::Move);
 }
 
 // ===========================================================================
@@ -412,9 +432,20 @@ static void handle_board_click(AppState& a, double mx, double my,
             if (mc == col && mr == row) {
                 bool was_starter =
                     (gs.white_turn == a.current_challenge.starts_white);
+                // Snapshot the grid BEFORE the move so we can tell
+                // whether the destination was occupied (capture) and
+                // whether the king slid two squares (castle) — that
+                // info is gone once execute_move runs.
+                int mover_idx = gs.grid[gs.selected_row][gs.selected_col];
+                bool was_king =
+                    mover_idx >= 0 && gs.pieces[mover_idx].type == KING;
+                bool sfx_castle =
+                    was_king && std::abs(col - gs.selected_col) == 2;
+                bool sfx_capture = gs.grid[row][col] >= 0;
                 execute_move(gs, gs.selected_col, gs.selected_row, col, row);
                 gs.selected_col = gs.selected_row = -1;
                 gs.valid_moves.clear();
+                play_move_sfx(gs, sfx_capture, sfx_castle);
                 queue_redraw(a);
 
                 if (is_challenge) {
@@ -1169,8 +1200,15 @@ void app_tick(AppState& a) {
             static_cast<float>(static_cast<double>(now - a.ai_anim_start_us) / 1e6);
         if (elapsed >= gs.ai_anim_duration) {
             gs.ai_animating = false;
+            int mover_idx = gs.grid[gs.ai_from_row][gs.ai_from_col];
+            bool was_king =
+                mover_idx >= 0 && gs.pieces[mover_idx].type == KING;
+            bool sfx_castle =
+                was_king && std::abs(gs.ai_to_col - gs.ai_from_col) == 2;
+            bool sfx_capture = gs.grid[gs.ai_to_row][gs.ai_to_col] >= 0;
             execute_move(gs, gs.ai_from_col, gs.ai_from_row,
                          gs.ai_to_col,   gs.ai_to_row);
+            play_move_sfx(gs, sfx_capture, sfx_castle);
             gs.ai_thinking = false;
             app_refresh_status(a);
             // Refresh the score graph for the position after the AI move.
