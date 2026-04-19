@@ -114,8 +114,12 @@ window.StockfishBridge = (function () {
   function applyElo(elo) {
     elo = elo | 0;
     if (elo >= 1320) {
+      // UCI_LimitStrength=true makes Stockfish derive skill level
+      // from UCI_Elo internally, overriding any explicit Skill Level
+      // that was set on the low-path. Don't re-send Skill Level here
+      // — some engine builds latch the explicit value and regressed
+      // default-mode strength when we did.
       elo = Math.min(3190, elo);
-      worker.postMessage('setoption name Skill Level value 20');
       worker.postMessage('setoption name UCI_LimitStrength value true');
       worker.postMessage('setoption name UCI_Elo value ' + elo);
     } else {

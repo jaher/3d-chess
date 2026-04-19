@@ -405,8 +405,13 @@ private:
     // take, we also explicitly turn off the other.
     bool apply_elo(int elo) {
         if (elo >= 1320) {
-            if (!write_line("setoption name Skill Level value 20"))
-                return false;
+            // ``UCI_LimitStrength=true`` tells Stockfish to derive
+            // its internal skill level from ``UCI_Elo`` and ignore
+            // any explicit ``Skill Level`` set earlier. No need to
+            // reset Skill Level here — that extra write actually
+            // regressed default-mode strength because some engine
+            // builds latch an explicit value instead of letting
+            // LimitStrength take priority.
             if (!write_line("setoption name UCI_LimitStrength value true"))
                 return false;
             if (!write_line("setoption name UCI_Elo value " +
