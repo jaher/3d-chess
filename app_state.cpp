@@ -556,12 +556,14 @@ void app_enter_menu(AppState& a) {
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
     a.continue_playing_hover = false;
+    audio_music_play("intro_music.wav");
     set_status(a, "3D Chess");
     queue_redraw(a);
 }
 
 void app_enter_pregame(AppState& a) {
     a.mode = MODE_PREGAME;
+    audio_music_stop();
     // Preserve a.human_plays_white, a.stockfish_elo, a.time_control
     // across reopens. Volatile state (drags, hovers, open dropdowns)
     // must be reset so re-entering the screen doesn't land in a
@@ -642,6 +644,7 @@ void app_enter_game(AppState& a) {
 
 void app_enter_challenge_select(AppState& a) {
     a.mode = MODE_CHALLENGE_SELECT;
+    audio_music_stop();
     a.challenge_files = list_challenge_files("challenges");
     a.challenge_names.clear();
     for (const auto& f : a.challenge_files) {
@@ -1175,6 +1178,11 @@ void app_eval_ready(AppState& a, int cp, int score_index) {
 void app_tick(AppState& a) {
     GameState& gs = a.game;
     int64_t now = now_us(a);
+
+    // Keep the menu music queue topped up so it loops seamlessly.
+    // audio_music_tick is a no-op when no track is playing, so it's
+    // safe to call every frame in every mode.
+    audio_music_tick();
 
     // Menu physics
     if (a.mode == MODE_MENU) {

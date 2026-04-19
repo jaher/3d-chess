@@ -14,3 +14,16 @@ enum class SoundEffect {
 bool audio_init();
 void audio_shutdown();
 void audio_play(SoundEffect effect);
+
+// Background-music slot (looped). Opens a second SDL audio device
+// so the music and SFX streams don't fight — SFX can still clear
+// their own queue without truncating the music.
+//
+//   audio_music_play("intro_music.wav") — loads once, begins loop.
+//   audio_music_stop()                  — silence + free.
+//   audio_music_tick()                  — call once per frame to
+//                                          re-queue the clip when
+//                                          the tail drains.
+bool audio_music_play(const char* filename);
+void audio_music_stop();
+void audio_music_tick();
