@@ -13,6 +13,8 @@
 #
 # Comments start with '#'. Blank lines are ignored.
 
+name: Homework 1
+
 # Page 1
 
 # Top Left
