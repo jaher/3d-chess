@@ -1431,6 +1431,7 @@ void app_render(AppState& a, int width, int height) {
         a.transition_pending_next = -1;
         a.transition_active = true;
         a.transition_start_time_us = now;
+        audio_play(SoundEffect::GlassBreak);
 
         // The renderer_draw path itself clears its color/depth buffers.
         // Challenge mode never wants the withdraw flag, modal, or clock.
