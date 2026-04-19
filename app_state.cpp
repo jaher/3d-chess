@@ -563,7 +563,6 @@ void app_enter_menu(AppState& a) {
 
 void app_enter_pregame(AppState& a) {
     a.mode = MODE_PREGAME;
-    audio_music_stop();
     // Preserve a.human_plays_white, a.stockfish_elo, a.time_control
     // across reopens. Volatile state (drags, hovers, open dropdowns)
     // must be reset so re-entering the screen doesn't land in a
@@ -605,6 +604,7 @@ static int slider_px_to_elo(double mx, int width) {
 
 void app_enter_game(AppState& a) {
     a.mode = MODE_PLAYING;
+    audio_music_stop();
     game_reset(a.game);
     a.rot_x = 30.0f;
     // Camera points at whichever side the human is playing so their
@@ -644,7 +644,6 @@ void app_enter_game(AppState& a) {
 
 void app_enter_challenge_select(AppState& a) {
     a.mode = MODE_CHALLENGE_SELECT;
-    audio_music_stop();
     a.challenge_files = list_challenge_files("challenges");
     a.challenge_names.clear();
     for (const auto& f : a.challenge_files) {
@@ -702,6 +701,7 @@ void app_enter_challenge(AppState& a, int index) {
     a.current_challenge = load_challenge(a.challenge_files[index]);
     if (a.current_challenge.fens.empty()) return;
     a.mode = MODE_CHALLENGE;
+    audio_music_stop();
     a.challenge_solutions.assign(a.current_challenge.fens.size(), {});
     a.challenge_show_summary = false;
     app_load_challenge_puzzle(a, 0);
