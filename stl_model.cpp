@@ -1,8 +1,7 @@
 #include "stl_model.h"
 
+#include "compression.h"
 #include "linalg.h"
-
-#include <zlib.h>
 
 #include <cmath>
 #include <cstdint>
@@ -28,42 +27,6 @@ float BoundingBox::max_extent() const {
     if (dz > m) m = dz;
     return m;
 }
-
-namespace {
-
-// Inflate a gzip stream into memory. Throws on any zlib error.
-static std::vector<uint8_t> gunzip(const uint8_t* in, size_t in_size) {
-    z_stream zs{};
-    zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(in));
-    zs.avail_in = static_cast<uInt>(in_size);
-    // 16 + MAX_WBITS selects gzip framing (vs raw deflate / zlib).
-    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK)
-        throw std::runtime_error("gunzip: inflateInit2 failed");
-
-    std::vector<uint8_t> out;
-    // Most decimated meshes decompress to roughly 6x their compressed
-    // size. Reserve a generous starting capacity to avoid reallocs in
-    // the typical case.
-    out.reserve(in_size * 8);
-    uint8_t chunk[64 * 1024];
-
-    int ret;
-    do {
-        zs.next_out = chunk;
-        zs.avail_out = sizeof(chunk);
-        ret = inflate(&zs, Z_NO_FLUSH);
-        if (ret < 0) {
-            inflateEnd(&zs);
-            throw std::runtime_error("gunzip: inflate failed");
-        }
-        out.insert(out.end(), chunk, chunk + (sizeof(chunk) - zs.avail_out));
-    } while (ret != Z_STREAM_END);
-
-    inflateEnd(&zs);
-    return out;
-}
-
-}  // namespace
 
 void StlModel::load(const std::string& path) {
     triangles_.clear();
