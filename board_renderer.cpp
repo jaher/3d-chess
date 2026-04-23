@@ -2325,21 +2325,29 @@ void menu_throw_piece(PhysicsPiece& p,
                    ro_r[2] + rd_r[2] * t_depth};
 
     // Clamp dt: sub-frame flicks would otherwise divide by near-zero
-    // and launch pieces into the stratosphere.
-    constexpr float min_dt = 0.02f;
+    // and launch pieces into the stratosphere. min_dt is generous
+    // enough (~50 ms) to smooth out the fast touch-event streams that
+    // mobile devices deliver — raw dt there is often ~4 ms, which
+    // made flicks read absurdly fast on phones.
+    constexpr float min_dt = 0.05f;
     if (dt < min_dt) dt = min_dt;
-    // Scale is applied to the cursor's instantaneous velocity at
-    // release (fling_sample_* in app_state), so >1 here means
-    // "piece flies faster than the cursor flick".
-    constexpr float scale = 3.0f;
+    constexpr float scale = 1.5f;
     float vx = (wr[0] - wp[0]) / dt * scale;
     float vy = (wr[1] - wp[1]) / dt * scale;
     float vz = (wr[2] - wp[2]) / dt * scale;
+
+    // Cap peak throw speed so a stray fast swipe doesn't hurl a piece
+    // clear across the scene before physics damping catches up.
+    constexpr float MAX_SPEED = 18.0f;
+    float v2 = vx * vx + vy * vy + vz * vz;
+    if (v2 > MAX_SPEED * MAX_SPEED) {
+        float k = MAX_SPEED / std::sqrt(v2);
+        vx *= k; vy *= k; vz *= k;
+    }
+
     p.vx += vx;
     p.vy += vy;
     p.vz += vz;
-    // Small upward kick so pure horizontal flicks still lift off
-    // rather than skimming the floor.
     p.vy += 2.0f;
 
     // Spin magnitude tracks throw speed so a sharp flick tumbles more
