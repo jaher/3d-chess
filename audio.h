@@ -8,6 +8,7 @@ enum class SoundEffect {
     Capture,
     Check,
     GlassBreak,
+    Mistake,
     _Count,
 };
 

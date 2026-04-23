@@ -110,6 +110,17 @@ struct AppState {
     std::vector<std::vector<std::string>> challenge_solutions;
     bool challenge_show_summary = false;
 
+    // Mistake feedback: set when the starter exhausts max_moves on a
+    // mate_in_N puzzle without delivering checkmate. Triggers a
+    // horizontal board-shake animation and a "Try Again" button that
+    // reloads the puzzle's starting position.
+    bool    challenge_mistake = false;
+    int64_t challenge_mistake_start_us = 0;
+    bool    challenge_try_again_hover = false;
+    // Current horizontal shake offset (view-space units). Zero unless
+    // a mistake animation is in flight.
+    float   board_shake_x = 0.0f;
+
     // Glass-shatter transition between challenge puzzles
     bool  transition_active = false;
     int   transition_pending_next = -1;

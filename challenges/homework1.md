@@ -13,7 +13,7 @@
 #
 # Comments start with '#'. Blank lines are ignored.
 
-name: Homework 1
+name: SV Chess Thinkers Spring 2026 - Homework 1
 
 # Page 1
 

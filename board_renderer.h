@@ -5,6 +5,9 @@
 #include "stl_model.h"
 #include "time_control.h"
 
+#include <string>
+#include <vector>
+
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
 #else
@@ -46,7 +49,8 @@ void renderer_draw(GameState& gs, int width, int height,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
-                   bool cartoon_outline);
+                   bool cartoon_outline,
+                   float shake_x = 0.0f);
 
 // Hit-test for the "Back to Menu" button drawn in renderer_draw's
 // game-over / analysis overlay. Returns true when (mx, my) falls
@@ -94,7 +98,8 @@ int menu_hit_test(double mx, double my, int width, int height);
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
                                     int width, int height, int hover_index);
 // Returns -2=back, -1=none, 0..N-1=challenge index
-int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges);
+int challenge_select_hit_test(double mx, double my, int width, int height,
+                              const std::vector<std::string>& challenge_names);
 
 // Pre-game setup screen: side toggle + Stockfish ELO slider + new
 // time-control dropdown. tc_hover: -2 = head hovered, -1 = none,
@@ -122,6 +127,11 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
 // Next puzzle button (drawn when challenge solved). Returns true if hit.
 void renderer_draw_next_button(int width, int height, bool hover);
 bool next_button_hit_test(double mx, double my, int width, int height);
+
+// Try-again button (drawn when the player made a mistake on a
+// mate-in-N puzzle). Click resets the puzzle to its starting FEN.
+void renderer_draw_try_again_button(int width, int height, bool hover);
+bool try_again_button_hit_test(double mx, double my, int width, int height);
 
 // Glass shatter transition: capture the current frame then animate shards
 void renderer_capture_frame(int width, int height);

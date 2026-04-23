@@ -383,7 +383,7 @@ static void handle_board_click(AppState& a, double mx, double my,
             gs.white_turn != a.human_plays_white || gs.game_over)
             return;
     } else if (is_challenge) {
-        if (gs.game_over || a.challenge_solved) return;
+        if (gs.game_over || a.challenge_solved || a.challenge_mistake) return;
         int max_moves = a.current_challenge.max_moves;
         if (max_moves > 0) {
             bool starter_to_move =
@@ -514,6 +514,18 @@ static void handle_board_click(AppState& a, double mx, double my,
                             gs.game_result.find("Black wins") != std::string::npos)
                             solved = true;
                         if (solved) a.challenge_solved = true;
+                    }
+                    // Mistake: starter used up their move budget without
+                    // delivering mate. Kick off the shake + sfx; the
+                    // Try-Again button renders after the shake settles.
+                    if (was_starter && !a.challenge_solved &&
+                        a.current_challenge.max_moves > 0 &&
+                        a.challenge_moves_made >= a.current_challenge.max_moves &&
+                        !a.challenge_mistake) {
+                        a.challenge_mistake = true;
+                        a.challenge_mistake_start_us = now_us(a);
+                        a.challenge_try_again_hover = false;
+                        audio_play(SoundEffect::Mistake);
                     }
                 } else {
                     app_refresh_status(a);
@@ -666,6 +678,9 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     a.challenge_moves_made = 0;
     a.challenge_solved = false;
     a.challenge_next_hover = false;
+    a.challenge_mistake = false;
+    a.challenge_try_again_hover = false;
+    a.board_shake_x = 0.0f;
     ParsedFEN parsed = parse_fen(a.current_challenge.fens[puzzle_index]);
     if (parsed.valid) apply_fen_to_state(a.game, parsed);
 
@@ -806,8 +821,7 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
 
     if (a.mode == MODE_CHALLENGE_SELECT) {
         int idx = challenge_select_hit_test(
-            mx, my, width, height,
-            static_cast<int>(a.challenge_names.size()));
+            mx, my, width, height, a.challenge_names);
         if (idx == -2)      app_enter_menu(a);
         else if (idx >= 0)  app_enter_challenge(a, idx);
         return;
@@ -826,6 +840,18 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
             } else {
                 a.challenge_show_summary = true;
             }
+            queue_redraw(a);
+        }
+        return;
+    }
+
+    // Try Again: reset the puzzle to its starting FEN. Only hit-test
+    // once the shake has settled — the button isn't drawn during the
+    // shake so clicks in that window shouldn't register.
+    if (a.mode == MODE_CHALLENGE && a.challenge_mistake &&
+        a.board_shake_x == 0.0f) {
+        if (try_again_button_hit_test(mx, my, width, height)) {
+            app_reset_challenge_puzzle(a);
             queue_redraw(a);
         }
         return;
@@ -949,8 +975,7 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
     }
     if (a.mode == MODE_CHALLENGE_SELECT) {
         int h = challenge_select_hit_test(
-            mx, my, width, height,
-            static_cast<int>(a.challenge_names.size()));
+            mx, my, width, height, a.challenge_names);
         if (h != a.challenge_select_hover) {
             a.challenge_select_hover = h;
             queue_redraw(a);
@@ -961,6 +986,14 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         bool h_now = next_button_hit_test(mx, my, width, height);
         if (h_now != a.challenge_next_hover) {
             a.challenge_next_hover = h_now;
+            queue_redraw(a);
+        }
+    }
+    if (a.mode == MODE_CHALLENGE && a.challenge_mistake &&
+        a.board_shake_x == 0.0f) {
+        bool h_now = try_again_button_hit_test(mx, my, width, height);
+        if (h_now != a.challenge_try_again_hover) {
+            a.challenge_try_again_hover = h_now;
             queue_redraw(a);
         }
     }
@@ -1242,6 +1275,23 @@ void app_tick(AppState& a) {
     // we just need to keep issuing redraws while it's active.
     if (a.transition_active) queue_redraw(a);
 
+    // Mistake shake: damped sine in view-space x. Settles to 0 after
+    // ~0.7 s, at which point the Try Again button takes over.
+    if (a.mode == MODE_CHALLENGE && a.challenge_mistake) {
+        float t = static_cast<float>(
+            static_cast<double>(now - a.challenge_mistake_start_us) / 1e6);
+        constexpr float SHAKE_DURATION = 0.7f;
+        if (t < SHAKE_DURATION) {
+            float pi = static_cast<float>(M_PI);
+            a.board_shake_x =
+                0.25f * std::exp(-5.0f * t) * std::sin(2.0f * pi * 5.0f * t);
+            queue_redraw(a);
+        } else if (a.board_shake_x != 0.0f) {
+            a.board_shake_x = 0.0f;
+            queue_redraw(a);
+        }
+    }
+
     // Withdraw flag cloth physics: run during a live game (not
     // game-over, not analysis, not a paused modal). The flag itself
     // is (re)initialised in renderer_draw when it first sees the
@@ -1427,7 +1477,8 @@ void app_render(AppState& a, int width, int height) {
                   &a.flag, draw_flag,
                   a.withdraw_confirm_open, a.withdraw_hover,
                   draw_clock, clock_ms, clock_side_is_white,
-                  a.cartoon_outline);
+                  a.cartoon_outline,
+                  a.board_shake_x);
 
     if (a.mode != MODE_CHALLENGE) return;
 
@@ -1447,6 +1498,12 @@ void app_render(AppState& a, int width, int height) {
     if (a.challenge_solved && !a.transition_active &&
         a.transition_pending_next < 0) {
         renderer_draw_next_button(width, height, a.challenge_next_hover);
+    }
+
+    // Try Again button only appears once the board shake has finished,
+    // so the mistake feedback has a clear "then" beat to it.
+    if (a.challenge_mistake && a.board_shake_x == 0.0f) {
+        renderer_draw_try_again_button(width, height, a.challenge_try_again_hover);
     }
 
     // Transition trigger: capture current frame, load next puzzle,

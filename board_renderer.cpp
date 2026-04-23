@@ -912,7 +912,8 @@ void renderer_draw(GameState& gs, int width, int height,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
-                   bool cartoon_outline) {
+                   bool cartoon_outline,
+                   float shake_x) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -933,8 +934,12 @@ void renderer_draw(GameState& gs, int width, int height,
     float deg2rad = static_cast<float>(M_PI) / 180.0f;
     float rot_z_to_y = -90.0f * deg2rad;
 
+    // shake_x is applied as a view-space x-translation outside the
+    // zoom/rotation chain so the entire rendered scene (board + pieces)
+    // slides left/right together. Shadows use a separate light-space
+    // matrix and intentionally stay put.
     Mat4 view = mat4_multiply(
-        mat4_translate(0, 0, -zoom),
+        mat4_translate(shake_x, 0, -zoom),
         mat4_multiply(mat4_rotate_x(rot_x * deg2rad),
                       mat4_multiply(mat4_rotate_y(rot_y * deg2rad),
                                     mat4_translate(0, -BOARD_Y, 0))));
@@ -3304,9 +3309,9 @@ void renderer_draw_pregame(bool human_plays_white,
 // ===========================================================================
 // Challenge select screen
 // ===========================================================================
-static const float CS_BTN_W = 0.6f;
 static const float CS_BTN_H = 0.08f;
-static const float CS_BTN_X = -CS_BTN_W * 0.5f;
+static const float CS_BTN_PAD = 0.05f;   // horizontal padding each side
+static const float CS_BTN_MIN_W = 0.3f;  // short names still look like buttons
 static const float CS_TOP_Y = 0.4f;
 static const float CS_GAP = 0.02f;
 static const float CS_BACK_W = 0.2f;
@@ -3314,7 +3319,22 @@ static const float CS_BACK_H = 0.07f;
 static const float CS_BACK_X = -0.95f;
 static const float CS_BACK_Y = 0.93f;
 
-int challenge_select_hit_test(double mx, double my, int width, int height, int num_challenges) {
+// Glyph cell size used for challenge-name labels; both the button
+// sizing and the label-draw path read from these so they stay in sync.
+static const float CS_NAME_CW = 0.024f;
+static const float CS_NAME_CH = 0.036f;
+
+// Width needed to hold a challenge name's label, matching the
+// add_screen_string width used below (0.7 × char width per glyph).
+static float cs_button_width_for(const std::string& name) {
+    float text_w = static_cast<float>(name.size()) * CS_NAME_CW * 0.7f;
+    float w = text_w + 2.0f * CS_BTN_PAD;
+    if (w < CS_BTN_MIN_W) w = CS_BTN_MIN_W;
+    return w;
+}
+
+int challenge_select_hit_test(double mx, double my, int width, int height,
+                              const std::vector<std::string>& challenge_names) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
 
@@ -3323,10 +3343,12 @@ int challenge_select_hit_test(double mx, double my, int width, int height, int n
         ndc_y >= CS_BACK_Y - CS_BACK_H && ndc_y <= CS_BACK_Y)
         return -2;
 
-    // Challenge buttons
-    for (int i = 0; i < num_challenges; i++) {
+    // Challenge buttons: each is centered on x=0, width fits its label.
+    for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
-        if (ndc_x >= CS_BTN_X && ndc_x <= CS_BTN_X + CS_BTN_W &&
+        float bw = cs_button_width_for(challenge_names[i]);
+        float bx = -bw * 0.5f;
+        if (ndc_x >= bx && ndc_x <= bx + bw &&
             ndc_y >= by - CS_BTN_H && ndc_y <= by)
             return i;
     }
@@ -3352,7 +3374,8 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     add_quad(CS_BACK_X, CS_BACK_Y, CS_BACK_W, CS_BACK_H); // back button
     for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
-        add_quad(CS_BTN_X, by, CS_BTN_W, CS_BTN_H);
+        float bw = cs_button_width_for(challenge_names[i]);
+        add_quad(-bw * 0.5f, by, bw, CS_BTN_H);
     }
 
     GLuint bvao, bvbo;
@@ -3398,13 +3421,14 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     add_screen_string(text_verts, CS_BACK_X + 0.04f, CS_BACK_Y - 0.020f, bw_cw, bw_ch, back_text);
     int back_end = static_cast<int>(text_verts.size() / 5);
 
-    // Challenge names
-    float cw = 0.024f, ch = 0.036f;
+    // Challenge names — cell size matches CS_NAME_CW/CH so the button
+    // sizing helper above produces labels that fit inside their button.
     std::vector<int> name_ends;
     for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
-        float nw = challenge_names[i].size() * cw * 0.7f;
-        add_screen_string(text_verts, -nw*0.5f, by - 0.025f, cw, ch, challenge_names[i]);
+        float nw = challenge_names[i].size() * CS_NAME_CW * 0.7f;
+        add_screen_string(text_verts, -nw*0.5f, by - 0.025f,
+                          CS_NAME_CW, CS_NAME_CH, challenge_names[i]);
         name_ends.push_back(static_cast<int>(text_verts.size() / 5));
     }
 
@@ -3627,6 +3651,92 @@ void renderer_draw_next_button(int /*width*/, int /*height*/, bool hover) {
     glDrawArrays(GL_TRIANGLES, 0, label_count);
 
     // Button text in white
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1, 1, 1, 1);
+    glDrawArrays(GL_TRIANGLES, label_count, total_count - label_count);
+
+    glBindVertexArray(0); glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
+
+
+// ===========================================================================
+// Try-again button (drawn on a mate-in-N mistake)
+// ===========================================================================
+static const float TRY_BTN_W = 0.36f;
+static const float TRY_BTN_H = 0.10f;
+static const float TRY_BTN_X = -TRY_BTN_W * 0.5f;
+static const float TRY_BTN_Y = -0.20f;
+
+bool try_again_button_hit_test(double mx, double my, int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    return ndc_x >= TRY_BTN_X && ndc_x <= TRY_BTN_X + TRY_BTN_W &&
+           ndc_y >= TRY_BTN_Y - TRY_BTN_H && ndc_y <= TRY_BTN_Y;
+}
+
+void renderer_draw_try_again_button(int /*width*/, int /*height*/, bool hover) {
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+
+    std::vector<float> text_verts;
+    float lcw = 0.045f, lch = 0.065f;
+    std::string label = "Mistake!";
+    float lw = label.size() * lcw * 0.7f;
+    add_screen_string(text_verts, -lw * 0.5f, 0.05f, lcw, lch, label);
+    int label_count = static_cast<int>(text_verts.size() / 5);
+
+    float bcw = 0.030f, bch = 0.045f;
+    std::string btn_text = "Try Again";
+    float btw = btn_text.size() * bcw * 0.7f;
+    add_screen_string(text_verts, -btw * 0.5f, TRY_BTN_Y - 0.022f, bcw, bch, btn_text);
+    int total_count = static_cast<int>(text_verts.size() / 5);
+
+    float bg[] = {
+        TRY_BTN_X, TRY_BTN_Y - TRY_BTN_H, 0,
+        TRY_BTN_X + TRY_BTN_W, TRY_BTN_Y - TRY_BTN_H, 0,
+        TRY_BTN_X + TRY_BTN_W, TRY_BTN_Y, 0,
+        TRY_BTN_X, TRY_BTN_Y - TRY_BTN_H, 0,
+        TRY_BTN_X + TRY_BTN_W, TRY_BTN_Y, 0,
+        TRY_BTN_X, TRY_BTN_Y, 0
+    };
+    GLuint bvao, bvbo;
+    glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
+    glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(bg), bg, GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                0.85f, 0.2f, 0.2f, hover ? 0.9f : 0.7f);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    GLuint tvao, tvbo;
+    glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+    glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(text_verts.size()*sizeof(float)),
+                 text_verts.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.3f, 0.3f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, label_count);
+
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1, 1, 1, 1);
     glDrawArrays(GL_TRIANGLES, label_count, total_count - label_count);
 

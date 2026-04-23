@@ -74,6 +74,7 @@ const char* clip_filename(SoundEffect e) {
     case SoundEffect::Capture:    return "capture.wav";
     case SoundEffect::Check:      return "check.wav";
     case SoundEffect::GlassBreak: return "glass-breaking.wav";
+    case SoundEffect::Mistake:    return "mistake.wav";
     case SoundEffect::_Count:     return nullptr;
     }
     return nullptr;
