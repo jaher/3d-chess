@@ -2,12 +2,16 @@
 
 #include "linalg.h"
 
+#include <zlib.h>
+
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 Vertex BoundingBox::center() const {
     return {(min.x + max.x) / 2.0f,
@@ -25,6 +29,42 @@ float BoundingBox::max_extent() const {
     return m;
 }
 
+namespace {
+
+// Inflate a gzip stream into memory. Throws on any zlib error.
+static std::vector<uint8_t> gunzip(const uint8_t* in, size_t in_size) {
+    z_stream zs{};
+    zs.next_in = const_cast<Bytef*>(reinterpret_cast<const Bytef*>(in));
+    zs.avail_in = static_cast<uInt>(in_size);
+    // 16 + MAX_WBITS selects gzip framing (vs raw deflate / zlib).
+    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK)
+        throw std::runtime_error("gunzip: inflateInit2 failed");
+
+    std::vector<uint8_t> out;
+    // Most decimated meshes decompress to roughly 6x their compressed
+    // size. Reserve a generous starting capacity to avoid reallocs in
+    // the typical case.
+    out.reserve(in_size * 8);
+    uint8_t chunk[64 * 1024];
+
+    int ret;
+    do {
+        zs.next_out = chunk;
+        zs.avail_out = sizeof(chunk);
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret < 0) {
+            inflateEnd(&zs);
+            throw std::runtime_error("gunzip: inflate failed");
+        }
+        out.insert(out.end(), chunk, chunk + (sizeof(chunk) - zs.avail_out));
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&zs);
+    return out;
+}
+
+}  // namespace
+
 void StlModel::load(const std::string& path) {
     triangles_.clear();
 
@@ -32,7 +72,30 @@ void StlModel::load(const std::string& path) {
     if (!file.is_open())
         throw std::runtime_error("Cannot open file: " + path);
 
-    // Read 80-byte header
+    // Sniff the first two bytes. gzip framing (0x1f 0x8b) signals a
+    // compressed IMSH blob; anything else falls through to the STL
+    // dispatch below. Files on disk keep the `.stl` extension either
+    // way — the format is determined by content, not filename.
+    uint8_t magic2[2] = {0, 0};
+    file.read(reinterpret_cast<char*>(magic2), 2);
+    if (!file)
+        throw std::runtime_error("Failed to read mesh header");
+    file.seekg(0, std::ios::end);
+    auto end_pos = file.tellg();
+    auto file_size = static_cast<size_t>(end_pos);
+    file.seekg(0);
+
+    if (magic2[0] == 0x1f && magic2[1] == 0x8b) {
+        std::vector<uint8_t> compressed(file_size);
+        file.read(reinterpret_cast<char*>(compressed.data()),
+                  static_cast<std::streamsize>(file_size));
+        std::vector<uint8_t> raw = gunzip(compressed.data(), compressed.size());
+        load_indexed_mesh(raw.data(), raw.size());
+        compute_bounding_box();
+        return;
+    }
+
+    // Read 80-byte STL header
     char header[80];
     file.read(header, 80);
     if (!file)
@@ -45,10 +108,7 @@ void StlModel::load(const std::string& path) {
         uint32_t num_triangles = 0;
         file.read(reinterpret_cast<char*>(&num_triangles), 4);
 
-        file.seekg(0, std::ios::end);
-        auto file_size = file.tellg();
-
-        if (file_size == static_cast<std::streampos>(80 + 4 + 50 * num_triangles)) {
+        if (file_size == 80 + 4 + 50 * static_cast<size_t>(num_triangles)) {
             file.seekg(84);
             load_binary(file, num_triangles);
         } else {
@@ -62,6 +122,46 @@ void StlModel::load(const std::string& path) {
     }
 
     compute_bounding_box();
+}
+
+void StlModel::load_indexed_mesh(const uint8_t* data, size_t size) {
+    if (size < 16)
+        throw std::runtime_error("IMSH: truncated header");
+    if (std::memcmp(data, "IMSH", 4) != 0)
+        throw std::runtime_error("IMSH: bad magic");
+
+    uint32_t version, vcount, tcount;
+    std::memcpy(&version, data + 4,  4);
+    std::memcpy(&vcount,  data + 8,  4);
+    std::memcpy(&tcount,  data + 12, 4);
+    if (version != 1)
+        throw std::runtime_error("IMSH: unsupported version");
+
+    size_t vert_bytes = static_cast<size_t>(vcount) * 12;
+    size_t idx_bytes  = static_cast<size_t>(tcount) * 12;
+    if (size < 16 + vert_bytes + idx_bytes)
+        throw std::runtime_error("IMSH: truncated payload");
+
+    const uint8_t* vp = data + 16;
+    const uint8_t* ip = vp + vert_bytes;
+
+    triangles_.resize(tcount);
+    for (uint32_t t = 0; t < tcount; t++) {
+        uint32_t idx[3];
+        std::memcpy(idx, ip + t * 12, 12);
+        for (int i = 0; i < 3; i++) {
+            if (idx[i] >= vcount)
+                throw std::runtime_error("IMSH: index out of range");
+        }
+        Triangle& tr = triangles_[t];
+        Vertex* verts[3] = {&tr.v0, &tr.v1, &tr.v2};
+        for (int i = 0; i < 3; i++) {
+            std::memcpy(&verts[i]->x, vp + idx[i] * 12, 12);
+        }
+        // Face normal is unused: build_vertex_buffer recomputes a
+        // geometric normal anyway before deriving smooth normals.
+        tr.normal = {0.0f, 0.0f, 0.0f};
+    }
 }
 
 namespace {

@@ -48,5 +48,8 @@ class StlModel {
 
     void load_binary(std::ifstream& file, uint32_t count);
     void load_ascii(std::ifstream& file);
+    // Parse an IMSH (indexed mesh) blob from a fully-decompressed buffer.
+    // Populates triangles_ by expanding indices into (v0, v1, v2) triples.
+    void load_indexed_mesh(const uint8_t* data, size_t size);
     void compute_bounding_box();
 };

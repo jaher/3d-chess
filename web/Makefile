@@ -13,7 +13,7 @@ BUILD_HASH := $(shell git -C .. rev-parse --short HEAD 2>/dev/null || date +%s)
 # but breaks the split per-TU build because the compile steps couldn't
 # find <SDL2/SDL.h>.
 EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
-    -s USE_SDL=2
+    -s USE_SDL=2 -s USE_ZLIB=1
 LDFLAGS   := \
     -s USE_SDL=2 \
     -s USE_WEBGL2=1 -s FULL_ES3=1 \
@@ -21,9 +21,10 @@ LDFLAGS   := \
     -s ALLOW_MEMORY_GROWTH=1 \
     -s INITIAL_MEMORY=128MB \
     -s MINIFY_HTML=0 \
+    -s USE_ZLIB=1 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
     -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js \
-    --preload-file ../models-web@/models \
+    --preload-file ../models-web-packed@/models \
     --preload-file ../challenges@/challenges \
     --preload-file ../sounds@/sounds \
     --preload-file DejaVuSans-Bold.ttf@/DejaVuSans-Bold.ttf \

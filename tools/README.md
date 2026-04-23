@@ -23,6 +23,27 @@ at the top of the script (currently 80,000). Output goes to
 
 ---
 
+## `pack_meshes.py`
+
+Packs the decimated STL pieces in `models-web/` into a compact
+indexed-mesh format (`.imsh` inside a gzip wrapper, kept under the
+`.stl` extension so the C++ loader content-sniffs it). Binary STL
+duplicates each vertex across ~6 triangles and ships a face normal
+that the runtime recomputes anyway — packing drops the models from
+~24 MB to ~4 MB (80% saved) before any HTTP-level compression.
+
+**Usage:**
+
+```bash
+python3 tools/pack_meshes.py
+```
+
+Output goes to `models-web-packed/`, which the web Makefile preloads
+into the emscripten VFS under `/models/`. The desktop build still
+loads the high-resolution `models/` STLs unchanged.
+
+---
+
 ## `homework_wizard.py`  ← recommended entry point
 
 End-to-end GTK app: pick a folder of chess homework photos → the
