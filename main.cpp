@@ -196,28 +196,33 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
 int main(int argc, char* argv[]) {
     if (argc > 1) g_models_dir = argv[1];
 
+    // Startup is fan-out: model parsing (6 threads), audio device
+    // setup (1 thread), and gtk_init all run concurrently. gtk_init
+    // must stay on the main thread (it owns the X11/Wayland display
+    // connection), so the main thread takes it while the workers
+    // handle the rest. Joins happen before first use.
     std::printf("Loading models...\n");
-    {
-        std::thread threads[PIECE_COUNT];
-        for (int i = 0; i < PIECE_COUNT; i++) {
-            threads[i] = std::thread([i] {
-                g_loaded_models[i].load(
-                    g_models_dir + "/" + piece_filenames[i]);
-                std::printf("  %s: %zu triangles\n",
-                            piece_filenames[i],
-                            g_loaded_models[i].triangle_count());
-            });
-        }
-        for (auto& t : threads) t.join();
+    std::thread model_threads[PIECE_COUNT];
+    for (int i = 0; i < PIECE_COUNT; i++) {
+        model_threads[i] = std::thread([i] {
+            g_loaded_models[i].load(
+                g_models_dir + "/" + piece_filenames[i]);
+            std::printf("  %s: %zu triangles\n",
+                        piece_filenames[i],
+                        g_loaded_models[i].triangle_count());
+        });
     }
+    std::thread audio_thread([]{ audio_init(); });
+
+    gtk_init(&argc, &argv);
+
+    for (auto& t : model_threads) t.join();
     std::printf("All models loaded.\n");
 
     app_init(g_app, &g_platform);
     g_app.loaded_models = g_loaded_models;
 
-    audio_init();
-
-    gtk_init(&argc, &argv);
+    audio_thread.join();
 
     g_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(g_window), "3D Chess");
