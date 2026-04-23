@@ -1,5 +1,7 @@
 #include "stl_model.h"
 
+#include "linalg.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -63,27 +65,6 @@ void StlModel::load(const std::string& path) {
 }
 
 namespace {
-
-struct Vec3 {
-    float x, y, z;
-    Vec3 operator+(const Vec3& o) const { return {x+o.x, y+o.y, z+o.z}; }
-    Vec3 operator-(const Vec3& o) const { return {x-o.x, y-o.y, z-o.z}; }
-    Vec3 operator*(float s) const { return {x*s, y*s, z*s}; }
-};
-
-static inline float dot(const Vec3& a, const Vec3& b) {
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
-
-static inline float length(const Vec3& a) {
-    return std::sqrt(dot(a, a));
-}
-
-static inline Vec3 normalize(const Vec3& a) {
-    float len = length(a);
-    if (len < 1e-20f) return {0, 0, 0};
-    return {a.x/len, a.y/len, a.z/len};
-}
 
 // Interior angle of a triangle at vertex `apex`, between edges to `b` and `c`.
 static float corner_angle(const Vec3& apex, const Vec3& b, const Vec3& c) {
