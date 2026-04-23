@@ -25,6 +25,23 @@ int64_t now_us(const AppState& a) {
     return a.platform ? a.platform->now_us() : 0;
 }
 
+// Mistake board-shake duration (seconds). Also the floor for the
+// Try-Again reveal delay — the button never surfaces before the shake
+// has settled, even if the sfx is shorter than this.
+constexpr float MISTAKE_SHAKE_DURATION = 0.7f;
+
+// The Try-Again button should surface only after BOTH the shake has
+// settled and the mistake sfx has played out. Returns false when no
+// mistake is active, or while either is still in flight.
+bool mistake_reveal_ready(const AppState& a) {
+    if (!a.challenge_mistake) return false;
+    float elapsed = static_cast<float>(
+        static_cast<double>(now_us(a) - a.challenge_mistake_start_us) / 1e6);
+    float sfx = audio_clip_duration_seconds(SoundEffect::Mistake);
+    float reveal_at = MISTAKE_SHAKE_DURATION > sfx ? MISTAKE_SHAKE_DURATION : sfx;
+    return elapsed >= reveal_at;
+}
+
 void set_status(const AppState& a, const char* text) {
     if (a.platform && a.platform->set_status) a.platform->set_status(text);
 }
@@ -846,10 +863,10 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
     }
 
     // Try Again: reset the puzzle to its starting FEN. Only hit-test
-    // once the shake has settled — the button isn't drawn during the
-    // shake so clicks in that window shouldn't register.
-    if (a.mode == MODE_CHALLENGE && a.challenge_mistake &&
-        a.board_shake_x == 0.0f) {
+    // once the shake has settled AND the mistake sfx has played out —
+    // the button isn't drawn before then, so clicks in that window
+    // shouldn't register.
+    if (a.mode == MODE_CHALLENGE && mistake_reveal_ready(a)) {
         if (try_again_button_hit_test(mx, my, width, height)) {
             app_reset_challenge_puzzle(a);
             queue_redraw(a);
@@ -989,8 +1006,7 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
             queue_redraw(a);
         }
     }
-    if (a.mode == MODE_CHALLENGE && a.challenge_mistake &&
-        a.board_shake_x == 0.0f) {
+    if (a.mode == MODE_CHALLENGE && mistake_reveal_ready(a)) {
         bool h_now = try_again_button_hit_test(mx, my, width, height);
         if (h_now != a.challenge_try_again_hover) {
             a.challenge_try_again_hover = h_now;
@@ -1276,12 +1292,12 @@ void app_tick(AppState& a) {
     if (a.transition_active) queue_redraw(a);
 
     // Mistake shake: damped sine in view-space x. Settles to 0 after
-    // ~0.7 s, at which point the Try Again button takes over.
+    // MISTAKE_SHAKE_DURATION; the Try-Again button is then revealed
+    // once the mistake sfx has also finished (see mistake_reveal_ready).
     if (a.mode == MODE_CHALLENGE && a.challenge_mistake) {
         float t = static_cast<float>(
             static_cast<double>(now - a.challenge_mistake_start_us) / 1e6);
-        constexpr float SHAKE_DURATION = 0.7f;
-        if (t < SHAKE_DURATION) {
+        if (t < MISTAKE_SHAKE_DURATION) {
             float pi = static_cast<float>(M_PI);
             a.board_shake_x =
                 0.25f * std::exp(-5.0f * t) * std::sin(2.0f * pi * 5.0f * t);
@@ -1290,6 +1306,10 @@ void app_tick(AppState& a) {
             a.board_shake_x = 0.0f;
             queue_redraw(a);
         }
+        // Keep redrawing until the button reveal threshold passes, so
+        // the button appears on the frame the sfx finishes rather than
+        // on the next user event.
+        if (!mistake_reveal_ready(a)) queue_redraw(a);
     }
 
     // Withdraw flag cloth physics: run during a live game (not
@@ -1500,9 +1520,10 @@ void app_render(AppState& a, int width, int height) {
         renderer_draw_next_button(width, height, a.challenge_next_hover);
     }
 
-    // Try Again button only appears once the board shake has finished,
-    // so the mistake feedback has a clear "then" beat to it.
-    if (a.challenge_mistake && a.board_shake_x == 0.0f) {
+    // Try Again button only appears once the shake has settled AND
+    // the mistake sfx has played out, so the mistake feedback has a
+    // clear "then" beat to it.
+    if (mistake_reveal_ready(a)) {
         renderer_draw_try_again_button(width, height, a.challenge_try_again_hover);
     }
 

@@ -16,6 +16,10 @@ bool audio_init();
 void audio_shutdown();
 void audio_play(SoundEffect effect);
 
+// Playback duration of a loaded SFX, in seconds. Returns 0 if the
+// clip isn't loaded (audio_init failed, or the file was missing).
+float audio_clip_duration_seconds(SoundEffect effect);
+
 // Background-music slot (looped). Opens a second SDL audio device
 // so the music and SFX streams don't fight — SFX can still clear
 // their own queue without truncating the music.

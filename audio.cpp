@@ -264,6 +264,18 @@ void audio_shutdown() {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
+float audio_clip_duration_seconds(SoundEffect effect) {
+    size_t i = static_cast<size_t>(effect);
+    if (i >= g_clips.size()) return 0.0f;
+    const Clip& c = g_clips[i];
+    if (!c.loaded || c.len == 0) return 0.0f;
+    // Clips are stored in the device spec (mono S16 at g_have.freq).
+    int bytes_per_sec = g_have.freq * g_have.channels *
+                        SDL_AUDIO_BITSIZE(g_have.format) / 8;
+    if (bytes_per_sec <= 0) return 0.0f;
+    return static_cast<float>(c.len) / static_cast<float>(bytes_per_sec);
+}
+
 void audio_play(SoundEffect effect) {
     if (g_device == 0) return;
     size_t i = static_cast<size_t>(effect);
