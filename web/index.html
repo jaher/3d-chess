@@ -95,8 +95,38 @@
   </script>
 
   <script>
+    // Browser autoplay policy: Web Audio is suspended until the page
+    // receives a real user gesture. Until it does, hint in the status
+    // bar that a click will unlock sound. The hint is appended by
+    // applyChessStatus(), used by both the preload-stage text set
+    // from this file and the per-mode text set from C++ via
+    // set_status_js (main_web.cpp), so both paths get the decoration.
+    window.__audioUnlocked = false;
+    window.__lastChessStatus = '';
+    window.__applyChessStatus = function (txt) {
+      window.__lastChessStatus = txt || '';
+      var el = document.getElementById('chess-status');
+      if (!el) return;
+      if (!window.__audioUnlocked) {
+        el.textContent = (txt || '') + ' · Click to enable sound';
+      } else {
+        el.textContent = txt || '';
+      }
+    };
+    (function () {
+      function unlock() {
+        if (window.__audioUnlocked) return;
+        window.__audioUnlocked = true;
+        window.__applyChessStatus(window.__lastChessStatus);
+      }
+      // { once: true } removes each listener after its first fire.
+      document.addEventListener('pointerdown', unlock, { once: true });
+      document.addEventListener('keydown',     unlock, { once: true });
+      document.addEventListener('touchstart',  unlock, { once: true, passive: true });
+    })();
+
     var statusEl = document.getElementById('chess-status');
-    function setLoadingStatus(s) { if (statusEl) statusEl.textContent = s; }
+    function setLoadingStatus(s) { window.__applyChessStatus(s); }
     setLoadingStatus('Initializing module…');
 
     // Resize the canvas backing store + CSS size to fit the available

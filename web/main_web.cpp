@@ -42,8 +42,18 @@ namespace web_ai {
 // JS-side hooks (set the HTML status div, emit console checkpoint logs)
 // ---------------------------------------------------------------------------
 EM_JS(void, set_status_js, (const char* s), {
-    var el = document.getElementById('chess-status');
-    if (el) el.textContent = UTF8ToString(s);
+    // Route through the shared helper defined in index.html so the
+    // "Click to enable sound" hint is appended consistently while
+    // the Web Audio context is still suspended. Falls back to direct
+    // textContent write if the helper hasn't been defined (e.g.
+    // bare-minimum test harness).
+    var txt = UTF8ToString(s);
+    if (typeof window.__applyChessStatus === 'function') {
+        window.__applyChessStatus(txt);
+    } else {
+        var el = document.getElementById('chess-status');
+        if (el) el.textContent = txt;
+    }
 });
 
 EM_JS(void, js_log, (const char* s), {
