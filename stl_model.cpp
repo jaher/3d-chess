@@ -1,9 +1,11 @@
 #include "stl_model.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
 
 Vertex BoundingBox::center() const {
     return {(min.x + max.x) / 2.0f,
@@ -60,19 +62,156 @@ void StlModel::load(const std::string& path) {
     compute_bounding_box();
 }
 
-std::vector<float> StlModel::build_vertex_buffer() const {
+namespace {
+
+struct Vec3 {
+    float x, y, z;
+    Vec3 operator+(const Vec3& o) const { return {x+o.x, y+o.y, z+o.z}; }
+    Vec3 operator-(const Vec3& o) const { return {x-o.x, y-o.y, z-o.z}; }
+    Vec3 operator*(float s) const { return {x*s, y*s, z*s}; }
+};
+
+static inline float dot(const Vec3& a, const Vec3& b) {
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
+static inline float length(const Vec3& a) {
+    return std::sqrt(dot(a, a));
+}
+
+static inline Vec3 normalize(const Vec3& a) {
+    float len = length(a);
+    if (len < 1e-20f) return {0, 0, 0};
+    return {a.x/len, a.y/len, a.z/len};
+}
+
+// Interior angle of a triangle at vertex `apex`, between edges to `b` and `c`.
+static float corner_angle(const Vec3& apex, const Vec3& b, const Vec3& c) {
+    Vec3 e1 = normalize(b - apex);
+    Vec3 e2 = normalize(c - apex);
+    float d = dot(e1, e2);
+    if (d > 1.0f) d = 1.0f;
+    if (d < -1.0f) d = -1.0f;
+    return std::acos(d);
+}
+
+// Hash key for vertex positions (quantized to dedupe near-duplicates).
+struct PosKey {
+    int x, y, z;
+    bool operator==(const PosKey& o) const {
+        return x == o.x && y == o.y && z == o.z;
+    }
+};
+
+struct PosKeyHash {
+    size_t operator()(const PosKey& k) const {
+        size_t h = static_cast<size_t>(k.x) * 73856093u;
+        h ^= static_cast<size_t>(k.y) * 19349663u;
+        h ^= static_cast<size_t>(k.z) * 83492791u;
+        return h;
+    }
+};
+
+static PosKey quantize(const Vertex& v, float step) {
+    return { static_cast<int>(std::lround(v.x / step)),
+             static_cast<int>(std::lround(v.y / step)),
+             static_cast<int>(std::lround(v.z / step)) };
+}
+
+} // namespace
+
+std::vector<float> StlModel::build_vertex_buffer(float crease_angle_deg) const {
     Vertex c = bbox_.center();
     float scale = 2.0f / bbox_.max_extent();
 
-    std::vector<float> buf;
-    buf.reserve(triangles_.size() * 6 * 3); // 3 verts * 6 floats each
+    const size_t T = triangles_.size();
 
-    for (const auto& tri : triangles_) {
+    // Flat-shaded fast path
+    if (crease_angle_deg <= 0.0f) {
+        std::vector<float> buf;
+        buf.reserve(T * 6 * 3);
+        for (const auto& tri : triangles_) {
+            const Vertex* verts[3] = {&tri.v0, &tri.v1, &tri.v2};
+            for (int i = 0; i < 3; i++) {
+                buf.push_back(tri.normal.x);
+                buf.push_back(tri.normal.y);
+                buf.push_back(tri.normal.z);
+                buf.push_back((verts[i]->x - c.x) * scale);
+                buf.push_back((verts[i]->y - c.y) * scale);
+                buf.push_back((verts[i]->z - c.z) * scale);
+            }
+        }
+        return buf;
+    }
+
+    // Quantize positions at 1e-4 of the model's max extent so neighbouring
+    // triangles that share a vertex line up even with float drift.
+    float quant_step = bbox_.max_extent() * 1e-4f;
+    if (quant_step <= 0.0f) quant_step = 1e-5f;
+
+    // Per-corner precomputed data: face normal, angle weight at that corner.
+    std::vector<Vec3> face_n(T);
+    std::vector<float> corner_w(T * 3);
+    for (size_t t = 0; t < T; t++) {
+        const Triangle& tri = triangles_[t];
+        // Prefer a geometric normal (some STLs have zero/garbage normals);
+        // fall back to the stored normal if the triangle is degenerate.
+        Vec3 v0{tri.v0.x, tri.v0.y, tri.v0.z};
+        Vec3 v1{tri.v1.x, tri.v1.y, tri.v1.z};
+        Vec3 v2{tri.v2.x, tri.v2.y, tri.v2.z};
+        Vec3 e1 = v1 - v0, e2 = v2 - v0;
+        Vec3 geo{ e1.y*e2.z - e1.z*e2.y,
+                  e1.z*e2.x - e1.x*e2.z,
+                  e1.x*e2.y - e1.y*e2.x };
+        if (length(geo) > 1e-20f) face_n[t] = normalize(geo);
+        else                      face_n[t] = normalize({tri.normal.x, tri.normal.y, tri.normal.z});
+
+        corner_w[t*3 + 0] = corner_angle(v0, v1, v2);
+        corner_w[t*3 + 1] = corner_angle(v1, v2, v0);
+        corner_w[t*3 + 2] = corner_angle(v2, v0, v1);
+    }
+
+    // Group corners (triangle, which-vertex) by quantized position.
+    std::unordered_map<PosKey, std::vector<std::pair<uint32_t, uint8_t>>, PosKeyHash> groups;
+    groups.reserve(T * 3);
+    for (size_t t = 0; t < T; t++) {
+        const Vertex* verts[3] = {&triangles_[t].v0, &triangles_[t].v1, &triangles_[t].v2};
+        for (uint8_t i = 0; i < 3; i++) {
+            PosKey k = quantize(*verts[i], quant_step);
+            groups[k].push_back({static_cast<uint32_t>(t), i});
+        }
+    }
+
+    float crease_cos = std::cos(crease_angle_deg * static_cast<float>(M_PI) / 180.0f);
+
+    std::vector<float> buf;
+    buf.reserve(T * 6 * 3);
+
+    for (size_t t = 0; t < T; t++) {
+        const Triangle& tri = triangles_[t];
         const Vertex* verts[3] = {&tri.v0, &tri.v1, &tri.v2};
-        for (int i = 0; i < 3; i++) {
-            buf.push_back(tri.normal.x);
-            buf.push_back(tri.normal.y);
-            buf.push_back(tri.normal.z);
+        const Vec3& fn = face_n[t];
+
+        for (uint8_t i = 0; i < 3; i++) {
+            PosKey k = quantize(*verts[i], quant_step);
+            const auto& group = groups[k];
+
+            Vec3 sum{0, 0, 0};
+            for (const auto& [ot, oi] : group) {
+                const Vec3& ofn = face_n[ot];
+                // Crease threshold: only merge faces whose normal is within
+                // crease_angle of this corner's face normal.
+                if (dot(fn, ofn) < crease_cos) continue;
+                float w = corner_w[ot*3 + oi];
+                sum = sum + ofn * w;
+            }
+
+            Vec3 n = normalize(sum);
+            if (length(sum) < 1e-20f) n = fn; // degenerate fallback
+
+            buf.push_back(n.x);
+            buf.push_back(n.y);
+            buf.push_back(n.z);
             buf.push_back((verts[i]->x - c.x) * scale);
             buf.push_back((verts[i]->y - c.y) * scale);
             buf.push_back((verts[i]->z - c.z) * scale);

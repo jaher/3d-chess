@@ -35,7 +35,12 @@ class StlModel {
 
     // Build an interleaved vertex buffer: [nx, ny, nz, x, y, z] per vertex.
     // The model is centered at origin and scaled to fit in a unit sphere.
-    std::vector<float> build_vertex_buffer() const;
+    // Uses smooth per-vertex normals (angle-weighted average of face
+    // normals at each shared vertex position). crease_angle_deg controls
+    // sharp-edge preservation: adjacent faces whose dihedral exceeds this
+    // threshold aren't merged. Pass a large value (e.g. 180) to smooth
+    // everything; pass 0 for flat shading (per-face normals).
+    std::vector<float> build_vertex_buffer(float crease_angle_deg = 60.0f) const;
 
   private:
     std::vector<Triangle> triangles_;
