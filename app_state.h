@@ -91,6 +91,17 @@ struct AppState {
     bool   dragging = false;
     double last_mouse_x = 0, last_mouse_y = 0;
     double press_x = 0, press_y = 0;
+    // Monotonic timestamp of the press that produced press_x/press_y.
+    int64_t press_time_us = 0;
+
+    // Rolling reference used by the menu drag-to-fling gesture. The
+    // cursor position and timestamp here are advanced during motion
+    // only after a minimum gap, so release velocity is always taken
+    // from the last short segment of the drag rather than the whole
+    // gesture. That way a slow drag followed by a fast flick still
+    // throws the piece hard.
+    double fling_sample_x = 0, fling_sample_y = 0;
+    int64_t fling_sample_time_us = 0;
 
     // Mode machine + menu
     GameMode mode = MODE_MENU;
@@ -98,6 +109,12 @@ struct AppState {
     int64_t menu_start_time_us = 0;
     int64_t menu_last_update_us = 0;
     int menu_hover = 0;
+    // Index of the piece currently held by the cursor in the menu,
+    // or -1 if no grab is in flight. Set on the first motion after
+    // press (app_press has no width/height to hit-test with), cleared
+    // on release. Used to light up the cartoon outline on the
+    // grabbed piece's mesh.
+    int menu_grabbed_piece = -1;
 
     // Challenge mode
     std::vector<std::string> challenge_files;

@@ -581,6 +581,7 @@ void app_enter_menu(AppState& a) {
     menu_init_physics(a.menu_pieces);
     a.menu_start_time_us  = now_us(a);
     a.menu_last_update_us = a.menu_start_time_us;
+    a.menu_grabbed_piece = -1;
     a.withdraw_confirm_open = false;
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
@@ -746,6 +747,14 @@ void app_press(AppState& a, double mx, double my) {
     a.dragging = true;
     a.last_mouse_x = a.press_x = mx;
     a.last_mouse_y = a.press_y = my;
+    a.press_time_us = now_us(a);
+    a.fling_sample_x = mx;
+    a.fling_sample_y = my;
+    a.fling_sample_time_us = a.press_time_us;
+    // A previous gesture may have ended without a release event (e.g.
+    // the pointer left the canvas). Drop the stale grab so the new
+    // press starts a fresh hit-test in app_motion.
+    a.menu_grabbed_piece = -1;
 
     // Browsers block audio playback until a user gesture. Kick the
     // music track on every "menu-ish" screen press so the intro
@@ -774,14 +783,54 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
     a.dragging = false;
 
     if (a.mode == MODE_MENU) {
-        int btn = menu_hit_test(mx, my, width, height);
-        if (btn == 1)      app_enter_pregame(a);
-        else if (btn == 2) {
+        // A button counts as clicked only when the cursor was on the
+        // SAME button at press and at release — so dragging off a
+        // button cancels its click, and flicking a piece that starts
+        // under a button doesn't accidentally press it.
+        int press_btn   = menu_hit_test(a.press_x, a.press_y, width, height);
+        int release_btn = menu_hit_test(mx, my, width, height);
+        if (press_btn != 0 && press_btn == release_btn) {
+            a.menu_grabbed_piece = -1;
+            if (press_btn == 1) app_enter_pregame(a);
+            else if (press_btn == 3) app_enter_challenge_select(a);
 #ifndef __EMSCRIPTEN__
-            std::exit(0);  // Desktop quit
+            else if (press_btn == 2) std::exit(0);
 #endif
+            return;
         }
-        else if (btn == 3) app_enter_challenge_select(a);
+        // Press started on a button but released elsewhere (or vice
+        // versa): treat as a cancelled click, no piece throw either.
+        if (press_btn != 0 || release_btn != 0) {
+            a.menu_grabbed_piece = -1;
+            queue_redraw(a);
+            return;
+        }
+
+        // Drag-to-fling: app_motion latched the grabbed piece on
+        // first motion; a pure click without motion falls back to
+        // hit-testing here. Release delta / dt over the rolling
+        // window gives the throw velocity, so a slow drag followed
+        // by a fast flick still launches hard.
+        int64_t now = now_us(a);
+        float t_s  = static_cast<float>(
+            static_cast<double>(now - a.menu_start_time_us) / 1e6);
+        int idx = a.menu_grabbed_piece;
+        if (idx < 0) {
+            idx = menu_piece_hit_test(a.menu_pieces,
+                                      a.press_x, a.press_y,
+                                      width, height, t_s);
+        }
+        if (idx >= 0) {
+            float dt_s = static_cast<float>(
+                static_cast<double>(now - a.fling_sample_time_us) / 1e6);
+            menu_throw_piece(a.menu_pieces[idx],
+                             a.fling_sample_x, a.fling_sample_y,
+                             mx, my,
+                             dt_s, width, height, t_s);
+            audio_play(SoundEffect::Capture);
+        }
+        a.menu_grabbed_piece = -1;
+        queue_redraw(a);
         return;
     }
 
@@ -948,6 +997,29 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         if (h != a.menu_hover) {
             a.menu_hover = h;
             queue_redraw(a);
+        }
+        if (a.dragging) {
+            // First motion after press is our earliest chance to
+            // hit-test (app_press has no viewport size). Once a piece
+            // is grabbed the index stays until release.
+            if (a.menu_grabbed_piece < 0) {
+                float t_s = static_cast<float>(
+                    static_cast<double>(now_us(a) - a.menu_start_time_us) / 1e6);
+                a.menu_grabbed_piece = menu_piece_hit_test(
+                    a.menu_pieces, a.press_x, a.press_y,
+                    width, height, t_s);
+                if (a.menu_grabbed_piece >= 0) queue_redraw(a);
+            }
+            // Advance the fling reference only after a minimum gap
+            // (~60 ms) so release velocity reflects the last leg of
+            // the drag, not the whole gesture.
+            constexpr int64_t FLING_WINDOW_US = 60'000;
+            int64_t now = now_us(a);
+            if (now - a.fling_sample_time_us >= FLING_WINDOW_US) {
+                a.fling_sample_x = mx;
+                a.fling_sample_y = my;
+                a.fling_sample_time_us = now;
+            }
         }
         return;
     }
@@ -1420,7 +1492,8 @@ void app_render(AppState& a, int width, int height) {
     if (a.mode == MODE_MENU) {
         float t = static_cast<float>(
             static_cast<double>(now - a.menu_start_time_us) / 1e6);
-        renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover);
+        renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
+                           a.menu_grabbed_piece >= 0);
         return;
     }
 

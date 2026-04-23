@@ -123,6 +123,45 @@ static void ensure_scene_fbo(int w, int h) {
     g_scene_fbo_h = h;
 }
 
+// Run the cartoon-outline post-process. The caller is expected to
+// have just drawn the 3D scene into g_scene_fbo; this binds the
+// default framebuffer, samples the scene's colour + depth textures,
+// and writes the darkened-edge result. Leaves depth testing re-enabled
+// so subsequent UI passes behave the same as in the no-outline path.
+static void run_outline_post_process(GLuint default_fbo, int width, int height) {
+    glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glUseProgram(g_outline_program);
+    glUniform1i(glGetUniformLocation(g_outline_program, "uColorTex"), 0);
+    glUniform1i(glGetUniformLocation(g_outline_program, "uDepthTex"), 1);
+    glUniform2f(glGetUniformLocation(g_outline_program, "uTexelSize"),
+                1.0f / static_cast<float>(width),
+                1.0f / static_cast<float>(height));
+    // Must match the near/far plane of the perspective matrix used to
+    // render into the scene FBO — the shader uses them to linearise
+    // depth so edge strength is distance-invariant.
+    glUniform1f(glGetUniformLocation(g_outline_program, "uNear"), 0.1f);
+    glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),  100.0f);
+    glUniform1f(glGetUniformLocation(g_outline_program, "uEdgeStrength"), 4.0f);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
+
+    glBindVertexArray(g_fullscreen_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    // Leave texture unit 0 active for subsequent draws.
+    glActiveTexture(GL_TEXTURE0);
+    glEnable(GL_DEPTH_TEST);
+}
+
 // ---------------------------------------------------------------------------
 // Mesh builders
 // ---------------------------------------------------------------------------
@@ -213,7 +252,16 @@ static std::vector<float> build_board_mesh(int& light_verts, int& dark_verts) {
 }
 
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
-    std::vector<float> buf = model.build_vertex_buffer();
+    // Smooth per-vertex normals are only worth computing on decimated
+    // meshes — at web build density (~80k tris) raw face normals show
+    // visible facets. Hi-res desktop meshes (~1M tris each) have sub-
+    // pixel triangles where flat shading is indistinguishable from
+    // smooth, and the hash-map dance in build_vertex_buffer costs
+    // seconds at that size. Flip to the flat fast-path above the
+    // threshold.
+    constexpr size_t SMOOTH_TRI_LIMIT = 200'000;
+    float crease = model.triangle_count() > SMOOTH_TRI_LIMIT ? 0.0f : 60.0f;
+    std::vector<float> buf = model.build_vertex_buffer(crease);
     gpu.num_vertices = static_cast<int>(buf.size() / 6);
     glGenVertexArrays(1, &gpu.vao); glGenBuffers(1, &gpu.vbo);
     glBindVertexArray(gpu.vao);
@@ -1179,50 +1227,12 @@ void renderer_draw(GameState& gs, int width, int height,
 
     // --- Cartoon outline post-process ---
     // When enabled, the 3D-MVP draws above rendered into g_scene_fbo
-    // instead of the default FB. Sample those textures with the
-    // outline shader and write the darkened result to the default
-    // FB. After this block the NDC overlays continue to draw on
-    // the default FB as they always have.
+    // instead of the default FB. The shared helper samples those
+    // textures and writes the darkened-edge result to the default FB;
+    // after this the NDC overlays continue to draw on the default FB
+    // as they always have.
     if (cartoon_outline) {
-        glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
-        glViewport(0, 0, width, height);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        glUseProgram(g_outline_program);
-        glUniform1i(glGetUniformLocation(g_outline_program, "uColorTex"), 0);
-        glUniform1i(glGetUniformLocation(g_outline_program, "uDepthTex"), 1);
-        glUniform2f(glGetUniformLocation(g_outline_program, "uTexelSize"),
-                    1.0f / static_cast<float>(width),
-                    1.0f / static_cast<float>(height));
-        // Must match the near/far plane of the perspective matrix
-        // built above — the shader uses them to linearise depth so
-        // the edge strength is distance-invariant.
-        glUniform1f(glGetUniformLocation(g_outline_program, "uNear"),
-                    0.1f);
-        glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),
-                    100.0f);
-        // With linearised depth and a RELATIVE delta (|Δz| / z), a
-        // silhouette gives ~0.3–1.0 and smooth surfaces stay near
-        // zero. A multiplier of ~4 reaches full black on real
-        // discontinuities at any zoom level.
-        glUniform1f(glGetUniformLocation(g_outline_program, "uEdgeStrength"),
-                    4.0f);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
-
-        glBindVertexArray(g_fullscreen_vao);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindVertexArray(0);
-
-        // Leave texture unit 0 active for subsequent draws — the
-        // font / highlight passes all bind their own textures so
-        // any leftover state is harmless.
-        glActiveTexture(GL_TEXTURE0);
+        run_outline_post_process(default_fbo, width, height);
     }
 
     // --- Score graph ---
@@ -2210,6 +2220,141 @@ void renderer_draw(GameState& gs, int width, int height,
 // ===========================================================================
 // Menu screen
 // ===========================================================================
+static void menu_piece_world_half_extents(const PhysicsPiece& p, float out[3]);
+
+// Rebuild the menu camera's view/projection + derive a world-space
+// ray from a screen pixel. Must stay in sync with the view matrix
+// constructed in renderer_draw_menu.
+static bool menu_screen_ray(double mx, double my, int width, int height,
+                            float time,
+                            float ro[3], float rd[3]) {
+    float deg2rad = static_cast<float>(M_PI) / 180.0f;
+    float aspect = static_cast<float>(width) / static_cast<float>(height);
+    float cam_angle = time * 15.0f, cam_pitch = 25.0f, cam_dist = 12.0f;
+    Mat4 view = mat4_multiply(
+        mat4_translate(0, 0, -cam_dist),
+        mat4_multiply(mat4_rotate_x(cam_pitch * deg2rad),
+                      mat4_rotate_y(cam_angle * deg2rad)));
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 100.0f);
+    Mat4 inv_vp = mat4_inverse(mat4_multiply(proj, view));
+
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+
+    Vec4 nw = mat4_mul_vec4(inv_vp, {ndc_x, ndc_y, -1, 1});
+    Vec4 fw = mat4_mul_vec4(inv_vp, {ndc_x, ndc_y,  1, 1});
+    if (std::abs(nw.w) < 1e-10f || std::abs(fw.w) < 1e-10f) return false;
+
+    ro[0] = nw.x / nw.w; ro[1] = nw.y / nw.w; ro[2] = nw.z / nw.w;
+    float fx = fw.x / fw.w - ro[0];
+    float fy = fw.y / fw.w - ro[1];
+    float fz = fw.z / fw.w - ro[2];
+    float len = std::sqrt(fx * fx + fy * fy + fz * fz);
+    if (len < 1e-10f) return false;
+    rd[0] = fx / len; rd[1] = fy / len; rd[2] = fz / len;
+    return true;
+}
+
+// Ray-vs-AABB slab test. Returns nearest positive t on hit, or <0
+// on miss.
+static float ray_aabb_t(const float ro[3], const float rd[3],
+                        const float cmin[3], const float cmax[3]) {
+    float tmin = -1e30f, tmax = 1e30f;
+    for (int i = 0; i < 3; i++) {
+        if (std::abs(rd[i]) < 1e-12f) {
+            if (ro[i] < cmin[i] || ro[i] > cmax[i]) return -1.0f;
+            continue;
+        }
+        float inv = 1.0f / rd[i];
+        float t1 = (cmin[i] - ro[i]) * inv;
+        float t2 = (cmax[i] - ro[i]) * inv;
+        if (t1 > t2) std::swap(t1, t2);
+        if (t1 > tmin) tmin = t1;
+        if (t2 < tmax) tmax = t2;
+        if (tmin > tmax) return -1.0f;
+    }
+    return tmin >= 0.0f ? tmin : (tmax >= 0.0f ? tmax : -1.0f);
+}
+
+int menu_piece_hit_test(const std::vector<PhysicsPiece>& pieces,
+                        double mx, double my, int width, int height,
+                        float time) {
+    float ro[3], rd[3];
+    if (!menu_screen_ray(mx, my, width, height, time, ro, rd)) return -1;
+
+    int best = -1;
+    float best_t = 1e30f;
+    for (size_t i = 0; i < pieces.size(); i++) {
+        const PhysicsPiece& p = pieces[i];
+        float h[3];
+        menu_piece_world_half_extents(p, h);
+        float cmin[3] = {p.x - h[0], p.y - h[1], p.z - h[2]};
+        float cmax[3] = {p.x + h[0], p.y + h[1], p.z + h[2]};
+        float t = ray_aabb_t(ro, rd, cmin, cmax);
+        if (t >= 0.0f && t < best_t) {
+            best_t = t;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+void menu_throw_piece(PhysicsPiece& p,
+                      double press_mx, double press_my,
+                      double release_mx, double release_my,
+                      float dt,
+                      int width, int height, float time) {
+    float ro_p[3], rd_p[3], ro_r[3], rd_r[3];
+    if (!menu_screen_ray(press_mx, press_my, width, height, time, ro_p, rd_p)) return;
+    if (!menu_screen_ray(release_mx, release_my, width, height, time, ro_r, rd_r)) return;
+
+    // Project the piece's centre onto the press ray: this is the depth
+    // at which we'll unproject both cursor positions, so the resulting
+    // world delta tracks the on-screen drag at the piece's distance
+    // from the camera.
+    float t_depth = (p.x - ro_p[0]) * rd_p[0]
+                  + (p.y - ro_p[1]) * rd_p[1]
+                  + (p.z - ro_p[2]) * rd_p[2];
+    if (t_depth < 1.0f) t_depth = 1.0f;
+
+    float wp[3] = {ro_p[0] + rd_p[0] * t_depth,
+                   ro_p[1] + rd_p[1] * t_depth,
+                   ro_p[2] + rd_p[2] * t_depth};
+    float wr[3] = {ro_r[0] + rd_r[0] * t_depth,
+                   ro_r[1] + rd_r[1] * t_depth,
+                   ro_r[2] + rd_r[2] * t_depth};
+
+    // Clamp dt: sub-frame flicks would otherwise divide by near-zero
+    // and launch pieces into the stratosphere.
+    constexpr float min_dt = 0.02f;
+    if (dt < min_dt) dt = min_dt;
+    // Scale is applied to the cursor's instantaneous velocity at
+    // release (fling_sample_* in app_state), so >1 here means
+    // "piece flies faster than the cursor flick".
+    constexpr float scale = 3.0f;
+    float vx = (wr[0] - wp[0]) / dt * scale;
+    float vy = (wr[1] - wp[1]) / dt * scale;
+    float vz = (wr[2] - wp[2]) / dt * scale;
+    p.vx += vx;
+    p.vy += vy;
+    p.vz += vz;
+    // Small upward kick so pure horizontal flicks still lift off
+    // rather than skimming the floor.
+    p.vy += 2.0f;
+
+    // Spin magnitude tracks throw speed so a sharp flick tumbles more
+    // than a gentle shove.
+    float speed = std::sqrt(vx * vx + vy * vy + vz * vz);
+    const auto seed = static_cast<uint32_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> d(-1.0f, 1.0f);
+    float spin_mag = 80.0f + speed * 40.0f;
+    p.spin_x += d(rng) * spin_mag;
+    p.spin_y += d(rng) * spin_mag;
+    p.spin_z += d(rng) * spin_mag * 0.6f;
+}
+
 void menu_init_physics(std::vector<PhysicsPiece>& pieces) {
     pieces.clear();
 
@@ -2455,7 +2600,20 @@ int menu_hit_test(double mx, double my, int width, int height) {
 
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
-                        int hover_button) {
+                        int hover_button,
+                        bool cartoon_outline) {
+    GLint default_fbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
+
+    // When the outline is requested, the 3D pass renders into the
+    // scene FBO so the post-process has a depth buffer to sample.
+    // NDC UI overlays (title, buttons, labels) still go to the
+    // default FB after the post-process so they don't get outlined.
+    if (cartoon_outline) {
+        ensure_scene_fbo(width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
+    }
+
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
 
@@ -2502,6 +2660,10 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glBindVertexArray(g_pieces[p.type].vao);
         glDrawArrays(GL_TRIANGLES, 0, g_pieces[p.type].num_vertices);
         glBindVertexArray(0);
+    }
+
+    if (cartoon_outline) {
+        run_outline_post_process(default_fbo, width, height);
     }
 
     // --- UI overlay ---
