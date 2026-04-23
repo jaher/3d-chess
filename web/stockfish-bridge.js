@@ -13,13 +13,21 @@
 // hangs waiting for a result that never arrives.
 
 window.StockfishBridge = (function () {
-  const worker = new Worker('stockfish/stockfish.js');
+  // stockfish/stockfish.wasm is 7+ MB — bigger than the rest of the
+  // bundle combined — and it's only needed in MODE_PLAYING (the menu,
+  // pregame, challenges, analysis-only replay don't touch it). We
+  // defer constructing the Worker (and therefore the wasm fetch)
+  // until the first requestMove/requestEval call. setElo before that
+  // point gets latched into pendingElo and applied during the
+  // handshake so the first search uses the right strength.
+  let worker = null;
 
   // Each queued entry: { kind: 'move'|'eval', fen, movetime, idx }
   const queue = [];
   let active = null;          // currently-running entry, or null
   let bestEval = 0;           // running best eval score for the active eval search
   let handshakeDone = false;  // becomes true once 'readyok' arrives
+  let pendingElo = 1400;      // latched until the worker exists
 
   function safe_ccall(name, retType, argTypes, args) {
     if (typeof Module === 'undefined' || typeof Module.ccall !== 'function') {
@@ -40,6 +48,10 @@ window.StockfishBridge = (function () {
 
   function startNext() {
     if (active || queue.length === 0) return;
+    // First real search kicks off the worker fetch. After this the
+    // wasm is cached by the browser, so subsequent searches start
+    // instantly.
+    ensureWorker();
     active = queue.shift();
     bestEval = 0;
     worker.postMessage('ucinewgame');
@@ -53,7 +65,7 @@ window.StockfishBridge = (function () {
     startNext();
   }
 
-  worker.onmessage = function (e) {
+  function onWorkerMessage(e) {
     const line = e.data;
     if (typeof line !== 'string') return;
 
@@ -104,14 +116,26 @@ window.StockfishBridge = (function () {
       }
       return;
     }
-  };
+  }
+
+  function ensureWorker() {
+    if (worker) return;
+    worker = new Worker('stockfish/stockfish.js');
+    worker.onmessage = onWorkerMessage;
+    // UCI handshake — fire-and-forget. Any queued requests will start
+    // streaming after handshakeDone flips; the worker processes
+    // messages in order regardless.
+    worker.postMessage('uci');
+    applyEloInternal(pendingElo);
+    worker.postMessage('isready');
+  }
 
   // Apply the right Stockfish strength knob for a given requested
   // ELO. UCI_Elo's documented floor is 1320; below that we use the
   // Skill Level option (0..20) which reaches ~800 ELO at level 0.
   // Must match ai_player.cpp::apply_elo on the desktop path so both
   // builds feel identical at the same slider position.
-  function applyElo(elo) {
+  function applyEloInternal(elo) {
     elo = elo | 0;
     if (elo >= 1320) {
       // UCI_LimitStrength=true makes Stockfish derive skill level
@@ -133,12 +157,13 @@ window.StockfishBridge = (function () {
     }
   }
 
-  // UCI handshake — fire-and-forget; queue requests will start streaming
-  // after handshakeDone is set, but we don't strictly block on it because
-  // the worker processes messages in order anyway.
-  worker.postMessage('uci');
-  applyElo(1400);
-  worker.postMessage('isready');
+  // Public setElo: safe to call before the worker exists (latches to
+  // pendingElo). Once the worker has been started, apply the value
+  // immediately so the next search uses it.
+  function applyElo(elo) {
+    pendingElo = elo | 0;
+    if (worker) applyEloInternal(pendingElo);
+  }
 
   return {
     requestMove: function (fen, movetime) {
@@ -150,5 +175,10 @@ window.StockfishBridge = (function () {
       startNext();
     },
     setElo: applyElo,
+    // Start loading stockfish.wasm in the background. Intended to be
+    // called once the main menu is visible so the 7 MB fetch overlaps
+    // with the user reading the menu / navigating pregame rather than
+    // stalling the first AI move. Idempotent; no-op if already loaded.
+    prefetch: ensureWorker,
   };
 })();

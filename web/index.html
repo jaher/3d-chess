@@ -212,6 +212,15 @@
         resizeCanvas();
         setTimeout(resizeCanvas, 0);
         setTimeout(resizeCanvas, 100);
+
+        // Start downloading stockfish.wasm (~7 MB) in the background
+        // now that the main menu is up. The bridge only really needs
+        // the engine when the user hits Start; prefetching during the
+        // menu overlap keeps the first AI move from stalling on a
+        // cold fetch. Idempotent if the worker is already live.
+        if (window.StockfishBridge && window.StockfishBridge.prefetch) {
+          window.StockfishBridge.prefetch();
+        }
       },
     };
 
