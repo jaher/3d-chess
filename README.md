@@ -24,7 +24,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Mate-in-N challenge puzzles** loaded from `challenges/*.md`, with a glass-shatter transition between puzzles and a summary page at the end. Wrong-line attempts trigger a "Mistake!" sound + board shake + Try Again button that resets the puzzle
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
-- **Interactive main menu** — grab and fling the tumbling chess pieces around; velocity follows the cursor/finger trajectory. Held pieces render with a cartoon outline
+- **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory
 
 ## Dependencies
 

@@ -1523,8 +1523,7 @@ void app_tick(AppState& a) {
 static void render_menu(AppState& a, int width, int height, int64_t now) {
     float t = static_cast<float>(
         static_cast<double>(now - a.menu_start_time_us) / 1e6);
-    renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
-                       a.menu_grabbed_piece >= 0);
+    renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover);
 }
 
 static void render_pregame(AppState& a, int width, int height) {
