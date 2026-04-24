@@ -1,7 +1,7 @@
 #include "stl_model.h"
 
 #include "compression.h"
-#include "linalg.h"
+#include "vec.h"
 
 #include <cmath>
 #include <cstdint>

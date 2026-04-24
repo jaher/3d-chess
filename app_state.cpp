@@ -4,7 +4,7 @@
 #include "audio.h"
 #include "chess_rules.h"
 #include "cloth_flag.h"
-#include "linalg.h"
+#include "mat.h"
 
 #include <algorithm>
 #include <climits>

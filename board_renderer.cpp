@@ -1,6 +1,6 @@
 #include "board_renderer.h"
 #include "chess_rules.h"
-#include "linalg.h"
+#include "mat.h"
 #include "render_internal.h"
 #include "shader.h"
 #include "shatter_transition.h"

@@ -1,6 +1,6 @@
 #include "challenge_ui.h"
 
-#include "linalg.h"
+#include "mat.h"
 #include "render_internal.h"
 
 #include <algorithm>

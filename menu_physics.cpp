@@ -1,6 +1,6 @@
 #include "menu_physics.h"
 
-#include "linalg.h"
+#include "mat.h"
 
 #include <algorithm>
 #include <array>

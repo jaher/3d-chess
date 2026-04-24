@@ -1,9 +1,9 @@
-// Tests for linalg.cpp — the column-major 4x4 matrix math used by
-// the renderer and the screen-to-board picking code in app_state.cpp.
+// Tests for the column-major 4x4 matrix math used by the renderer
+// and the screen-to-board picking code in app_state.cpp.
 
 #include "doctest.h"
 
-#include "../linalg.h"
+#include "../mat.h"
 
 #include <cmath>
 

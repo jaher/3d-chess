@@ -1,6 +1,6 @@
 #include "pregame_ui.h"
 
-#include "linalg.h"
+#include "mat.h"
 #include "render_internal.h"
 #include "time_control.h"
 
