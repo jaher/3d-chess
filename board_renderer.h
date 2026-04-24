@@ -1,5 +1,6 @@
 #pragma once
 
+#include "challenge_ui.h"   // challenge-screen draws + SummaryEntry
 #include "chess_types.h"
 #include "cloth_flag.h"
 #include "menu_input.h"     // menu_hit_test / menu_piece_hit_test / menu_throw_piece
@@ -91,12 +92,9 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 // menu_hit_test / menu_piece_hit_test / menu_throw_piece live in
 // menu_input.h, transitively included above.
 
-// Challenge select screen
-void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
-                                    int width, int height, int hover_index);
-// Returns -2=back, -1=none, 0..N-1=challenge index
-int challenge_select_hit_test(double mx, double my, int width, int height,
-                              const std::vector<std::string>& challenge_names);
+// Challenge-screen draws (select / overlay / next-button / try-again /
+// summary) + SummaryEntry live in challenge_ui.h, transitively
+// included above.
 
 // Pre-game setup screen: side toggle + Stockfish ELO slider + new
 // time-control dropdown. tc_hover: -2 = head hovered, -1 = none,
@@ -114,31 +112,6 @@ void renderer_draw_pregame(bool human_plays_white,
 int pregame_hit_test(double mx, double my, int width, int height,
                      bool dropdown_open, int* out_tc_index);
 
-// Challenge in-game overlay
-void renderer_draw_challenge_overlay(const std::string& challenge_name,
-                                     int puzzle_index, int total_puzzles,
-                                     int moves_made, int max_moves,
-                                     bool starts_white,
-                                     int width, int height);
-
-// Next puzzle button (drawn when challenge solved). Returns true if hit.
-void renderer_draw_next_button(int width, int height, bool hover);
-bool next_button_hit_test(double mx, double my, int width, int height);
-
-// Try-again button (drawn when the player made a mistake on a
-// mate-in-N puzzle). Click resets the puzzle to its starting FEN.
-void renderer_draw_try_again_button(int width, int height, bool hover);
-bool try_again_button_hit_test(double mx, double my, int width, int height);
-
 // Glass shatter transition: capture the current frame then animate shards
 void renderer_capture_frame(int width, int height);
 void renderer_draw_shatter(float t, int width, int height);
-
-// Summary table at end of challenge — shows user's solutions
-struct SummaryEntry {
-    std::string puzzle_name;
-    std::vector<std::string> moves; // algebraic notation per move
-};
-void renderer_draw_challenge_summary(const std::string& challenge_name,
-                                     const std::vector<SummaryEntry>& entries,
-                                     int width, int height);
