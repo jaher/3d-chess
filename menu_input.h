@@ -13,10 +13,11 @@ constexpr float BTN_H          =  0.08f;
 constexpr float BTN_X          = -BTN_W * 0.5f;
 constexpr float BTN_START_Y    =  0.12f;
 constexpr float BTN_CHALLENGE_Y= -0.05f;
-constexpr float BTN_QUIT_Y     = -0.22f;
+constexpr float BTN_OPTIONS_Y  = -0.22f;
+constexpr float BTN_QUIT_Y     = -0.39f;
 }  // namespace menu_ui
 
-// Returns 0=none, 1=start, 2=quit, 3=challenges based on mouse position.
+// Returns 0=none, 1=start, 2=quit, 3=challenges, 4=options.
 int menu_hit_test(double mx, double my, int width, int height);
 
 // Ray-pick a menu piece under the cursor. Returns the index of the

@@ -25,6 +25,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
 - **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory
+- **Options screen** — reached from the main menu **Options** button; currently toggles the cartoon-outline post-process used during gameplay (also bindable to the **S** key while playing)
 
 ## Dependencies
 
@@ -351,6 +352,7 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   pregame_ui.h/cpp         -- Pregame screen (slider, dropdown, Start)
   challenge_ui.h/cpp       -- Challenge select / overlay / next / try-again
                               / summary table
+  options_ui.h/cpp         -- Options screen (cartoon-outline toggle)
   shatter_transition.h/cpp -- Voronoi glass-break puzzle transition
   text_atlas.h/cpp         -- Font atlas (Cairo/Pango | stb_truetype) +
                               NDC glyph quad helpers

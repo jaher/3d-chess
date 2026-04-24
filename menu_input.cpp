@@ -157,15 +157,14 @@ int menu_hit_test(double mx, double my, int width, int height) {
     using namespace menu_ui;
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
-    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W &&
-        ndc_y >= BTN_START_Y - BTN_H && ndc_y <= BTN_START_Y) return 1;
-    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W &&
-        ndc_y >= BTN_CHALLENGE_Y - BTN_H && ndc_y <= BTN_CHALLENGE_Y) return 3;
+    if (ndc_x < BTN_X || ndc_x > BTN_X + BTN_W) return 0;
+    if (ndc_y >= BTN_START_Y     - BTN_H && ndc_y <= BTN_START_Y)     return 1;
+    if (ndc_y >= BTN_CHALLENGE_Y - BTN_H && ndc_y <= BTN_CHALLENGE_Y) return 3;
+    if (ndc_y >= BTN_OPTIONS_Y   - BTN_H && ndc_y <= BTN_OPTIONS_Y)   return 4;
 #ifndef __EMSCRIPTEN__
     // No "Quit" button in the browser build — closing a tab from
     // inside a WASM app is awkward and not expected on the web.
-    if (ndc_x >= BTN_X && ndc_x <= BTN_X + BTN_W &&
-        ndc_y >= BTN_QUIT_Y - BTN_H && ndc_y <= BTN_QUIT_Y) return 2;
+    if (ndc_y >= BTN_QUIT_Y      - BTN_H && ndc_y <= BTN_QUIT_Y)      return 2;
 #endif
     return 0;
 }

@@ -1965,6 +1965,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     add_screen_string(ui_verts, -chw*0.5f, BTN_CHALLENGE_Y - 0.018f, bcw, bch, ch_text);
     int ch_end = static_cast<int>(ui_verts.size() / 5);
 
+    std::string opt_text = "Options";
+    float otw = opt_text.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -otw*0.5f, BTN_OPTIONS_Y - 0.018f, bcw, bch, opt_text);
+    int opt_end = static_cast<int>(ui_verts.size() / 5);
+
 #ifndef __EMSCRIPTEN__
     std::string quit_text = "Quit";
     float qtw = quit_text.size() * bcw * 0.7f;
@@ -1992,6 +1997,8 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
             BTN_X,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y,0, BTN_X,BTN_START_Y,0,
             BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0,
             BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0, BTN_X,BTN_CHALLENGE_Y,0,
+            BTN_X,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y,0,
+            BTN_X,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y,0, BTN_X,BTN_OPTIONS_Y,0,
             BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0,
             BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0, BTN_X,BTN_QUIT_Y,0
         };
@@ -2005,9 +2012,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.6f,0.3f, hover_button==3?0.5f:0.3f);
         glDrawArrays(GL_TRIANGLES, 6, 6);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.4f,0.7f, hover_button==4?0.5f:0.3f);
+        glDrawArrays(GL_TRIANGLES, 12, 6);
 #ifndef __EMSCRIPTEN__
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 12, 6);
+        glDrawArrays(GL_TRIANGLES, 18, 6);
 #endif
         glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
     }
@@ -2028,10 +2037,13 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float ci = hover_button==3 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), ci,ci,ci,1);
     glDrawArrays(GL_TRIANGLES, start_end, ch_end - start_end);
+    float oi = hover_button==4 ? 1.0f : 0.85f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), oi,oi,oi,1);
+    glDrawArrays(GL_TRIANGLES, ch_end, opt_end - ch_end);
 #ifndef __EMSCRIPTEN__
     float qi = hover_button==2 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), qi,qi,qi,1);
-    glDrawArrays(GL_TRIANGLES, ch_end, quit_end - ch_end);
+    glDrawArrays(GL_TRIANGLES, opt_end, quit_end - opt_end);
 #endif
 
     glBindVertexArray(0); glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);

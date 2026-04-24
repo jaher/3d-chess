@@ -685,6 +685,13 @@ void app_enter_challenge_select(AppState& a) {
     queue_redraw(a);
 }
 
+void app_enter_options(AppState& a) {
+    a.mode = MODE_OPTIONS;
+    a.options_hover = 0;
+    set_status(a, "Options");
+    queue_redraw(a);
+}
+
 void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     if (puzzle_index < 0 ||
         puzzle_index >= static_cast<int>(a.current_challenge.fens.size()))
@@ -794,6 +801,7 @@ static void release_menu(AppState& a, double mx, double my,
         a.menu_grabbed_piece = -1;
         if (press_btn == 1)      app_enter_pregame(a);
         else if (press_btn == 3) app_enter_challenge_select(a);
+        else if (press_btn == 4) app_enter_options(a);
 #ifndef __EMSCRIPTEN__
         else if (press_btn == 2) std::exit(0);
 #endif
@@ -881,6 +889,17 @@ static void release_challenge_select(AppState& a, double mx, double my,
         mx, my, width, height, a.challenge_names);
     if (idx == -2)      app_enter_menu(a);
     else if (idx >= 0)  app_enter_challenge(a, idx);
+}
+
+static void release_options(AppState& a, double mx, double my,
+                            int width, int height) {
+    int btn = options_hit_test(mx, my, width, height);
+    if (btn == 1) {
+        app_enter_menu(a);
+    } else if (btn == 2) {
+        a.cartoon_outline = !a.cartoon_outline;
+        queue_redraw(a);
+    }
 }
 
 static void release_challenge(AppState& a, double mx, double my,
@@ -993,6 +1012,7 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         case MODE_MENU:             release_menu(a, mx, my, width, height); return;
         case MODE_PREGAME:          release_pregame(a, mx, my, width, height); return;
         case MODE_CHALLENGE_SELECT: release_challenge_select(a, mx, my, width, height); return;
+        case MODE_OPTIONS:          release_options(a, mx, my, width, height); return;
         case MODE_CHALLENGE:        release_challenge(a, mx, my, width, height); return;
         case MODE_PLAYING:          release_playing(a, mx, my, width, height); return;
     }
@@ -1090,6 +1110,15 @@ static void motion_challenge_select(AppState& a, double mx, double my,
     }
 }
 
+static void motion_options(AppState& a, double mx, double my,
+                           int width, int height) {
+    int h = options_hit_test(mx, my, width, height);
+    if (h != a.options_hover) {
+        a.options_hover = h;
+        queue_redraw(a);
+    }
+}
+
 static void motion_challenge(AppState& a, double mx, double my,
                              int width, int height) {
     if (a.challenge_solved) {
@@ -1147,6 +1176,7 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         case MODE_MENU:             motion_menu(a, mx, my, width, height); return;
         case MODE_PREGAME:          motion_pregame(a, mx, my, width, height); return;
         case MODE_CHALLENGE_SELECT: motion_challenge_select(a, mx, my, width, height); return;
+        case MODE_OPTIONS:          motion_options(a, mx, my, width, height); return;
         case MODE_CHALLENGE:        motion_challenge(a, mx, my, width, height); return;
         case MODE_PLAYING:          motion_playing(a, mx, my, width, height); return;
     }
@@ -1540,6 +1570,10 @@ static void render_challenge_select(AppState& a, int width, int height) {
         a.challenge_names, width, height, a.challenge_select_hover);
 }
 
+static void render_options(AppState& a, int width, int height) {
+    renderer_draw_options(a.cartoon_outline, width, height, a.options_hover);
+}
+
 static void render_challenge_summary(AppState& a, int width, int height) {
     std::vector<SummaryEntry> entries;
     entries.reserve(a.challenge_solutions.size());
@@ -1681,6 +1715,7 @@ void app_render(AppState& a, int width, int height) {
     if (a.mode == MODE_MENU)             { render_menu(a, width, height, now); return; }
     if (a.mode == MODE_PREGAME)          { render_pregame(a, width, height);   return; }
     if (a.mode == MODE_CHALLENGE_SELECT) { render_challenge_select(a, width, height); return; }
+    if (a.mode == MODE_OPTIONS)          { render_options(a, width, height);   return; }
     if (a.mode == MODE_CHALLENGE && a.challenge_show_summary) {
         render_challenge_summary(a, width, height);
         return;

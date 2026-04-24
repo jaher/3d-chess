@@ -116,6 +116,9 @@ struct AppState {
     // grabbed piece's mesh.
     int menu_grabbed_piece = -1;
 
+    // Options screen hover: 0=none, 1=back, 2=outline toggle.
+    int options_hover = 0;
+
     // Challenge mode
     std::vector<std::string> challenge_files;
     std::vector<std::string> challenge_names;
@@ -228,6 +231,7 @@ void app_enter_menu(AppState& a);
 void app_enter_pregame(AppState& a);
 void app_enter_game(AppState& a);
 void app_enter_challenge_select(AppState& a);
+void app_enter_options(AppState& a);
 void app_enter_challenge(AppState& a, int index);
 void app_load_challenge_puzzle(AppState& a, int puzzle_index);
 void app_reset_challenge_puzzle(AppState& a);

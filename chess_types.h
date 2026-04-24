@@ -17,6 +17,7 @@ enum GameMode {
     MODE_PLAYING,
     MODE_CHALLENGE_SELECT,
     MODE_CHALLENGE,
+    MODE_OPTIONS,          // options panel accessed from the main menu
 };
 
 extern const char* piece_filenames[PIECE_COUNT];

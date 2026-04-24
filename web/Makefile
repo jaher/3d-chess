@@ -52,7 +52,8 @@ SHARED_SRCS := \
     ../challenge_ui.cpp \
     ../pregame_ui.cpp \
     ../shatter_transition.cpp \
-    ../text_atlas.cpp
+    ../text_atlas.cpp \
+    ../options_ui.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp

@@ -5,6 +5,7 @@
 #include "cloth_flag.h"
 #include "menu_input.h"     // menu_hit_test / menu_piece_hit_test / menu_throw_piece
 #include "menu_physics.h"   // PhysicsPiece + menu_init_physics + menu_update_physics
+#include "options_ui.h"     // renderer_draw_options + options_hit_test
 #include "pregame_ui.h"     // renderer_draw_pregame + pregame_hit_test
 #include "shatter_transition.h"  // renderer_capture_frame / renderer_draw_shatter
 #include "stl_model.h"
