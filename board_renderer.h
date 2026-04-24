@@ -6,6 +6,7 @@
 #include "menu_input.h"     // menu_hit_test / menu_piece_hit_test / menu_throw_piece
 #include "menu_physics.h"   // PhysicsPiece + menu_init_physics + menu_update_physics
 #include "pregame_ui.h"     // renderer_draw_pregame + pregame_hit_test
+#include "shatter_transition.h"  // renderer_capture_frame / renderer_draw_shatter
 #include "stl_model.h"
 #include "time_control.h"
 
@@ -100,6 +101,5 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 // renderer_draw_pregame and pregame_hit_test live in pregame_ui.h,
 // transitively included above.
 
-// Glass shatter transition: capture the current frame then animate shards
-void renderer_capture_frame(int width, int height);
-void renderer_draw_shatter(float t, int width, int height);
+// renderer_capture_frame / renderer_draw_shatter live in
+// shatter_transition.h, transitively included above.
