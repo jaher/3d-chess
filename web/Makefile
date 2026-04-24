@@ -45,7 +45,8 @@ SHARED_SRCS := \
     ../ai_player.cpp \
     ../time_control.cpp \
     ../audio.cpp \
-    ../compression.cpp
+    ../compression.cpp \
+    ../menu_physics.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp

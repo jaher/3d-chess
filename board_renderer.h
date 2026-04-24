@@ -2,6 +2,7 @@
 
 #include "chess_types.h"
 #include "cloth_flag.h"
+#include "menu_physics.h"   // PhysicsPiece + menu_init_physics + menu_update_physics
 #include "stl_model.h"
 #include "time_control.h"
 
@@ -75,18 +76,9 @@ bool flag_hit_test(const ClothFlag& flag,
 bool withdraw_confirm_hit_test(double mx, double my,
                                int width, int height, int* which);
 
-// Menu screen
-struct PhysicsPiece {
-    PieceType type;
-    float x, y, z;
-    float vx, vy, vz;
-    float rot_x, rot_y, rot_z;
-    float spin_x, spin_y, spin_z;
-    float scale;
-};
+// PhysicsPiece / menu_init_physics / menu_update_physics live in
+// menu_physics.h, transitively included above.
 
-void menu_init_physics(std::vector<PhysicsPiece>& pieces);
-void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt);
 // cartoon_outline=true reuses the scene post-process shader to draw a
 // cartoon-style contour around the rendered pieces, used by the menu
 // grab gesture to highlight which piece the cursor is holding.
