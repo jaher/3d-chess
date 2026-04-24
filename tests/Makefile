@@ -9,7 +9,8 @@ SHARED_SRCS := \
     ../chess_types.cpp \
     ../chess_rules.cpp \
     ../challenge.cpp \
-    ../linalg.cpp \
+    ../vec.cpp \
+    ../mat.cpp \
     ../ai_player.cpp
 
 TEST_SRCS := \

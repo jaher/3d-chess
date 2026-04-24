@@ -38,7 +38,8 @@ SHARED_SRCS := \
     ../app_state.cpp \
     ../board_renderer.cpp \
     ../cloth_flag.cpp \
-    ../linalg.cpp \
+    ../vec.cpp \
+    ../mat.cpp \
     ../stl_model.cpp \
     ../shader.cpp \
     ../challenge.cpp \
