@@ -69,6 +69,21 @@ static int g_capture_w = 0, g_capture_h = 0;
 // floor, walls, and neighbours at its actual silhouette.
 static float g_piece_half_extent[PIECE_COUNT][3] = {};
 
+// Per-piece collision decomposition: the mesh is split into
+// MENU_PIECE_SUBBOXES horizontal slices, each with its own local-
+// space centre and half-extents. A single AABB inflates to the
+// widest part of the piece (the base) and leaves empty space
+// around the narrower head; a stack of per-slice AABBs keeps each
+// region's box hugged to the geometry at that height, so two kings
+// meeting tip-to-tip no longer collide through the empty space
+// above their crowns.
+constexpr int MENU_PIECE_SUBBOXES = 4;
+struct PieceSubBox {
+    float cx, cy, cz;  // local-space centre
+    float ex, ey, ez;  // local-space half-extents
+};
+static PieceSubBox g_piece_subboxes[PIECE_COUNT][MENU_PIECE_SUBBOXES] = {};
+
 // Cartoon-outline post-process. Scene FBO has color + depth
 // textures, both sampleable from g_outline_program. Size tracks
 // the current window, recreated lazily on resize.
@@ -716,6 +731,56 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
         g_piece_half_extent[t][0] = (bb.max.x - c.x) * norm_scale;
         g_piece_half_extent[t][1] = (bb.max.y - c.y) * norm_scale;
         g_piece_half_extent[t][2] = (bb.max.z - c.z) * norm_scale;
+
+        // Build per-slice collision sub-boxes. Each slice spans a
+        // uniform band of the piece's local Y range; its x/z extents
+        // come from the actual vertex spread inside that band, so a
+        // narrow head ends up with a narrow sub-box even though the
+        // base is wide.
+        const StlModel& stl = loaded_models[t];
+        float y_lo_n = (bb.min.y - c.y) * norm_scale;
+        float y_hi_n = (bb.max.y - c.y) * norm_scale;
+        float span   = y_hi_n - y_lo_n;
+        for (int s = 0; s < MENU_PIECE_SUBBOXES; s++) {
+            float slice_lo = y_lo_n +
+                span * static_cast<float>(s)     / MENU_PIECE_SUBBOXES;
+            float slice_hi = y_lo_n +
+                span * static_cast<float>(s + 1) / MENU_PIECE_SUBBOXES;
+
+            float xmin = 1e30f, xmax = -1e30f;
+            float zmin = 1e30f, zmax = -1e30f;
+            bool any = false;
+            for (const auto& tri : stl.triangles()) {
+                const Vertex* verts[3] = {&tri.v0, &tri.v1, &tri.v2};
+                for (int i = 0; i < 3; i++) {
+                    float vy = (verts[i]->y - c.y) * norm_scale;
+                    if (vy < slice_lo || vy > slice_hi) continue;
+                    float vx = (verts[i]->x - c.x) * norm_scale;
+                    float vz = (verts[i]->z - c.z) * norm_scale;
+                    if (vx < xmin) xmin = vx;
+                    if (vx > xmax) xmax = vx;
+                    if (vz < zmin) zmin = vz;
+                    if (vz > zmax) zmax = vz;
+                    any = true;
+                }
+            }
+
+            PieceSubBox& pb = g_piece_subboxes[t][s];
+            if (!any) {
+                // Empty slice (should not happen for well-formed
+                // chess meshes). Collapse to a zero-extent box so
+                // pair tests against it are inert.
+                pb.cx = pb.cy = pb.cz = 0.0f;
+                pb.ex = pb.ey = pb.ez = 0.0f;
+                continue;
+            }
+            pb.cx = (xmin + xmax) * 0.5f;
+            pb.cy = (slice_lo + slice_hi) * 0.5f;
+            pb.cz = (zmin + zmax) * 0.5f;
+            pb.ex = (xmax - xmin) * 0.5f;
+            pb.ey = (slice_hi - slice_lo) * 0.5f;
+            pb.ez = (zmax - zmin) * 0.5f;
+        }
     }
 
     // Two-triangle fullscreen quad in clip space for the outline
@@ -2463,6 +2528,139 @@ static void menu_piece_world_half_extents(const PhysicsPiece& p,
              std::fabs(r22) * hz_loc;
 }
 
+// SAT-based OBB-vs-OBB test (Ericson, "Real-Time Collision
+// Detection", §4.4.1). On overlap, returns the minimum translation
+// vector as a unit normal (pointing from A toward B) plus its depth.
+// The 9 edge-edge cross-product axes participate in the separation
+// test; only the 6 face axes feed into the contact normal, because
+// an edge-edge MTV gives awkward sliding response on an impulse
+// model and the face normals are plenty for the menu bounce.
+static bool obb_overlap(const float ca[3], const float ua[3][3], const float ea[3],
+                        const float cb[3], const float ub[3][3], const float eb[3],
+                        float& n_x, float& n_y, float& n_z, float& depth) {
+    constexpr float EPS = 1e-6f;
+
+    // R[i][j] = ua[i] · ub[j]; AbsR = |R| + eps to keep parallel
+    // edges from producing spurious zero-length cross-product axes.
+    float R[3][3], AbsR[3][3];
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            R[i][j] = ua[i][0]*ub[j][0] + ua[i][1]*ub[j][1] + ua[i][2]*ub[j][2];
+            AbsR[i][j] = std::fabs(R[i][j]) + EPS;
+        }
+    }
+
+    // Translation from a's centre to b's, expressed in a's frame.
+    float t_w[3] = {cb[0]-ca[0], cb[1]-ca[1], cb[2]-ca[2]};
+    float t[3] = {
+        t_w[0]*ua[0][0] + t_w[1]*ua[0][1] + t_w[2]*ua[0][2],
+        t_w[0]*ua[1][0] + t_w[1]*ua[1][1] + t_w[2]*ua[1][2],
+        t_w[0]*ua[2][0] + t_w[1]*ua[2][1] + t_w[2]*ua[2][2],
+    };
+
+    float min_pen = std::numeric_limits<float>::max();
+    float best_nx = 0.0f, best_ny = 0.0f, best_nz = 0.0f;
+    bool has_axis = false;
+
+    // Track the minimum overlap across only the 6 face axes so
+    // `best_*` stays usable for the impulse response. The 9 edge-
+    // edge axes still get tested for separation.
+    auto take_face_axis = [&](float wx, float wy, float wz, float pen, float sign) {
+        if (pen < min_pen) {
+            min_pen = pen;
+            best_nx = wx * sign;
+            best_ny = wy * sign;
+            best_nz = wz * sign;
+            has_axis = true;
+        }
+    };
+
+    // 3 axes from A: L = ua[i]. t's ith component is tproj.
+    for (int i = 0; i < 3; i++) {
+        float ra = ea[i];
+        float rb = eb[0]*AbsR[i][0] + eb[1]*AbsR[i][1] + eb[2]*AbsR[i][2];
+        float overlap = (ra + rb) - std::fabs(t[i]);
+        if (overlap < 0.0f) return false;
+        float sign = (t[i] < 0.0f) ? -1.0f : 1.0f;
+        take_face_axis(ua[i][0], ua[i][1], ua[i][2], overlap, sign);
+    }
+
+    // 3 axes from B: L = ub[i].
+    for (int i = 0; i < 3; i++) {
+        float ra = ea[0]*AbsR[0][i] + ea[1]*AbsR[1][i] + ea[2]*AbsR[2][i];
+        float rb = eb[i];
+        float tproj = t[0]*R[0][i] + t[1]*R[1][i] + t[2]*R[2][i];
+        float overlap = (ra + rb) - std::fabs(tproj);
+        if (overlap < 0.0f) return false;
+        float sign = (tproj < 0.0f) ? -1.0f : 1.0f;
+        take_face_axis(ub[i][0], ub[i][1], ub[i][2], overlap, sign);
+    }
+
+    // 9 edge-edge axes: L = ua[i] × ub[j]. Separation test only.
+    // Standard Ericson formulas; each cross-product's projection
+    // length can be read off from AbsR without actually computing
+    // the cross product.
+    // i=0, j=0
+    {
+        float ra = ea[1]*AbsR[2][0] + ea[2]*AbsR[1][0];
+        float rb = eb[1]*AbsR[0][2] + eb[2]*AbsR[0][1];
+        if (std::fabs(t[2]*R[1][0] - t[1]*R[2][0]) > ra + rb) return false;
+    }
+    // i=0, j=1
+    {
+        float ra = ea[1]*AbsR[2][1] + ea[2]*AbsR[1][1];
+        float rb = eb[0]*AbsR[0][2] + eb[2]*AbsR[0][0];
+        if (std::fabs(t[2]*R[1][1] - t[1]*R[2][1]) > ra + rb) return false;
+    }
+    // i=0, j=2
+    {
+        float ra = ea[1]*AbsR[2][2] + ea[2]*AbsR[1][2];
+        float rb = eb[0]*AbsR[0][1] + eb[1]*AbsR[0][0];
+        if (std::fabs(t[2]*R[1][2] - t[1]*R[2][2]) > ra + rb) return false;
+    }
+    // i=1, j=0
+    {
+        float ra = ea[0]*AbsR[2][0] + ea[2]*AbsR[0][0];
+        float rb = eb[1]*AbsR[1][2] + eb[2]*AbsR[1][1];
+        if (std::fabs(t[0]*R[2][0] - t[2]*R[0][0]) > ra + rb) return false;
+    }
+    // i=1, j=1
+    {
+        float ra = ea[0]*AbsR[2][1] + ea[2]*AbsR[0][1];
+        float rb = eb[0]*AbsR[1][2] + eb[2]*AbsR[1][0];
+        if (std::fabs(t[0]*R[2][1] - t[2]*R[0][1]) > ra + rb) return false;
+    }
+    // i=1, j=2
+    {
+        float ra = ea[0]*AbsR[2][2] + ea[2]*AbsR[0][2];
+        float rb = eb[0]*AbsR[1][1] + eb[1]*AbsR[1][0];
+        if (std::fabs(t[0]*R[2][2] - t[2]*R[0][2]) > ra + rb) return false;
+    }
+    // i=2, j=0
+    {
+        float ra = ea[0]*AbsR[1][0] + ea[1]*AbsR[0][0];
+        float rb = eb[1]*AbsR[2][2] + eb[2]*AbsR[2][1];
+        if (std::fabs(t[1]*R[0][0] - t[0]*R[1][0]) > ra + rb) return false;
+    }
+    // i=2, j=1
+    {
+        float ra = ea[0]*AbsR[1][1] + ea[1]*AbsR[0][1];
+        float rb = eb[0]*AbsR[2][2] + eb[2]*AbsR[2][0];
+        if (std::fabs(t[1]*R[0][1] - t[0]*R[1][1]) > ra + rb) return false;
+    }
+    // i=2, j=2
+    {
+        float ra = ea[0]*AbsR[1][2] + ea[1]*AbsR[0][2];
+        float rb = eb[0]*AbsR[2][1] + eb[1]*AbsR[2][0];
+        if (std::fabs(t[1]*R[0][2] - t[0]*R[1][2]) > ra + rb) return false;
+    }
+
+    if (!has_axis) return false;
+    depth = min_pen;
+    n_x = best_nx; n_y = best_ny; n_z = best_nz;
+    return true;
+}
+
 void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
     const float gravity = -9.8f;
     const float floor_y = -2.0f;
@@ -2516,72 +2714,124 @@ void menu_update_physics(std::vector<PhysicsPiece>& pieces, float dt) {
         p.vz *= damping;
     }
 
-    // --- Piece-piece collisions via rotated AABB overlap ---
+    // --- Piece-piece collisions via stacked-OBB overlap ---
     //
-    // Build each piece's world half-extents once, then for every
-    // pair check for overlap on all three axes. If the pair
-    // overlaps, the contact normal is the axis with the smallest
-    // penetration depth — push the pair apart by half each and
-    // apply the existing impulse along that axis.
+    // Each piece is approximated by MENU_PIECE_SUBBOXES thin vertical
+    // slice OBBs rigidly attached to its transform. Pair collision
+    // iterates every slice of A against every slice of B; the deepest
+    // overlap wins and its face axis drives a single positional
+    // correction + impulse response for the pair. This keeps narrow
+    // regions (heads / crowns) collision-tight without losing the
+    // cheap SAT test we already have.
     const int n = static_cast<int>(pieces.size());
-    std::vector<std::array<float, 3>> halves(n);
+
+    // Precompute each piece's rotation-matrix columns and its scale
+    // factor once; those are shared by every sub-box on that piece.
+    std::vector<std::array<std::array<float, 3>, 3>> axes(n);
+    std::vector<float> piece_scales(n);
+    std::vector<std::array<float, 3>> piece_centres(n);
     for (int i = 0; i < n; ++i) {
-        menu_piece_world_half_extents(pieces[i], halves[i].data());
+        const PhysicsPiece& p = pieces[i];
+        const float deg2rad = static_cast<float>(M_PI) / 180.0f;
+        const float s = BASE_PIECE_SCALE * piece_scale[p.type] * p.scale / 0.35f;
+        piece_scales[i] = s;
+        piece_centres[i][0] = p.x;
+        piece_centres[i][1] = p.y;
+        piece_centres[i][2] = p.z;
+        Mat4 rot = mat4_multiply(
+            mat4_rotate_z(p.rot_z * deg2rad),
+            mat4_multiply(mat4_rotate_y(p.rot_y * deg2rad),
+                          mat4_rotate_x(p.rot_x * deg2rad)));
+        for (int k = 0; k < 3; ++k) {
+            axes[i][k][0] = rot.m[k * 4 + 0];
+            axes[i][k][1] = rot.m[k * 4 + 1];
+            axes[i][k][2] = rot.m[k * 4 + 2];
+        }
     }
+
+    // Translate a sub-box's local-space centre into world space using
+    // the parent piece's rotation + scale + translation.
+    auto subbox_world_centre = [&](int piece_index, int subbox_index,
+                                   float out[3]) {
+        const PieceSubBox& pb =
+            g_piece_subboxes[pieces[piece_index].type][subbox_index];
+        float s = piece_scales[piece_index];
+        float lx = pb.cx * s, ly = pb.cy * s, lz = pb.cz * s;
+        const auto& u = axes[piece_index];
+        out[0] = piece_centres[piece_index][0]
+               + u[0][0]*lx + u[1][0]*ly + u[2][0]*lz;
+        out[1] = piece_centres[piece_index][1]
+               + u[0][1]*lx + u[1][1]*ly + u[2][1]*lz;
+        out[2] = piece_centres[piece_index][2]
+               + u[0][2]*lx + u[1][2]*ly + u[2][2]*lz;
+    };
 
     for (int i = 0; i < n; ++i) {
         for (int j = i + 1; j < n; ++j) {
             PhysicsPiece& a = pieces[i];
             PhysicsPiece& b = pieces[j];
-            const float dx = b.x - a.x;
-            const float dy = b.y - a.y;
-            const float dz = b.z - a.z;
-            const float sum_x = halves[i][0] + halves[j][0];
-            const float sum_y = halves[i][1] + halves[j][1];
-            const float sum_z = halves[i][2] + halves[j][2];
-            const float ox = sum_x - std::fabs(dx);
-            const float oy = sum_y - std::fabs(dy);
-            const float oz = sum_z - std::fabs(dz);
-            if (ox <= 0.0f || oy <= 0.0f || oz <= 0.0f) continue;
 
-            // Minimum penetration axis → contact normal. Normal
-            // points from a toward b on that axis.
-            float nx = 0.0f, ny = 0.0f, nz = 0.0f;
-            float depth;
-            if (ox <= oy && ox <= oz) {
-                nx = (dx >= 0.0f) ? 1.0f : -1.0f;
-                depth = ox;
-            } else if (oy <= oz) {
-                ny = (dy >= 0.0f) ? 1.0f : -1.0f;
-                depth = oy;
-            } else {
-                nz = (dz >= 0.0f) ? 1.0f : -1.0f;
-                depth = oz;
+            float ua[3][3], ub[3][3];
+            for (int k = 0; k < 3; ++k) {
+                ua[k][0] = axes[i][k][0]; ua[k][1] = axes[i][k][1]; ua[k][2] = axes[i][k][2];
+                ub[k][0] = axes[j][k][0]; ub[k][1] = axes[j][k][1]; ub[k][2] = axes[j][k][2];
             }
 
-            const float half_d = depth * 0.5f;
-            a.x -= nx * half_d;
-            a.y -= ny * half_d;
-            a.z -= nz * half_d;
-            b.x += nx * half_d;
-            b.y += ny * half_d;
-            b.z += nz * half_d;
+            float best_nx = 0.0f, best_ny = 0.0f, best_nz = 0.0f;
+            float best_depth = -1.0f;
+
+            for (int sa = 0; sa < MENU_PIECE_SUBBOXES; ++sa) {
+                const PieceSubBox& boxa = g_piece_subboxes[a.type][sa];
+                float ea[3] = {boxa.ex * piece_scales[i],
+                               boxa.ey * piece_scales[i],
+                               boxa.ez * piece_scales[i]};
+                if (ea[0] <= 0.0f || ea[1] <= 0.0f || ea[2] <= 0.0f) continue;
+                float ca[3];
+                subbox_world_centre(i, sa, ca);
+
+                for (int sb = 0; sb < MENU_PIECE_SUBBOXES; ++sb) {
+                    const PieceSubBox& boxb = g_piece_subboxes[b.type][sb];
+                    float eb[3] = {boxb.ex * piece_scales[j],
+                                   boxb.ey * piece_scales[j],
+                                   boxb.ez * piece_scales[j]};
+                    if (eb[0] <= 0.0f || eb[1] <= 0.0f || eb[2] <= 0.0f) continue;
+                    float cb[3];
+                    subbox_world_centre(j, sb, cb);
+
+                    float nx, ny, nz, depth;
+                    if (!obb_overlap(ca, ua, ea, cb, ub, eb, nx, ny, nz, depth)) continue;
+                    if (depth > best_depth) {
+                        best_depth = depth;
+                        best_nx = nx; best_ny = ny; best_nz = nz;
+                    }
+                }
+            }
+
+            if (best_depth < 0.0f) continue;
+
+            const float half_d = best_depth * 0.5f;
+            a.x -= best_nx * half_d;
+            a.y -= best_ny * half_d;
+            a.z -= best_nz * half_d;
+            b.x += best_nx * half_d;
+            b.y += best_ny * half_d;
+            b.z += best_nz * half_d;
 
             // Impulse along the contact normal. Positive rv_n
             // means a and b are approaching (a's velocity has a
             // component toward b along the normal), so flip that
             // component with 0.85 restitution.
-            const float rv_n = (a.vx - b.vx) * nx +
-                               (a.vy - b.vy) * ny +
-                               (a.vz - b.vz) * nz;
+            const float rv_n = (a.vx - b.vx) * best_nx +
+                               (a.vy - b.vy) * best_ny +
+                               (a.vz - b.vz) * best_nz;
             if (rv_n > 0.0f) {
                 const float imp = rv_n * 0.85f;
-                a.vx -= imp * nx;
-                a.vy -= imp * ny;
-                a.vz -= imp * nz;
-                b.vx += imp * nx;
-                b.vy += imp * ny;
-                b.vz += imp * nz;
+                a.vx -= imp * best_nx;
+                a.vy -= imp * best_ny;
+                a.vz -= imp * best_nz;
+                b.vx += imp * best_nx;
+                b.vy += imp * best_ny;
+                b.vz += imp * best_nz;
             }
         }
     }
