@@ -48,7 +48,8 @@ SHARED_SRCS := \
     ../compression.cpp \
     ../menu_physics.cpp \
     ../menu_input.cpp \
-    ../challenge_ui.cpp
+    ../challenge_ui.cpp \
+    ../pregame_ui.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp

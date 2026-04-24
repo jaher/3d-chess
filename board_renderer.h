@@ -5,6 +5,7 @@
 #include "cloth_flag.h"
 #include "menu_input.h"     // menu_hit_test / menu_piece_hit_test / menu_throw_piece
 #include "menu_physics.h"   // PhysicsPiece + menu_init_physics + menu_update_physics
+#include "pregame_ui.h"     // renderer_draw_pregame + pregame_hit_test
 #include "stl_model.h"
 #include "time_control.h"
 
@@ -96,21 +97,8 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 // summary) + SummaryEntry live in challenge_ui.h, transitively
 // included above.
 
-// Pre-game setup screen: side toggle + Stockfish ELO slider + new
-// time-control dropdown. tc_hover: -2 = head hovered, -1 = none,
-// 0..TC_COUNT-1 = row hovered (only meaningful if dropdown_open).
-void renderer_draw_pregame(bool human_plays_white,
-                           int elo, int elo_min, int elo_max,
-                           TimeControl time_control,
-                           bool dropdown_open,
-                           int tc_hover,
-                           int width, int height,
-                           int hover);
-// Returns 0=none, 1=Start, 2=Back, 3=Toggle button, 4=Slider area,
-// 5=Dropdown head, 6=Dropdown row (out_tc_index receives the row
-// index when this function returns 6; caller may pass nullptr).
-int pregame_hit_test(double mx, double my, int width, int height,
-                     bool dropdown_open, int* out_tc_index);
+// renderer_draw_pregame and pregame_hit_test live in pregame_ui.h,
+// transitively included above.
 
 // Glass shatter transition: capture the current frame then animate shards
 void renderer_capture_frame(int width, int height);
