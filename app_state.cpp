@@ -779,126 +779,117 @@ void app_press(AppState& a, double mx, double my) {
     }
 }
 
-void app_release(AppState& a, double mx, double my, int width, int height) {
-    a.dragging = false;
-
-    if (a.mode == MODE_MENU) {
-        // A button counts as clicked only when the cursor was on the
-        // SAME button at press and at release — so dragging off a
-        // button cancels its click, and flicking a piece that starts
-        // under a button doesn't accidentally press it.
-        int press_btn   = menu_hit_test(a.press_x, a.press_y, width, height);
-        int release_btn = menu_hit_test(mx, my, width, height);
-        if (press_btn != 0 && press_btn == release_btn) {
-            a.menu_grabbed_piece = -1;
-            if (press_btn == 1) app_enter_pregame(a);
-            else if (press_btn == 3) app_enter_challenge_select(a);
+// ===========================================================================
+// Per-mode release handlers
+// ===========================================================================
+static void release_menu(AppState& a, double mx, double my,
+                         int width, int height) {
+    // A button counts as clicked only when the cursor was on the
+    // SAME button at press and at release — so dragging off a
+    // button cancels its click, and flicking a piece that starts
+    // under a button doesn't accidentally press it.
+    int press_btn   = menu_hit_test(a.press_x, a.press_y, width, height);
+    int release_btn = menu_hit_test(mx, my, width, height);
+    if (press_btn != 0 && press_btn == release_btn) {
+        a.menu_grabbed_piece = -1;
+        if (press_btn == 1)      app_enter_pregame(a);
+        else if (press_btn == 3) app_enter_challenge_select(a);
 #ifndef __EMSCRIPTEN__
-            else if (press_btn == 2) std::exit(0);
+        else if (press_btn == 2) std::exit(0);
 #endif
-            return;
-        }
-        // Press started on a button but released elsewhere (or vice
-        // versa): treat as a cancelled click, no piece throw either.
-        if (press_btn != 0 || release_btn != 0) {
-            a.menu_grabbed_piece = -1;
-            queue_redraw(a);
-            return;
-        }
-
-        // Drag-to-fling: app_motion latched the grabbed piece on
-        // first motion; a pure click without motion falls back to
-        // hit-testing here. Release delta / dt over the rolling
-        // window gives the throw velocity, so a slow drag followed
-        // by a fast flick still launches hard.
-        int64_t now = now_us(a);
-        float t_s  = static_cast<float>(
-            static_cast<double>(now - a.menu_start_time_us) / 1e6);
-        int idx = a.menu_grabbed_piece;
-        if (idx < 0) {
-            idx = menu_piece_hit_test(a.menu_pieces,
-                                      a.press_x, a.press_y,
-                                      width, height, t_s);
-        }
-        if (idx >= 0) {
-            float dt_s = static_cast<float>(
-                static_cast<double>(now - a.fling_sample_time_us) / 1e6);
-            menu_throw_piece(a.menu_pieces[idx],
-                             a.fling_sample_x, a.fling_sample_y,
-                             mx, my,
-                             dt_s, width, height, t_s);
-            audio_play(SoundEffect::Capture);
-        }
+        return;
+    }
+    // Press started on a button but released elsewhere (or vice
+    // versa): cancelled click, no piece throw either.
+    if (press_btn != 0 || release_btn != 0) {
         a.menu_grabbed_piece = -1;
         queue_redraw(a);
         return;
     }
 
-    if (a.mode == MODE_PREGAME) {
-        // End-of-drag takes precedence over button-click handling so a
-        // tiny slider wiggle isn't mistaken for a button press.
-        if (a.slider_dragging) {
-            a.slider_dragging = false;
-            a.stockfish_elo = slider_px_to_elo(mx, width);
-            queue_redraw(a);
-            return;
-        }
-        int tc_index = -1;
-        int btn = pregame_hit_test(mx, my, width, height,
-                                   a.pregame_tc_open, &tc_index);
-        if (a.pregame_tc_open) {
-            // Dropdown is modal while open.
-            if (btn == 6 && tc_index >= 0 && tc_index < TC_COUNT) {
-                // Row click → select and collapse.
-                a.time_control = static_cast<TimeControl>(tc_index);
-                a.pregame_tc_open = false;
-                a.pregame_tc_hover = -1;
-                queue_redraw(a);
-            } else if (btn == 5) {
-                // Head click while open → collapse without change.
-                a.pregame_tc_open = false;
-                a.pregame_tc_hover = -1;
-                queue_redraw(a);
-            } else {
-                // Click anywhere else → collapse without change.
-                a.pregame_tc_open = false;
-                a.pregame_tc_hover = -1;
-                queue_redraw(a);
-            }
-            return;
-        }
-        if (btn == 1) {           // Start
-            app_enter_game(a);
-        } else if (btn == 2) {    // Back
-            app_enter_menu(a);
-        } else if (btn == 3) {    // Toggle side
-            a.human_plays_white = !a.human_plays_white;
-            queue_redraw(a);
-        } else if (btn == 4) {    // Click on slider (not a drag)
-            a.stockfish_elo = slider_px_to_elo(mx, width);
-            queue_redraw(a);
-        } else if (btn == 5) {    // Dropdown head → expand
-            a.pregame_tc_open = true;
-            a.pregame_tc_hover = -1;
-            queue_redraw(a);
-        }
+    // Drag-to-fling: app_motion latched the grabbed piece on first
+    // motion; a pure click without motion falls back to hit-testing
+    // here. Release delta / dt over the rolling window gives the
+    // throw velocity, so a slow drag followed by a fast flick still
+    // launches hard.
+    int64_t now = now_us(a);
+    float t_s  = static_cast<float>(
+        static_cast<double>(now - a.menu_start_time_us) / 1e6);
+    int idx = a.menu_grabbed_piece;
+    if (idx < 0) {
+        idx = menu_piece_hit_test(a.menu_pieces,
+                                  a.press_x, a.press_y,
+                                  width, height, t_s);
+    }
+    if (idx >= 0) {
+        float dt_s = static_cast<float>(
+            static_cast<double>(now - a.fling_sample_time_us) / 1e6);
+        menu_throw_piece(a.menu_pieces[idx],
+                         a.fling_sample_x, a.fling_sample_y,
+                         mx, my,
+                         dt_s, width, height, t_s);
+        audio_play(SoundEffect::Capture);
+    }
+    a.menu_grabbed_piece = -1;
+    queue_redraw(a);
+}
+
+static void release_pregame(AppState& a, double mx, double my,
+                            int width, int height) {
+    // End-of-drag takes precedence over button-click handling so a
+    // tiny slider wiggle isn't mistaken for a button press.
+    if (a.slider_dragging) {
+        a.slider_dragging = false;
+        a.stockfish_elo = slider_px_to_elo(mx, width);
+        queue_redraw(a);
         return;
     }
-
-    if (a.mode == MODE_CHALLENGE_SELECT) {
-        int idx = challenge_select_hit_test(
-            mx, my, width, height, a.challenge_names);
-        if (idx == -2)      app_enter_menu(a);
-        else if (idx >= 0)  app_enter_challenge(a, idx);
+    int tc_index = -1;
+    int btn = pregame_hit_test(mx, my, width, height,
+                               a.pregame_tc_open, &tc_index);
+    if (a.pregame_tc_open) {
+        // Dropdown is modal while open. Row click → select and
+        // collapse; any other click → collapse without change.
+        if (btn == 6 && tc_index >= 0 && tc_index < TC_COUNT) {
+            a.time_control = static_cast<TimeControl>(tc_index);
+        }
+        a.pregame_tc_open = false;
+        a.pregame_tc_hover = -1;
+        queue_redraw(a);
         return;
     }
+    if (btn == 1) {           // Start
+        app_enter_game(a);
+    } else if (btn == 2) {    // Back
+        app_enter_menu(a);
+    } else if (btn == 3) {    // Toggle side
+        a.human_plays_white = !a.human_plays_white;
+        queue_redraw(a);
+    } else if (btn == 4) {    // Click on slider (not a drag)
+        a.stockfish_elo = slider_px_to_elo(mx, width);
+        queue_redraw(a);
+    } else if (btn == 5) {    // Dropdown head → expand
+        a.pregame_tc_open = true;
+        a.pregame_tc_hover = -1;
+        queue_redraw(a);
+    }
+}
 
-    if (a.mode == MODE_CHALLENGE && a.challenge_show_summary) {
+static void release_challenge_select(AppState& a, double mx, double my,
+                                     int width, int height) {
+    int idx = challenge_select_hit_test(
+        mx, my, width, height, a.challenge_names);
+    if (idx == -2)      app_enter_menu(a);
+    else if (idx >= 0)  app_enter_challenge(a, idx);
+}
+
+static void release_challenge(AppState& a, double mx, double my,
+                              int width, int height) {
+    if (a.challenge_show_summary) {
         app_enter_menu(a);
         return;
     }
-
-    if (a.mode == MODE_CHALLENGE && a.challenge_solved && !a.transition_active) {
+    if (a.challenge_solved && !a.transition_active) {
         if (next_button_hit_test(mx, my, width, height)) {
             int next = a.current_challenge.current_index + 1;
             if (next < static_cast<int>(a.current_challenge.fens.size())) {
@@ -910,22 +901,28 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         }
         return;
     }
-
     // Try Again: reset the puzzle to its starting FEN. Only hit-test
-    // once the shake has settled AND the mistake sfx has played out —
-    // the button isn't drawn before then, so clicks in that window
+    // once the shake has settled AND the mistake sfx has played out
+    // — the button isn't drawn before then, so clicks in that window
     // shouldn't register.
-    if (a.mode == MODE_CHALLENGE && mistake_reveal_ready(a)) {
+    if (mistake_reveal_ready(a)) {
         if (try_again_button_hit_test(mx, my, width, height)) {
             app_reset_challenge_puzzle(a);
             queue_redraw(a);
         }
         return;
     }
+    // Challenge board click: fall through to the same handler the
+    // live game uses (treat the click as a move attempt).
+    double dx = mx - a.press_x, dy = my - a.press_y;
+    if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
+}
 
-    // Withdraw confirmation modal is modal — it eats every click while
-    // open, whether it hits a button or not.
-    if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
+static void release_playing(AppState& a, double mx, double my,
+                            int width, int height) {
+    // Withdraw confirmation modal is modal — it eats every click
+    // while open, whether it hits a button or not.
+    if (a.withdraw_confirm_open) {
         double dx_m = mx - a.press_x, dy_m = my - a.press_y;
         if (dx_m*dx_m + dy_m*dy_m < 25.0) {
             int which = 0;
@@ -935,21 +932,21 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
                 a.withdraw_hover = 0;
                 app_enter_menu(a);
                 return;
-            } else if (which == 2) {     // No → close modal
+            }
+            if (which == 2) {            // No → close modal
                 a.withdraw_confirm_open = false;
                 a.withdraw_hover = 0;
                 queue_redraw(a);
             }
         }
-        return;  // Always swallow clicks while the modal is open.
+        return;
     }
 
-    // "Back to Menu" button is live during both game-over and analysis
-    // mode (entered via the withdraw flag). Analysis mode additionally
-    // gets a "Continue Playing" button that exits analysis and resumes
-    // the live game — same effect as pressing ESC.
-    if (a.mode == MODE_PLAYING &&
-        (a.game.game_over || a.game.analysis_mode)) {
+    // "Back to Menu" button is live during both game-over and
+    // analysis mode (entered via the withdraw flag). Analysis mode
+    // additionally gets a "Continue Playing" button that exits
+    // analysis and resumes the live game — same effect as ESC.
+    if (a.game.game_over || a.game.analysis_mode) {
         double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
         if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0) {
             if (endgame_menu_button_hit_test(mx, my, width, height)) {
@@ -966,15 +963,14 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
                 return;
             }
         }
-        // In analysis mode, clicks that don't hit a button should
-        // still not act on the board — fall through to camera drag.
+        // In analysis mode, non-button clicks still shouldn't act
+        // on the board. Game-over falls through to camera-drag
+        // release below.
         if (a.game.analysis_mode) return;
-        // Fall through so camera-drag releases still work on game-over.
     }
 
     // Withdraw flag (live game only, no modal already open).
-    if (a.mode == MODE_PLAYING && !a.game.game_over &&
-        !a.game.analysis_mode && !a.withdraw_confirm_open) {
+    if (!a.game.game_over && !a.game.analysis_mode) {
         double dx_f = mx - a.press_x, dy_f = my - a.press_y;
         if (dx_f*dx_f + dy_f*dy_f < 25.0 &&
             flag_hit_test(a.flag, mx, my, width, height)) {
@@ -985,118 +981,148 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         }
     }
 
-    // Regular game / challenge board interaction: only treat as a click
-    // if the pointer didn't move much between press and release.
+    // Board interaction: only treat as a click if the pointer
+    // didn't move much between press and release.
     double dx = mx - a.press_x, dy = my - a.press_y;
     if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
 }
 
-void app_motion(AppState& a, double mx, double my, int width, int height) {
-    if (a.mode == MODE_MENU) {
-        int h = menu_hit_test(mx, my, width, height);
-        if (h != a.menu_hover) {
-            a.menu_hover = h;
-            queue_redraw(a);
-        }
-        if (a.dragging) {
-            // First motion after press is our earliest chance to
-            // hit-test (app_press has no viewport size). Once a piece
-            // is grabbed the index stays until release.
-            if (a.menu_grabbed_piece < 0) {
-                float t_s = static_cast<float>(
-                    static_cast<double>(now_us(a) - a.menu_start_time_us) / 1e6);
-                a.menu_grabbed_piece = menu_piece_hit_test(
-                    a.menu_pieces, a.press_x, a.press_y,
-                    width, height, t_s);
-                if (a.menu_grabbed_piece >= 0) queue_redraw(a);
-            }
-            // Advance the fling reference only after a minimum gap
-            // (~60 ms) so release velocity reflects the last leg of
-            // the drag, not the whole gesture.
-            constexpr int64_t FLING_WINDOW_US = 60'000;
-            int64_t now = now_us(a);
-            if (now - a.fling_sample_time_us >= FLING_WINDOW_US) {
-                a.fling_sample_x = mx;
-                a.fling_sample_y = my;
-                a.fling_sample_time_us = now;
-            }
-        }
-        return;
+void app_release(AppState& a, double mx, double my, int width, int height) {
+    a.dragging = false;
+    switch (a.mode) {
+        case MODE_MENU:             release_menu(a, mx, my, width, height); return;
+        case MODE_PREGAME:          release_pregame(a, mx, my, width, height); return;
+        case MODE_CHALLENGE_SELECT: release_challenge_select(a, mx, my, width, height); return;
+        case MODE_CHALLENGE:        release_challenge(a, mx, my, width, height); return;
+        case MODE_PLAYING:          release_playing(a, mx, my, width, height); return;
     }
-    if (a.mode == MODE_PREGAME) {
-        int tc_idx = -1;
-        int h = pregame_hit_test(mx, my, width, height,
-                                 a.pregame_tc_open, &tc_idx);
-        if (h != a.pregame_hover) {
-            a.pregame_hover = h;
-            queue_redraw(a);
-        }
-        // Dropdown hover: -2 for the head, 0..TC_COUNT-1 for a row,
-        // -1 otherwise. Used by the renderer to tint the head and
-        // the hovered row.
-        int new_tc_hover = -1;
-        if (a.pregame_tc_open) {
-            if (h == 6) new_tc_hover = tc_idx;
-            else if (h == 5) new_tc_hover = -2;
-        } else if (h == 5) {
-            new_tc_hover = -2;
-        }
-        if (new_tc_hover != a.pregame_tc_hover) {
-            a.pregame_tc_hover = new_tc_hover;
-            queue_redraw(a);
-        }
-        // If the mouse button is pressed AND the press was inside the
-        // slider, treat this as a drag. Skip this while the dropdown
-        // is open — it's modal.
-        if (a.dragging && !a.pregame_tc_open) {
-            if (!a.slider_dragging) {
-                int start = pregame_hit_test(a.press_x, a.press_y,
-                                             width, height,
-                                             false, nullptr);
-                if (start == 4) a.slider_dragging = true;
-            }
-            if (a.slider_dragging) {
-                a.stockfish_elo = slider_px_to_elo(mx, width);
-                queue_redraw(a);
-            }
-        }
-        return;
+}
+
+// ===========================================================================
+// Per-mode motion handlers
+// ===========================================================================
+// Orbit-camera drag used by MODE_PLAYING and MODE_CHALLENGE. Bounds
+// rot_x to avoid flipping through the floor / ceiling.
+static void apply_camera_drag(AppState& a, double mx, double my) {
+    if (!a.dragging) return;
+    a.rot_y += static_cast<float>(mx - a.last_mouse_x) * 0.3f;
+    a.rot_x += static_cast<float>(my - a.last_mouse_y) * 0.3f;
+    if (a.rot_x < 5.0f)  a.rot_x = 5.0f;
+    if (a.rot_x > 89.0f) a.rot_x = 89.0f;
+    a.last_mouse_x = mx;
+    a.last_mouse_y = my;
+    queue_redraw(a);
+}
+
+static void motion_menu(AppState& a, double mx, double my, int width, int height) {
+    int h = menu_hit_test(mx, my, width, height);
+    if (h != a.menu_hover) {
+        a.menu_hover = h;
+        queue_redraw(a);
     }
-    if (a.mode == MODE_CHALLENGE_SELECT) {
-        int h = challenge_select_hit_test(
-            mx, my, width, height, a.challenge_names);
-        if (h != a.challenge_select_hover) {
-            a.challenge_select_hover = h;
+    if (!a.dragging) return;
+
+    // First motion after press is our earliest chance to hit-test
+    // (app_press has no viewport size). Once a piece is grabbed
+    // the index stays until release.
+    if (a.menu_grabbed_piece < 0) {
+        float t_s = static_cast<float>(
+            static_cast<double>(now_us(a) - a.menu_start_time_us) / 1e6);
+        a.menu_grabbed_piece = menu_piece_hit_test(
+            a.menu_pieces, a.press_x, a.press_y, width, height, t_s);
+        if (a.menu_grabbed_piece >= 0) queue_redraw(a);
+    }
+    // Advance the fling reference only after a minimum gap (~60 ms)
+    // so release velocity reflects the last leg of the drag, not
+    // the whole gesture.
+    constexpr int64_t FLING_WINDOW_US = 60'000;
+    int64_t now = now_us(a);
+    if (now - a.fling_sample_time_us >= FLING_WINDOW_US) {
+        a.fling_sample_x = mx;
+        a.fling_sample_y = my;
+        a.fling_sample_time_us = now;
+    }
+}
+
+static void motion_pregame(AppState& a, double mx, double my, int width, int height) {
+    int tc_idx = -1;
+    int h = pregame_hit_test(mx, my, width, height,
+                             a.pregame_tc_open, &tc_idx);
+    if (h != a.pregame_hover) {
+        a.pregame_hover = h;
+        queue_redraw(a);
+    }
+    // Dropdown hover: -2 for the head, 0..TC_COUNT-1 for a row,
+    // -1 otherwise. Drives the head/row tint in the renderer.
+    int new_tc_hover = -1;
+    if (a.pregame_tc_open) {
+        if (h == 6)      new_tc_hover = tc_idx;
+        else if (h == 5) new_tc_hover = -2;
+    } else if (h == 5) {
+        new_tc_hover = -2;
+    }
+    if (new_tc_hover != a.pregame_tc_hover) {
+        a.pregame_tc_hover = new_tc_hover;
+        queue_redraw(a);
+    }
+    // Mouse button held AND press was inside the slider → slider
+    // drag. Skipped while the dropdown is open (it's modal).
+    if (a.dragging && !a.pregame_tc_open) {
+        if (!a.slider_dragging) {
+            int start = pregame_hit_test(a.press_x, a.press_y,
+                                         width, height, false, nullptr);
+            if (start == 4) a.slider_dragging = true;
+        }
+        if (a.slider_dragging) {
+            a.stockfish_elo = slider_px_to_elo(mx, width);
             queue_redraw(a);
         }
-        return;
     }
-    if (a.mode == MODE_CHALLENGE && a.challenge_solved) {
+}
+
+static void motion_challenge_select(AppState& a, double mx, double my,
+                                    int width, int height) {
+    int h = challenge_select_hit_test(
+        mx, my, width, height, a.challenge_names);
+    if (h != a.challenge_select_hover) {
+        a.challenge_select_hover = h;
+        queue_redraw(a);
+    }
+}
+
+static void motion_challenge(AppState& a, double mx, double my,
+                             int width, int height) {
+    if (a.challenge_solved) {
         bool h_now = next_button_hit_test(mx, my, width, height);
         if (h_now != a.challenge_next_hover) {
             a.challenge_next_hover = h_now;
             queue_redraw(a);
         }
     }
-    if (a.mode == MODE_CHALLENGE && mistake_reveal_ready(a)) {
+    if (mistake_reveal_ready(a)) {
         bool h_now = try_again_button_hit_test(mx, my, width, height);
         if (h_now != a.challenge_try_again_hover) {
             a.challenge_try_again_hover = h_now;
             queue_redraw(a);
         }
     }
-    if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
+    apply_camera_drag(a, mx, my);
+}
+
+static void motion_playing(AppState& a, double mx, double my,
+                           int width, int height) {
+    if (a.withdraw_confirm_open) {
         int which = 0;
         withdraw_confirm_hit_test(mx, my, width, height, &which);
         if (which != a.withdraw_hover) {
             a.withdraw_hover = which;
             queue_redraw(a);
         }
-        return;  // Modal swallows motion — no camera drag, no hover on
-                 // other widgets.
+        // Modal swallows motion — no camera drag, no hover on
+        // other widgets.
+        return;
     }
-    if (a.mode == MODE_PLAYING &&
-        (a.game.game_over || a.game.analysis_mode)) {
+    if (a.game.game_over || a.game.analysis_mode) {
         bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
         if (h_now != a.endgame_menu_hover) {
             a.endgame_menu_hover = h_now;
@@ -1113,14 +1139,16 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
             queue_redraw(a);
         }
     }
-    if (a.dragging) {
-        a.rot_y += static_cast<float>(mx - a.last_mouse_x) * 0.3f;
-        a.rot_x += static_cast<float>(my - a.last_mouse_y) * 0.3f;
-        if (a.rot_x < 5.0f)  a.rot_x = 5.0f;
-        if (a.rot_x > 89.0f) a.rot_x = 89.0f;
-        a.last_mouse_x = mx;
-        a.last_mouse_y = my;
-        queue_redraw(a);
+    apply_camera_drag(a, mx, my);
+}
+
+void app_motion(AppState& a, double mx, double my, int width, int height) {
+    switch (a.mode) {
+        case MODE_MENU:             motion_menu(a, mx, my, width, height); return;
+        case MODE_PREGAME:          motion_pregame(a, mx, my, width, height); return;
+        case MODE_CHALLENGE_SELECT: motion_challenge_select(a, mx, my, width, height); return;
+        case MODE_CHALLENGE:        motion_challenge(a, mx, my, width, height); return;
+        case MODE_PLAYING:          motion_playing(a, mx, my, width, height); return;
     }
 }
 
@@ -1315,82 +1343,70 @@ void app_eval_ready(AppState& a, int cp, int score_index) {
 // ===========================================================================
 // Per-frame tick
 // ===========================================================================
-void app_tick(AppState& a) {
+// ===========================================================================
+// Per-frame tick
+// ===========================================================================
+static void tick_menu_physics(AppState& a, int64_t now) {
+    if (a.mode != MODE_MENU) return;
+    float dt = static_cast<float>(
+        static_cast<double>(now - a.menu_last_update_us) / 1e6);
+    a.menu_last_update_us = now;
+    if (dt < 0.0f)  dt = 0.0f;
+    if (dt > 0.05f) dt = 0.05f;
+    menu_update_physics(a.menu_pieces, dt);
+    queue_redraw(a);
+}
+
+// Commit an AI animation when its duration has elapsed: run the
+// move, play SFX, kick the eval refresh in live play.
+static void tick_ai_animation(AppState& a, int64_t now) {
     GameState& gs = a.game;
-    int64_t now = now_us(a);
+    if (!gs.ai_animating) return;
+    float elapsed =
+        static_cast<float>(static_cast<double>(now - a.ai_anim_start_us) / 1e6);
+    if (elapsed >= gs.ai_anim_duration) {
+        gs.ai_animating = false;
+        bool sfx_capture = gs.grid[gs.ai_to_row][gs.ai_to_col] >= 0;
+        execute_move(gs, gs.ai_from_col, gs.ai_from_row,
+                     gs.ai_to_col,   gs.ai_to_row);
+        play_move_sfx(gs, sfx_capture);
+        gs.ai_thinking = false;
+        app_refresh_status(a);
+        if (a.mode == MODE_PLAYING) {
+            trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
+        }
+    }
+    queue_redraw(a);
+}
 
-    // Keep the menu music queue topped up so it loops seamlessly.
-    // audio_music_tick is a no-op when no track is playing, so it's
-    // safe to call every frame in every mode.
-    audio_music_tick();
-
-    // Menu physics
-    if (a.mode == MODE_MENU) {
-        float dt = static_cast<float>(
-            static_cast<double>(now - a.menu_last_update_us) / 1e6);
-        a.menu_last_update_us = now;
-        if (dt < 0.0f)     dt = 0.0f;
-        if (dt > 0.05f)    dt = 0.05f;
-        menu_update_physics(a.menu_pieces, dt);
+// Damped sine board shake after a mate_in_N mistake. Settles to 0
+// after MISTAKE_SHAKE_DURATION; keep redrawing until
+// mistake_reveal_ready flips so the Try-Again button surfaces on
+// the same frame the sfx finishes.
+static void tick_mistake_shake(AppState& a, int64_t now) {
+    if (a.mode != MODE_CHALLENGE || !a.challenge_mistake) return;
+    float t = static_cast<float>(
+        static_cast<double>(now - a.challenge_mistake_start_us) / 1e6);
+    if (t < MISTAKE_SHAKE_DURATION) {
+        float pi = static_cast<float>(M_PI);
+        a.board_shake_x =
+            0.25f * std::exp(-5.0f * t) * std::sin(2.0f * pi * 5.0f * t);
+        queue_redraw(a);
+    } else if (a.board_shake_x != 0.0f) {
+        a.board_shake_x = 0.0f;
         queue_redraw(a);
     }
+    if (!mistake_reveal_ready(a)) queue_redraw(a);
+}
 
-    // AI move animation: when elapsed >= duration, commit the move.
-    if (gs.ai_animating) {
-        float elapsed =
-            static_cast<float>(static_cast<double>(now - a.ai_anim_start_us) / 1e6);
-        if (elapsed >= gs.ai_anim_duration) {
-            gs.ai_animating = false;
-            bool sfx_capture = gs.grid[gs.ai_to_row][gs.ai_to_col] >= 0;
-            execute_move(gs, gs.ai_from_col, gs.ai_from_row,
-                         gs.ai_to_col,   gs.ai_to_row);
-            play_move_sfx(gs, sfx_capture);
-            gs.ai_thinking = false;
-            app_refresh_status(a);
-            // Refresh the score graph for the position after the AI move.
-            if (a.mode == MODE_PLAYING) {
-                trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
-            }
-        }
-        queue_redraw(a);
-    }
-
-    // Selection ring pulses while a piece is selected — renderer reads
-    // gs.anim_start_time directly, but we need redraws to animate it.
-    if (gs.selected_col >= 0) queue_redraw(a);
-
-    // Shatter transition has its own elapsed check in the render path;
-    // we just need to keep issuing redraws while it's active.
-    if (a.transition_active) queue_redraw(a);
-
-    // Mistake shake: damped sine in view-space x. Settles to 0 after
-    // MISTAKE_SHAKE_DURATION; the Try-Again button is then revealed
-    // once the mistake sfx has also finished (see mistake_reveal_ready).
-    if (a.mode == MODE_CHALLENGE && a.challenge_mistake) {
-        float t = static_cast<float>(
-            static_cast<double>(now - a.challenge_mistake_start_us) / 1e6);
-        if (t < MISTAKE_SHAKE_DURATION) {
-            float pi = static_cast<float>(M_PI);
-            a.board_shake_x =
-                0.25f * std::exp(-5.0f * t) * std::sin(2.0f * pi * 5.0f * t);
-            queue_redraw(a);
-        } else if (a.board_shake_x != 0.0f) {
-            a.board_shake_x = 0.0f;
-            queue_redraw(a);
-        }
-        // Keep redrawing until the button reveal threshold passes, so
-        // the button appears on the frame the sfx finishes rather than
-        // on the next user event.
-        if (!mistake_reveal_ready(a)) queue_redraw(a);
-    }
-
-    // Withdraw flag cloth physics: run during a live game (not
-    // game-over, not analysis, not a paused modal). The flag itself
-    // is (re)initialised in renderer_draw when it first sees the
-    // window size, so this block is safe even on the very first tick
-    // after entering the game.
-    if (a.mode == MODE_PLAYING && !gs.game_over && !gs.analysis_mode &&
-        !a.withdraw_confirm_open && !a.flag.p.empty()) {
+// Withdraw-flag cloth verlet physics. Gated on live gameplay (not
+// game-over, analysis, or an open modal). The pause-on-modal latch
+// stops a huge dt from dumping into the sim when the user reopens.
+static void tick_withdraw_flag(AppState& a, int64_t now) {
+    GameState& gs = a.game;
+    const bool live = a.mode == MODE_PLAYING && !gs.game_over && !gs.analysis_mode &&
+                      !a.withdraw_confirm_open && !a.flag.p.empty();
+    if (live) {
         float dt;
         if (a.flag_last_update_us == 0) {
             dt = 0.0f;
@@ -1406,132 +1422,146 @@ void app_tick(AppState& a) {
         flag_update(a.flag, dt, time_s);
         queue_redraw(a);
     } else if (a.withdraw_confirm_open || gs.game_over || gs.analysis_mode) {
-        // Pause the clock so dt after the modal closes is one frame,
-        // not "however long the user stared at the dialog".
         a.flag_last_update_us = 0;
     }
+}
 
-    // Chess clock. Tick the side-to-move's budget, add Fischer
-    // increment on turn flips, and set game_over on timeout. Same
-    // pause-on-modal pattern as the flag so that reopening a modal
-    // doesn't dump a huge dt into a clock.
-    if (a.mode == MODE_PLAYING && a.clock_enabled && !gs.game_over &&
-        !gs.analysis_mode && !a.withdraw_confirm_open) {
-        if (a.clock_last_tick_us == 0) {
-            a.clock_last_tick_us = now;
-            a.prev_white_turn = gs.white_turn ? 1 : 0;
-        } else {
-            int64_t dt_us = now - a.clock_last_tick_us;
-            a.clock_last_tick_us = now;
-            int cur = gs.white_turn ? 1 : 0;
-            // Charge this interval to whoever WAS on move. If the
-            // turn flipped between ticks, the move happened
-            // mid-interval — the dt belongs to the previous side
-            // (they thought, then moved), not the new side.
-            if (dt_us > 0) {
-                int64_t dt_ms = dt_us / 1000;
-                if (a.prev_white_turn == 1) a.white_ms_left -= dt_ms;
-                else                        a.black_ms_left -= dt_ms;
-            }
-            // Turn flip → the side that just moved gets the
-            // Fischer increment. Detected here rather than inside
-            // execute_move so the rules layer stays pure.
-            //
-            // Cap each clock at the initial budget so the displayed
-            // time never grows above the starting value (e.g. 30:00
-            // in Classical). Raw Fischer behaviour would let a fast
-            // player accumulate time above the cap, which combined
-            // with our adaptive AI move time made the clock visibly
-            // count UP during a classical game — surprising and
-            // hard to reason about. Capping preserves the
-            // incentive (play fast and you lose less time) without
-            // the "growing clock" artefact.
-            const int64_t base = TIME_CONTROLS[a.time_control].base_ms;
-            if (cur != a.prev_white_turn) {
-                int64_t inc = TIME_CONTROLS[a.time_control].increment_ms;
-                if (a.prev_white_turn == 1) {
-                    a.white_ms_left += inc;
-                    if (a.white_ms_left > base) a.white_ms_left = base;
-                } else {
-                    a.black_ms_left += inc;
-                    if (a.black_ms_left > base) a.black_ms_left = base;
-                }
-            }
-            a.prev_white_turn = cur;
-            // Time loss.
-            if (a.white_ms_left <= 0) {
-                a.white_ms_left = 0;
-                gs.game_over = true;
-                gs.game_result = "Black wins on time!";
-                std::printf("Black wins on time!\n");
-                app_refresh_status(a);
-            } else if (a.black_ms_left <= 0) {
-                a.black_ms_left = 0;
-                gs.game_over = true;
-                gs.game_result = "White wins on time!";
-                std::printf("White wins on time!\n");
-                app_refresh_status(a);
-            }
+// Chess clock. Tick the side-to-move's budget, add the Fischer
+// increment on turn flips, and set game_over on timeout. Same
+// pause-on-modal pattern as the flag so a modal doesn't dump a
+// huge dt into a clock.
+static void tick_clock(AppState& a, int64_t now) {
+    GameState& gs = a.game;
+    const bool active = a.mode == MODE_PLAYING && a.clock_enabled && !gs.game_over &&
+                        !gs.analysis_mode && !a.withdraw_confirm_open;
+    if (!active) {
+        if (a.clock_enabled && (a.withdraw_confirm_open || gs.game_over ||
+                                gs.analysis_mode)) {
+            a.clock_last_tick_us = 0;
         }
-        queue_redraw(a);
-    } else if (a.clock_enabled && (a.withdraw_confirm_open ||
-                                   gs.game_over ||
-                                   gs.analysis_mode)) {
-        // Pause the clock — re-latch on the next active tick.
-        a.clock_last_tick_us = 0;
+        return;
     }
+    if (a.clock_last_tick_us == 0) {
+        a.clock_last_tick_us = now;
+        a.prev_white_turn = gs.white_turn ? 1 : 0;
+        queue_redraw(a);
+        return;
+    }
+
+    int64_t dt_us = now - a.clock_last_tick_us;
+    a.clock_last_tick_us = now;
+    int cur = gs.white_turn ? 1 : 0;
+    // Charge this interval to whoever WAS on move. If the turn
+    // flipped between ticks, the move happened mid-interval — the
+    // dt belongs to the previous side (they thought, then moved),
+    // not the new side.
+    if (dt_us > 0) {
+        int64_t dt_ms = dt_us / 1000;
+        if (a.prev_white_turn == 1) a.white_ms_left -= dt_ms;
+        else                        a.black_ms_left -= dt_ms;
+    }
+    // On turn flip, the side that just moved gets the Fischer
+    // increment. Detected here (not inside execute_move) so the
+    // rules layer stays pure. Each clock is capped at the initial
+    // budget so the display never grows above the starting value
+    // (raw Fischer + our adaptive AI time produced a visible "clock
+    // counting up" artefact in classical).
+    const int64_t base = TIME_CONTROLS[a.time_control].base_ms;
+    if (cur != a.prev_white_turn) {
+        int64_t inc = TIME_CONTROLS[a.time_control].increment_ms;
+        if (a.prev_white_turn == 1) {
+            a.white_ms_left += inc;
+            if (a.white_ms_left > base) a.white_ms_left = base;
+        } else {
+            a.black_ms_left += inc;
+            if (a.black_ms_left > base) a.black_ms_left = base;
+        }
+    }
+    a.prev_white_turn = cur;
+
+    if (a.white_ms_left <= 0) {
+        a.white_ms_left = 0;
+        gs.game_over = true;
+        gs.game_result = "Black wins on time!";
+        std::printf("Black wins on time!\n");
+        app_refresh_status(a);
+    } else if (a.black_ms_left <= 0) {
+        a.black_ms_left = 0;
+        gs.game_over = true;
+        gs.game_result = "White wins on time!";
+        std::printf("White wins on time!\n");
+        app_refresh_status(a);
+    }
+    queue_redraw(a);
+}
+
+void app_tick(AppState& a) {
+    int64_t now = now_us(a);
+    // Safe in every mode; no-op when no track is playing.
+    audio_music_tick();
+
+    tick_menu_physics(a, now);
+    tick_ai_animation(a, now);
+
+    // Selection ring pulse + shatter transition only need redraws
+    // issued; the pulse reads gs.anim_start_time directly and
+    // shatter has its own elapsed check in the render path.
+    if (a.game.selected_col >= 0) queue_redraw(a);
+    if (a.transition_active)      queue_redraw(a);
+
+    tick_mistake_shake(a, now);
+    tick_withdraw_flag(a, now);
+    tick_clock(a, now);
 }
 
 // ===========================================================================
 // Rendering dispatch
 // ===========================================================================
-void app_render(AppState& a, int width, int height) {
+// ===========================================================================
+// Rendering dispatch
+// ===========================================================================
+static void render_menu(AppState& a, int width, int height, int64_t now) {
+    float t = static_cast<float>(
+        static_cast<double>(now - a.menu_start_time_us) / 1e6);
+    renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
+                       a.menu_grabbed_piece >= 0);
+}
+
+static void render_pregame(AppState& a, int width, int height) {
+    renderer_draw_pregame(a.human_plays_white, a.stockfish_elo,
+                          APP_ELO_MIN, APP_ELO_MAX,
+                          a.time_control,
+                          a.pregame_tc_open,
+                          a.pregame_tc_hover,
+                          width, height, a.pregame_hover);
+}
+
+static void render_challenge_select(AppState& a, int width, int height) {
+    renderer_draw_challenge_select(
+        a.challenge_names, width, height, a.challenge_select_hover);
+}
+
+static void render_challenge_summary(AppState& a, int width, int height) {
+    std::vector<SummaryEntry> entries;
+    entries.reserve(a.challenge_solutions.size());
+    for (size_t i = 0; i < a.challenge_solutions.size(); i++) {
+        SummaryEntry e;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "Puzzle %zu", i + 1);
+        e.puzzle_name = buf;
+        e.moves = a.challenge_solutions[i];
+        entries.push_back(std::move(e));
+    }
+    renderer_draw_challenge_summary(
+        a.current_challenge.name, entries, width, height);
+}
+
+// Draw the 3D board + HUD used by both live play and challenge mode.
+// During challenge mode the desktop game_over overlay is suppressed
+// (the Next button replaces it); we save/restore the GameState's
+// game_over fields around the call to keep the rules layer pure.
+static void render_board(AppState& a, int width, int height) {
     GameState& gs = a.game;
-    int64_t now = now_us(a);
-
-    if (a.mode == MODE_MENU) {
-        float t = static_cast<float>(
-            static_cast<double>(now - a.menu_start_time_us) / 1e6);
-        renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
-                           a.menu_grabbed_piece >= 0);
-        return;
-    }
-
-    if (a.mode == MODE_PREGAME) {
-        renderer_draw_pregame(a.human_plays_white, a.stockfish_elo,
-                              APP_ELO_MIN, APP_ELO_MAX,
-                              a.time_control,
-                              a.pregame_tc_open,
-                              a.pregame_tc_hover,
-                              width, height, a.pregame_hover);
-        return;
-    }
-
-    if (a.mode == MODE_CHALLENGE_SELECT) {
-        renderer_draw_challenge_select(
-            a.challenge_names, width, height, a.challenge_select_hover);
-        return;
-    }
-
-    if (a.mode == MODE_CHALLENGE && a.challenge_show_summary) {
-        std::vector<SummaryEntry> entries;
-        for (size_t i = 0; i < a.challenge_solutions.size(); i++) {
-            SummaryEntry e;
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "Puzzle %zu", i + 1);
-            e.puzzle_name = buf;
-            e.moves = a.challenge_solutions[i];
-            entries.push_back(e);
-        }
-        renderer_draw_challenge_summary(
-            a.current_challenge.name, entries, width, height);
-        return;
-    }
-
-    // In-game / challenge board render path.
-
-    // Suppress the desktop "wins by checkmate" overlay during challenge
-    // mode — the challenge-specific "Next" button replaces it.
     bool save_game_over = false;
     std::string save_result;
     if (a.mode == MODE_CHALLENGE) {
@@ -1543,7 +1573,7 @@ void app_render(AppState& a, int width, int height) {
 
     // (Re)initialise the withdraw flag when the window size changes
     // or on the very first draw of a new game. Cheap (O(N) in grid
-    // cells) so we don't need to guard against extra re-inits.
+    // cells) so we don't guard against extra re-inits.
     if (a.mode == MODE_PLAYING &&
         (a.flag.inited_w != width || a.flag.inited_h != height)) {
         flag_init(a.flag, width, height);
@@ -1554,10 +1584,9 @@ void app_render(AppState& a, int width, int height) {
         a.mode == MODE_PLAYING &&
         !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
 
-    // Clock widget: same visibility gate as the flag, plus the
-    // time control must be non-Unlimited. The side shown is whoever
-    // is on move — matches the user's spec ("when it's white's turn
-    // it shows white's clock, etc.").
+    // Clock widget: same visibility gate as the flag, plus the time
+    // control must be non-Unlimited. The side shown is whoever is
+    // on move.
     const bool draw_clock =
         a.mode == MODE_PLAYING && a.clock_enabled &&
         !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
@@ -1573,12 +1602,13 @@ void app_render(AppState& a, int width, int height) {
                   a.cartoon_outline,
                   a.board_shake_x);
 
-    if (a.mode != MODE_CHALLENGE) return;
+    if (a.mode == MODE_CHALLENGE) {
+        gs.game_over   = save_game_over;
+        gs.game_result = save_result;
+    }
+}
 
-    // Restore game_over before any further drawing.
-    gs.game_over   = save_game_over;
-    gs.game_result = save_result;
-
+static void render_challenge_overlay_and_buttons(AppState& a, int width, int height) {
     renderer_draw_challenge_overlay(
         a.current_challenge.name,
         a.current_challenge.current_index,
@@ -1592,55 +1622,78 @@ void app_render(AppState& a, int width, int height) {
         a.transition_pending_next < 0) {
         renderer_draw_next_button(width, height, a.challenge_next_hover);
     }
-
-    // Try Again button only appears once the shake has settled AND
-    // the mistake sfx has played out, so the mistake feedback has a
-    // clear "then" beat to it.
+    // Try Again only appears after the shake has settled AND the
+    // mistake sfx has played out (see mistake_reveal_ready), so the
+    // mistake feedback has a clear "then" beat.
     if (mistake_reveal_ready(a)) {
         renderer_draw_try_again_button(width, height, a.challenge_try_again_hover);
     }
+}
 
-    // Transition trigger: capture current frame, load next puzzle,
-    // redraw the new state, then the shatter overlay animates the
-    // captured texture fading away.
-    if (a.transition_pending_next >= 0) {
-        renderer_capture_frame(width, height);
-        app_load_challenge_puzzle(a, a.transition_pending_next);
-        a.transition_pending_next = -1;
-        a.transition_active = true;
-        a.transition_start_time_us = now;
-        audio_play(SoundEffect::GlassBreak);
+// Run the glass-shatter puzzle transition: capture the current
+// frame, load the next puzzle, redraw the new state, then return so
+// the main render path lets the shatter overlay animate the captured
+// texture fading away.
+static void render_challenge_transition_trigger(AppState& a, int width, int height,
+                                                int64_t now) {
+    if (a.transition_pending_next < 0) return;
+    renderer_capture_frame(width, height);
+    app_load_challenge_puzzle(a, a.transition_pending_next);
+    a.transition_pending_next = -1;
+    a.transition_active = true;
+    a.transition_start_time_us = now;
+    audio_play(SoundEffect::GlassBreak);
 
-        // The renderer_draw path itself clears its color/depth buffers.
-        // Challenge mode never wants the withdraw flag, modal, or clock.
-        // Reuse the session-level cartoon_outline setting so toggling
-        // it survives across a puzzle transition.
-        renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
-                      a.human_plays_white,
-                      a.endgame_menu_hover, false,
-                      nullptr, false, false, 0,
-                      false, 0, false,
-                      a.cartoon_outline);
-        renderer_draw_challenge_overlay(
-            a.current_challenge.name,
-            a.current_challenge.current_index,
-            static_cast<int>(a.current_challenge.fens.size()),
-            a.challenge_moves_made,
-            a.current_challenge.max_moves,
-            a.current_challenge.starts_white,
-            width, height);
+    // Challenge mode never wants the withdraw flag, modal, or clock.
+    // Reuse the session cartoon_outline so toggling survives the
+    // transition.
+    renderer_draw(a.game, width, height, a.rot_x, a.rot_y, a.zoom,
+                  a.human_plays_white,
+                  a.endgame_menu_hover, false,
+                  nullptr, false, false, 0,
+                  false, 0, false,
+                  a.cartoon_outline);
+    renderer_draw_challenge_overlay(
+        a.current_challenge.name,
+        a.current_challenge.current_index,
+        static_cast<int>(a.current_challenge.fens.size()),
+        a.challenge_moves_made,
+        a.current_challenge.max_moves,
+        a.current_challenge.starts_white,
+        width, height);
+}
+
+static void render_challenge_transition_overlay(AppState& a, int width, int height,
+                                                int64_t now) {
+    if (!a.transition_active) return;
+    float t = static_cast<float>(
+        static_cast<double>(now - a.transition_start_time_us) / 1e6);
+    constexpr float TRANSITION_DURATION = 1.3f;
+    if (t >= TRANSITION_DURATION) {
+        a.transition_active = false;
+    } else {
+        renderer_draw_shatter(t, width, height);
+    }
+}
+
+void app_render(AppState& a, int width, int height) {
+    int64_t now = now_us(a);
+
+    if (a.mode == MODE_MENU)             { render_menu(a, width, height, now); return; }
+    if (a.mode == MODE_PREGAME)          { render_pregame(a, width, height);   return; }
+    if (a.mode == MODE_CHALLENGE_SELECT) { render_challenge_select(a, width, height); return; }
+    if (a.mode == MODE_CHALLENGE && a.challenge_show_summary) {
+        render_challenge_summary(a, width, height);
+        return;
     }
 
-    if (a.transition_active) {
-        float t = static_cast<float>(
-            static_cast<double>(now - a.transition_start_time_us) / 1e6);
-        static constexpr float TRANSITION_DURATION = 1.3f;
-        if (t >= TRANSITION_DURATION) {
-            a.transition_active = false;
-        } else {
-            renderer_draw_shatter(t, width, height);
-        }
-    }
+    // Live game + in-progress challenge share the 3D board path,
+    // then challenge layers its overlay + transition on top.
+    render_board(a, width, height);
+    if (a.mode != MODE_CHALLENGE) return;
+    render_challenge_overlay_and_buttons(a, width, height);
+    render_challenge_transition_trigger(a, width, height, now);
+    render_challenge_transition_overlay(a, width, height, now);
 }
 
 // ===========================================================================
