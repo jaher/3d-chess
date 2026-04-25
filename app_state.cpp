@@ -509,6 +509,15 @@ static void handle_board_click(AppState& a, double mx, double my,
                             const char* noun =
                                 (ct == "find_forks") ? "forks" : "pins";
 
+                            // Cap at 3 candidates per puzzle so
+                            // positions with many legal forks / pins
+                            // don't turn into busywork. The full
+                            // required_moves list is still used to
+                            // validate / dedupe attempts; we just
+                            // mark the puzzle solved (and show the
+                            // progress fraction) against this target.
+                            size_t tactic_target =
+                                std::min<size_t>(3, req.size());
                             if (is_new_correct) {
                                 found.push_back(uci);
                                 record_solution();
@@ -519,15 +528,15 @@ static void handle_board_click(AppState& a, double mx, double my,
                                     a.current_challenge.fens[pi]);
                                 if (p.valid) apply_fen_to_state(a.game, p);
                                 a.challenge_moves_made = 0;
-                                if (!req.empty() &&
-                                    found.size() >= req.size()) {
+                                if (tactic_target > 0 &&
+                                    found.size() >= tactic_target) {
                                     a.challenge_solved = true;
                                 }
                                 std::snprintf(
                                     buf, sizeof(buf),
                                     "Good! — found %d / %d %s",
                                     static_cast<int>(found.size()),
-                                    static_cast<int>(req.size()),
+                                    static_cast<int>(tactic_target),
                                     noun);
                             } else {
                                 // Wrong move OR a duplicate of an
@@ -549,7 +558,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                                     buf, sizeof(buf),
                                     "Not a match — found %d / %d %s",
                                     static_cast<int>(found.size()),
-                                    static_cast<int>(req.size()),
+                                    static_cast<int>(tactic_target),
                                     noun);
                             }
                             set_status(a, buf);
@@ -802,9 +811,10 @@ void app_reset_challenge_puzzle(AppState& a) {
     auto saved_found = std::move(a.current_challenge.found_moves);
     app_load_challenge_puzzle(a, idx);
     a.current_challenge.found_moves = std::move(saved_found);
-    if (!a.current_challenge.required_moves.empty() &&
-        a.current_challenge.found_moves.size() >=
-            a.current_challenge.required_moves.size()) {
+    size_t tactic_target = std::min<size_t>(
+        3, a.current_challenge.required_moves.size());
+    if (tactic_target > 0 &&
+        a.current_challenge.found_moves.size() >= tactic_target) {
         a.challenge_solved = true;
     }
 }
@@ -1775,7 +1785,8 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
         std::string tactic_label = is_tactic
             ? (ct == "find_forks" ? "Forks" : "Pins") : "";
         int tactic_required = is_tactic
-            ? static_cast<int>(a.current_challenge.required_moves.size()) : 0;
+            ? static_cast<int>(std::min<size_t>(
+                3, a.current_challenge.required_moves.size())) : 0;
         int tactic_found = is_tactic
             ? static_cast<int>(a.current_challenge.found_moves.size()) : 0;
         renderer_draw_challenge_overlay(
