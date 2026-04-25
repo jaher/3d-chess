@@ -1,10 +1,11 @@
 CXX      := g++
-CXXFLAGS := -std=c++17 -O0 -g -Wall -Wextra -I.. -DAI_PLAYER_HELPERS_ONLY
+CXXFLAGS := -std=c++17 -O0 -g -Wall -Wextra -I..
 
-# Shared source files from the parent directory. Only the pure-logic
-# layer — no GTK, no GL, no SDL, no Stockfish subprocess. The
-# AI_PLAYER_HELPERS_ONLY macro strips the POSIX subprocess wrapper
-# from ai_player.cpp, exactly as the web build does.
+# Pure-logic test binary (run_tests). The AI_PLAYER_HELPERS_ONLY macro
+# strips the POSIX subprocess wrapper from ai_player.cpp, exactly as
+# the web build does. No GTK, no GL, no SDL, no Stockfish subprocess.
+PURE_FLAGS := $(CXXFLAGS) -DAI_PLAYER_HELPERS_ONLY
+
 SHARED_SRCS := \
     ../chess_types.cpp \
     ../chess_rules.cpp \
@@ -23,13 +24,26 @@ TEST_SRCS := \
 HEADERS := doctest.h helpers.h
 
 run_tests: $(SHARED_SRCS) $(TEST_SRCS) $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(SHARED_SRCS) $(TEST_SRCS) -o $@ -lm
+	$(CXX) $(PURE_FLAGS) $(SHARED_SRCS) $(TEST_SRCS) -o $@ -lm
 
-# Default target: build + run.
-test: run_tests
+# Engine test binary (run_tests_engine) — recompiles ai_player.cpp WITHOUT
+# AI_PLAYER_HELPERS_ONLY so the Stockfish subprocess wrapper is linked in,
+# and drives it via tests/fake_stockfish.py (no real Stockfish required).
+ENGINE_TEST_SRCS := doctest_main.cpp engine_test.cpp
+
+run_tests_engine: $(SHARED_SRCS) $(ENGINE_TEST_SRCS) $(HEADERS) fake_stockfish.py
+	$(CXX) $(CXXFLAGS) $(SHARED_SRCS) $(ENGINE_TEST_SRCS) -o $@ -lm -lpthread
+
+# Default target: build + run both binaries.
+test: run_tests run_tests_engine
+	./run_tests
+	./run_tests_engine
+
+# Skip the engine binary (e.g. for CI environments without python3).
+test_pure: run_tests
 	./run_tests
 
 clean:
-	rm -f run_tests
+	rm -f run_tests run_tests_engine
 
-.PHONY: test clean
+.PHONY: test test_pure clean

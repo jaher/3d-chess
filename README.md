@@ -115,13 +115,18 @@ Optionally specify a different models directory:
 
 ### Running the unit tests (optional)
 
-Pure-logic unit tests (chess rules, FEN/UCI helpers, linear algebra, FEN parser) live in `tests/` and are built with a vendored [doctest](https://github.com/doctest/doctest) single-header. Run from the repo root:
+Pure-logic unit tests (chess rules, FEN/UCI helpers, linear algebra, FEN parser, challenge loader, tactic detection) live in `tests/` and are built with a vendored [doctest](https://github.com/doctest/doctest) single-header. Run from the repo root:
 
 ```bash
 make test
 ```
 
-The test binary only links against the pure-C++ layer — no GL, GTK, SDL, or Stockfish subprocess — so it builds and runs in under a second.
+This builds two binaries:
+
+- **`run_tests`** — pure-logic layer only (no GL, GTK, SDL, or Stockfish subprocess). Builds and runs in under a second.
+- **`run_tests_engine`** — recompiles `ai_player.cpp` with the POSIX subprocess wrapper enabled and drives a fake UCI engine (`tests/fake_stockfish.py`) so `ask_ai_move`, `stockfish_eval`, and `ai_player_set_elo` are exercised without needing a real Stockfish build. Requires `python3` on `$PATH`.
+
+To skip the engine binary (e.g. on CI without Python), use `make test_pure` instead.
 
 ### Tuning the AI (optional)
 
@@ -391,13 +396,18 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
 
   # Tests
   tests/                   -- doctest-based unit tests (chess rules,
-                              FEN/UCI, challenge loader, linalg). Run
-                              with `make test` from this dir.
+                              FEN/UCI, challenge loader, tactics,
+                              linalg, Stockfish wrapper). Run with
+                              `make test` from this dir.
     doctest.h                 vendored single-header test framework
     chess_rules_test.cpp
     ai_player_helpers_test.cpp
     challenge_test.cpp
     linalg_test.cpp
+    engine_test.cpp           Stockfish subprocess wrapper tests
+                              (driven by fake_stockfish.py)
+    fake_stockfish.py         minimal UCI-speaking script used by
+                              engine_test.cpp
     helpers.h                 state_from_fen() test fixture helper
     Makefile
 

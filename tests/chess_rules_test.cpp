@@ -380,3 +380,207 @@ TEST_CASE("uci_to_algebraic: capture has an 'x'") {
     CHECK(alg.find('x') != std::string::npos);
     CHECK(alg.find("e4") != std::string::npos);
 }
+
+// ===========================================================================
+// Castling for black (white side covered above)
+// ===========================================================================
+TEST_CASE("execute_move black kingside castling moves king and rook") {
+    GameState gs = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1");
+    REQUIRE(piece_at(gs, col_of('e'), row_of('8'))->type == KING);
+    REQUIRE(piece_at(gs, col_of('h'), row_of('8'))->type == ROOK);
+
+    execute_move(gs, col_of('e'), row_of('8'), col_of('g'), row_of('8'));
+
+    const BoardPiece* k = piece_at(gs, col_of('g'), row_of('8'));
+    const BoardPiece* r = piece_at(gs, col_of('f'), row_of('8'));
+    REQUIRE(k != nullptr);
+    REQUIRE(r != nullptr);
+    CHECK(k->type == KING);
+    CHECK_FALSE(k->is_white);
+    CHECK(r->type == ROOK);
+    CHECK(piece_at(gs, col_of('e'), row_of('8')) == nullptr);
+    CHECK(piece_at(gs, col_of('h'), row_of('8')) == nullptr);
+    CHECK(gs.castling.black_king_moved);
+    CHECK_FALSE(gs.castling.white_king_moved);
+}
+
+TEST_CASE("execute_move black queenside castling moves king and rook") {
+    GameState gs = state_from_fen("r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1");
+    execute_move(gs, col_of('e'), row_of('8'), col_of('c'), row_of('8'));
+
+    const BoardPiece* k = piece_at(gs, col_of('c'), row_of('8'));
+    const BoardPiece* r = piece_at(gs, col_of('d'), row_of('8'));
+    REQUIRE(k != nullptr);
+    REQUIRE(r != nullptr);
+    CHECK(k->type == KING);
+    CHECK(r->type == ROOK);
+    CHECK(piece_at(gs, col_of('a'), row_of('8')) == nullptr);
+}
+
+// ===========================================================================
+// Castling-through-check: cannot castle when any square the king crosses
+// is attacked, even though the destination itself may be safe.
+// ===========================================================================
+TEST_CASE("kingside castling is illegal when f1 is attacked by a black rook") {
+    // Black rook on f8 attacks down the f-file. White king on e1, white
+    // kingside rook on h1; e1 itself isn't attacked, but f1 (which the
+    // king would cross) is.
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+    // Place the black rook on f8 by editing the FEN: rebuild a sharper
+    // position with the rook actually on f8 (not just rank 8 generally).
+    gs = state_from_fen("5r2/4k3/8/8/8/8/8/4K2R w K - 0 1");
+    auto moves = generate_legal_moves(gs, col_of('e'), row_of('1'));
+    // King may not castle to g1 — that destination is barred.
+    CHECK_FALSE(contains_move(moves, col_of('g'), row_of('1')));
+}
+
+TEST_CASE("kingside castling is legal when path is clear and unattacked") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+    auto moves = generate_legal_moves(gs, col_of('e'), row_of('1'));
+    CHECK(contains_move(moves, col_of('g'), row_of('1')));
+}
+
+// ===========================================================================
+// Castling rights revocation
+// ===========================================================================
+TEST_CASE("moving the white kingside rook revokes white kingside castling") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+    CHECK_FALSE(gs.castling.white_rook_h_moved);
+    // Move rook h1 → h2.
+    execute_move(gs, col_of('h'), row_of('1'), col_of('h'), row_of('2'));
+    CHECK(gs.castling.white_rook_h_moved);
+    CHECK_FALSE(gs.castling.white_king_moved);
+}
+
+TEST_CASE("moving the white king revokes both white castling sides") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1");
+    execute_move(gs, col_of('e'), row_of('1'), col_of('e'), row_of('2'));
+    CHECK(gs.castling.white_king_moved);
+}
+
+TEST_CASE("capturing a rook on its home square revokes that castling right") {
+    // Black bishop on a8 sweeps down to capture white rook on h1 — wait,
+    // a8 → h1 is the long diagonal; that lands on h1 in one move. Use a
+    // simpler capture: black rook on h8 takes white rook on h1 along the
+    // h-file.
+    GameState gs = state_from_fen("4k2r/8/8/8/8/8/8/4K2R b KQkq - 0 1");
+    CHECK_FALSE(gs.castling.white_rook_h_moved);
+    execute_move(gs, col_of('h'), row_of('8'), col_of('h'), row_of('1'));
+    // The capture happens on h1 (white kingside rook square). White
+    // kingside castling is now lost.
+    CHECK(gs.castling.white_rook_h_moved);
+}
+
+// ===========================================================================
+// Pawn promotion variations
+// ===========================================================================
+TEST_CASE("execute_move black pawn auto-queens on rank 1") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/p7/4K3 b - - 0 1");
+    execute_move(gs, col_of('a'), row_of('2'), col_of('a'), row_of('1'));
+    const BoardPiece* promoted = piece_at(gs, col_of('a'), row_of('1'));
+    REQUIRE(promoted != nullptr);
+    CHECK(promoted->type == QUEEN);
+    CHECK_FALSE(promoted->is_white);
+}
+
+TEST_CASE("promotion via capture also auto-queens") {
+    // White pawn on b7 captures black knight on a8, becomes queen on a8.
+    GameState gs = state_from_fen("n3k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
+    int alive_before = 0;
+    for (const auto& p : gs.pieces) if (p.alive) alive_before++;
+
+    execute_move(gs, col_of('b'), row_of('7'), col_of('a'), row_of('8'));
+
+    const BoardPiece* promoted = piece_at(gs, col_of('a'), row_of('8'));
+    REQUIRE(promoted != nullptr);
+    CHECK(promoted->type == QUEEN);
+    CHECK(promoted->is_white);
+
+    int alive_after = 0;
+    for (const auto& p : gs.pieces) if (p.alive) alive_after++;
+    CHECK(alive_after == alive_before - 1);  // captured knight is dead
+}
+
+// ===========================================================================
+// uci_to_algebraic: disambiguation + check / mate suffixes
+// ===========================================================================
+TEST_CASE("uci_to_algebraic: knight disambiguation by file") {
+    // Two white knights on b1 and f1 both reach d2 — disambiguate by
+    // file: "Nbd2". (King parked on h1 to keep the position legal.)
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/1N3N1K w - - 0 1");
+    const BoardSnapshot before = gs.snapshots.back();
+    std::string alg = uci_to_algebraic(before, "b1d2");
+    CHECK(alg[0] == 'N');
+    CHECK(alg.find('b') != std::string::npos);  // file disambiguator
+    CHECK(alg.find("d2") != std::string::npos);
+}
+
+TEST_CASE("uci_to_algebraic: rook disambiguation by rank") {
+    // Two white rooks on a1 and a5, both can reach a3. Disambiguate by
+    // rank: "R1a3" vs "R5a3" (file is the same so rank is needed).
+    GameState gs = state_from_fen("4k3/8/8/R7/8/8/8/R3K3 w - - 0 1");
+    const BoardSnapshot before = gs.snapshots.back();
+    std::string alg = uci_to_algebraic(before, "a1a3");
+    CHECK(alg[0] == 'R');
+    // The rank '1' must appear somewhere as a disambiguator.
+    CHECK(alg.find('1') != std::string::npos);
+    CHECK(alg.find("a3") != std::string::npos);
+}
+
+TEST_CASE("uci_to_algebraic: check suffix '+' is appended") {
+    // White rook a1 → e1 puts black king on e8 in check along the e-file.
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+    // Move white king out of the way first so the rook check is clean.
+    gs = state_from_fen("4k3/8/8/8/8/8/8/R5K1 w - - 0 1");
+    const BoardSnapshot before = gs.snapshots.back();
+    std::string alg = uci_to_algebraic(before, "a1e1");
+    CHECK(alg.back() == '+');
+}
+
+TEST_CASE("uci_to_algebraic: mate suffix '#' is appended on checkmate") {
+    // Back-rank mate setup: black king h8 boxed by f7,g7,h7; white rook
+    // delivers from a1 to a8.
+    GameState gs = state_from_fen("7k/5ppp/8/8/8/8/8/R3K3 w - - 0 1");
+    const BoardSnapshot before = gs.snapshots.back();
+    std::string alg = uci_to_algebraic(before, "a1a8");
+    CHECK(alg.back() == '#');
+}
+
+// ===========================================================================
+// move_leaves_in_check: discovered check on own king is illegal
+// ===========================================================================
+TEST_CASE("piece pinned against own king cannot move off the pinning ray") {
+    // White king e1, white knight e2, black rook e8. The knight is
+    // absolutely pinned; any knight move exposes the king.
+    GameState gs = state_from_fen("4r3/8/8/8/8/8/4N3/4K3 w - - 0 1");
+    auto moves = generate_legal_moves(gs, col_of('e'), row_of('2'));
+    // The pinned knight has no legal moves — every knight jump leaves
+    // the e-file undefended.
+    CHECK(moves.empty());
+}
+
+// ===========================================================================
+// King-capture victory branch (execute_move fast-path when destination is
+// an enemy king — used for the engine's no-legality-check shortcut).
+// ===========================================================================
+TEST_CASE("execute_move that captures the enemy king ends the game") {
+    // White rook on e1, black king on e8. Direct king capture (skipping
+    // legal-move filtering) should set game_over and game_result.
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/4R3 w - - 0 1");
+    execute_move(gs, col_of('e'), row_of('1'), col_of('e'), row_of('8'));
+    CHECK(gs.game_over);
+    CHECK(gs.game_result.find("White wins") != std::string::npos);
+    // After the move the rook occupies e8; the king is marked dead in
+    // the pieces vector but no longer surfaces via piece_at (which
+    // filters on alive=true).
+    const BoardPiece* p_at_dest = piece_at(gs, col_of('e'), row_of('8'));
+    REQUIRE(p_at_dest != nullptr);
+    CHECK(p_at_dest->type == ROOK);
+
+    const BoardPiece* dead_king = nullptr;
+    for (const auto& p : gs.pieces) {
+        if (p.type == KING && !p.is_white) { dead_king = &p; break; }
+    }
+    REQUIRE(dead_king != nullptr);
+    CHECK_FALSE(dead_king->alive);
+}
