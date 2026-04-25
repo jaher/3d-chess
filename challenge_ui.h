@@ -11,11 +11,16 @@ int challenge_select_hit_test(double mx, double my, int width, int height,
                               const std::vector<std::string>& challenge_names);
 
 // Challenge in-game overlay (drawn on top of the regular game render
-// while a challenge puzzle is in progress).
+// while a challenge puzzle is in progress). For tactic puzzles
+// (find_forks / find_pins) pass tactic_required > 0 — the second
+// info line then reads "Forks/Pins found: X/Y" instead of the mate
+// "to mate in N   Moves: X/Y" template.
 void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      int puzzle_index, int total_puzzles,
                                      int moves_made, int max_moves,
                                      bool starts_white,
+                                     const std::string& tactic_label,
+                                     int tactic_found, int tactic_required,
                                      int width, int height);
 
 // Next-puzzle button (drawn when a challenge puzzle is solved).

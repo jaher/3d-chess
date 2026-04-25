@@ -177,6 +177,8 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      int puzzle_index, int total_puzzles,
                                      int moves_made, int max_moves,
                                      bool starts_white,
+                                     const std::string& tactic_label,
+                                     int tactic_found, int tactic_required,
                                      int /*width*/, int /*height*/) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -214,10 +216,20 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
     int line1_end = static_cast<int>(text_verts.size() / 5);
 
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "Puzzle %d/%d   %s to mate in %d   Moves: %d/%d",
-                  puzzle_index + 1, total_puzzles,
-                  starts_white ? "White" : "Black",
-                  max_moves, moves_made, max_moves);
+    if (tactic_required > 0) {
+        std::snprintf(buf, sizeof(buf),
+                      "Puzzle %d/%d   %s   %s found: %d/%d",
+                      puzzle_index + 1, total_puzzles,
+                      starts_white ? "White to move" : "Black to move",
+                      tactic_label.c_str(),
+                      tactic_found, tactic_required);
+    } else {
+        std::snprintf(buf, sizeof(buf),
+                      "Puzzle %d/%d   %s to mate in %d   Moves: %d/%d",
+                      puzzle_index + 1, total_puzzles,
+                      starts_white ? "White" : "Black",
+                      max_moves, moves_made, max_moves);
+    }
     std::string line2 = buf;
     float w2 = line2.size() * cw * 0.7f;
     add_screen_string(text_verts, -w2*0.5f, 0.895f, cw, ch, line2);

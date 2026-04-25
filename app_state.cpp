@@ -1699,6 +1699,14 @@ static void render_board(AppState& a, int width, int height) {
 }
 
 static void render_challenge_overlay_and_buttons(AppState& a, int width, int height) {
+    const std::string& ct = a.current_challenge.type;
+    bool is_tactic = is_tactic_type(ct);
+    std::string tactic_label = is_tactic
+        ? (ct == "find_forks" ? "Forks" : "Pins") : "";
+    int tactic_required = is_tactic
+        ? static_cast<int>(a.current_challenge.required_moves.size()) : 0;
+    int tactic_found = is_tactic
+        ? static_cast<int>(a.current_challenge.found_moves.size()) : 0;
     renderer_draw_challenge_overlay(
         a.current_challenge.name,
         a.current_challenge.current_index,
@@ -1706,6 +1714,7 @@ static void render_challenge_overlay_and_buttons(AppState& a, int width, int hei
         a.challenge_moves_made,
         a.current_challenge.max_moves,
         a.current_challenge.starts_white,
+        tactic_label, tactic_found, tactic_required,
         width, height);
 
     if (a.challenge_solved && !a.transition_active &&
@@ -1743,14 +1752,25 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
                   nullptr, false, false, 0,
                   false, 0, false,
                   a.cartoon_outline);
-    renderer_draw_challenge_overlay(
-        a.current_challenge.name,
-        a.current_challenge.current_index,
-        static_cast<int>(a.current_challenge.fens.size()),
-        a.challenge_moves_made,
-        a.current_challenge.max_moves,
-        a.current_challenge.starts_white,
-        width, height);
+    {
+        const std::string& ct = a.current_challenge.type;
+        bool is_tactic = is_tactic_type(ct);
+        std::string tactic_label = is_tactic
+            ? (ct == "find_forks" ? "Forks" : "Pins") : "";
+        int tactic_required = is_tactic
+            ? static_cast<int>(a.current_challenge.required_moves.size()) : 0;
+        int tactic_found = is_tactic
+            ? static_cast<int>(a.current_challenge.found_moves.size()) : 0;
+        renderer_draw_challenge_overlay(
+            a.current_challenge.name,
+            a.current_challenge.current_index,
+            static_cast<int>(a.current_challenge.fens.size()),
+            a.challenge_moves_made,
+            a.current_challenge.max_moves,
+            a.current_challenge.starts_white,
+            tactic_label, tactic_found, tactic_required,
+            width, height);
+    }
 }
 
 static void render_challenge_transition_overlay(AppState& a, int width, int height,
