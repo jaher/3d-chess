@@ -22,6 +22,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Analysis mode**: step through the game move-by-move with left/right arrows (keyboard `A` to enter). "Continue Playing" and "Back to Menu" buttons in the overlay for mouse users
 - **Withdraw flag**: a small wavy white cloth flag on a brown stick in the bottom-right corner. Click it to open a confirmation dialog and surrender to the main menu. Uses a 14×9 verlet cloth simulation with normal-based half-Lambert lighting (inspired by [shadertoy MldXWX](https://www.shadertoy.com/view/MldXWX))
 - **Mate-in-N challenge puzzles** loaded from `challenges/*.md`, with a glass-shatter transition between puzzles and a summary page at the end. Wrong-line attempts trigger a "Mistake!" sound + board shake + Try Again button that resets the puzzle
+- **Find-all-forks / Pin-to-win** tactic puzzles enumerate every legal motif move; correct candidates accumulate, wrong (or repeated) attempts fire the same shake + Try-Again flow but **keep** the banked correct moves so the user only re-plays the latest line
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
 - **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory

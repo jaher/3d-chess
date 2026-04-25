@@ -467,12 +467,16 @@ static void handle_board_click(AppState& a, double mx, double my,
                             a.challenge_solutions[pi].push_back(alg);
                         }
                     }
-                    // Tactic-puzzle success: find_forks / find_pins
-                    // require the user to enumerate EVERY legal move
-                    // that creates the motif. Each attempt is checked
-                    // against the precomputed required-move list,
-                    // then the board is reset so they can play the
-                    // next candidate from the original position.
+                    // Tactic puzzles (find_forks / find_pins): user
+                    // must enumerate every legal move that creates the
+                    // motif. Each attempt is checked against the
+                    // precomputed required-move list. A new correct
+                    // candidate auto-resets the board so the next one
+                    // can be played; a wrong or duplicate move kicks
+                    // off the same mistake flow as mate_in_N (shake +
+                    // sfx + Try-Again button) without throwing away
+                    // earlier correct candidates — found_moves is
+                    // preserved across Try-Again clicks.
                     if (was_starter) {
                         const std::string& ct = a.current_challenge.type;
                         bool is_tactic = (ct == "find_forks" ||
@@ -489,34 +493,54 @@ static void handle_board_click(AppState& a, double mx, double my,
                                 req.begin(), req.end(), uci) != req.end();
                             bool already_found = std::find(
                                 found.begin(), found.end(), uci) != found.end();
-                            if (is_required && !already_found) {
-                                found.push_back(uci);
-                            }
-
-                            // Reset the board to the puzzle's starting
-                            // FEN so the user can play the next move.
-                            int pi = a.current_challenge.current_index;
-                            ParsedFEN p = parse_fen(
-                                a.current_challenge.fens[pi]);
-                            if (p.valid) apply_fen_to_state(a.game, p);
-                            a.challenge_moves_made = 0;
-
-                            if (!req.empty() && found.size() >= req.size()) {
-                                a.challenge_solved = true;
-                            }
+                            bool is_new_correct = is_required && !already_found;
 
                             char buf[160];
                             const char* noun =
                                 (ct == "find_forks") ? "forks" : "pins";
-                            std::snprintf(
-                                buf, sizeof(buf),
-                                "%s — found %d / %d %s",
-                                is_required ? "Good!"
-                                             : "Not a match — try again",
-                                static_cast<int>(found.size()),
-                                static_cast<int>(req.size()),
-                                noun
-                            );
+
+                            if (is_new_correct) {
+                                found.push_back(uci);
+                                // Reset to the starting FEN for the
+                                // next candidate.
+                                int pi = a.current_challenge.current_index;
+                                ParsedFEN p = parse_fen(
+                                    a.current_challenge.fens[pi]);
+                                if (p.valid) apply_fen_to_state(a.game, p);
+                                a.challenge_moves_made = 0;
+                                if (!req.empty() &&
+                                    found.size() >= req.size()) {
+                                    a.challenge_solved = true;
+                                }
+                                std::snprintf(
+                                    buf, sizeof(buf),
+                                    "Good! — found %d / %d %s",
+                                    static_cast<int>(found.size()),
+                                    static_cast<int>(req.size()),
+                                    noun);
+                            } else {
+                                // Wrong move OR a duplicate of an
+                                // already-found candidate. Both count
+                                // as a mistake here — replaying a
+                                // known fork doesn't advance the
+                                // puzzle. Don't auto-reset the board;
+                                // let the shake play out and surface
+                                // Try-Again. Preserved found_moves
+                                // ride through app_reset_challenge_
+                                // puzzle's save/restore.
+                                if (!a.challenge_mistake) {
+                                    a.challenge_mistake = true;
+                                    a.challenge_mistake_start_us = now_us(a);
+                                    a.challenge_try_again_hover = false;
+                                    audio_play(SoundEffect::Mistake);
+                                }
+                                std::snprintf(
+                                    buf, sizeof(buf),
+                                    "Not a match — found %d / %d %s",
+                                    static_cast<int>(found.size()),
+                                    static_cast<int>(req.size()),
+                                    noun);
+                            }
                             set_status(a, buf);
                             queue_redraw(a);
                             return;
@@ -709,6 +733,12 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     ParsedFEN parsed = parse_fen(a.current_challenge.fens[puzzle_index]);
     if (parsed.valid) apply_fen_to_state(a.game, parsed);
 
+    // Fresh puzzle: drop tactic progress from any prior puzzle in
+    // this Challenge. Try-Again preserves found_moves separately
+    // by saving / restoring around app_load_challenge_puzzle.
+    a.current_challenge.found_moves.clear();
+    a.current_challenge.required_moves.clear();
+
     // For find_forks / find_pins puzzles, pre-compute every legal
     // move that produces the target motif so we can track progress
     // as the user plays them one at a time.
@@ -732,7 +762,19 @@ void app_reset_challenge_puzzle(AppState& a) {
     if (idx >= 0 &&
         idx < static_cast<int>(a.challenge_solutions.size()))
         a.challenge_solutions[idx].clear();
+    // Try-Again rewinds the board but should keep tactic progress —
+    // earlier correct fork / pin candidates stay banked. fresh-puzzle
+    // navigation goes through app_load_challenge_puzzle directly,
+    // which clears found_moves; here we save and restore around the
+    // reload.
+    auto saved_found = a.current_challenge.found_moves;
     app_load_challenge_puzzle(a, idx);
+    a.current_challenge.found_moves = std::move(saved_found);
+    if (!a.current_challenge.required_moves.empty() &&
+        a.current_challenge.found_moves.size() >=
+            a.current_challenge.required_moves.size()) {
+        a.challenge_solved = true;
+    }
 }
 
 void app_enter_challenge(AppState& a, int index) {
