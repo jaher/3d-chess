@@ -784,6 +784,13 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
         a.current_challenge.required_moves = find_tactic_moves(
             a.game, a.current_challenge.starts_white, ct
         );
+        // Degenerate puzzle: no legal motif moves at all (bad data
+        // or a position where no fork / pin is possible). Mark it
+        // solved so the user can advance to the next exercise
+        // instead of being stuck with the Next button hidden.
+        if (a.current_challenge.required_moves.empty()) {
+            a.challenge_solved = true;
+        }
     }
     char buf[160];
     std::snprintf(buf, sizeof(buf), "Challenge: %s [%d/%d]",

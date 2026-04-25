@@ -216,7 +216,7 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
     int line1_end = static_cast<int>(text_verts.size() / 5);
 
     char buf[128];
-    if (tactic_required > 0) {
+    if (!tactic_label.empty()) {
         std::snprintf(buf, sizeof(buf),
                       "Puzzle %d/%d   %s   %s found: %d/%d",
                       puzzle_index + 1, total_puzzles,
