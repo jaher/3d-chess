@@ -596,6 +596,23 @@ static void handle_board_click(AppState& a, double mx, double my,
         gs.selected_col = col;
         gs.selected_row = row;
         gs.valid_moves = generate_legal_moves(gs, col, row);
+        // Tactic puzzles: hide already-banked candidates from the
+        // move dots so the user can't waste clicks on a fork / pin
+        // they've already found. The same UCI in found_moves would
+        // otherwise trigger the duplicate-as-mistake path.
+        if (is_challenge && is_tactic_type(a.current_challenge.type) &&
+            !a.current_challenge.found_moves.empty()) {
+            const auto& found = a.current_challenge.found_moves;
+            gs.valid_moves.erase(
+                std::remove_if(
+                    gs.valid_moves.begin(), gs.valid_moves.end(),
+                    [&](const std::pair<int,int>& m) {
+                        std::string uci = move_to_uci(col, row, m.first, m.second);
+                        return std::find(found.begin(), found.end(), uci) !=
+                               found.end();
+                    }),
+                gs.valid_moves.end());
+        }
         gs.anim_start_time = now_us(a);
     } else {
         gs.selected_col = gs.selected_row = -1;
