@@ -456,16 +456,28 @@ static void handle_board_click(AppState& a, double mx, double my,
 
                 if (is_challenge) {
                     if (was_starter) a.challenge_moves_made++;
-                    if (!gs.move_history.empty() && gs.snapshots.size() >= 2) {
+                    // Append the just-played move's algebraic notation
+                    // to challenge_solutions[current_index] for the
+                    // end-of-challenge summary table. No-op if anything
+                    // unexpected (empty history, missing snapshot,
+                    // out-of-range index).
+                    auto record_solution = [&]() {
+                        if (gs.move_history.empty() ||
+                            gs.snapshots.size() < 2) return;
                         int pi = a.current_challenge.current_index;
-                        if (pi >= 0 &&
-                            pi < static_cast<int>(a.challenge_solutions.size())) {
-                            const auto& before =
-                                gs.snapshots[gs.snapshots.size() - 2];
-                            std::string alg = uci_to_algebraic(
-                                before, gs.move_history.back());
-                            a.challenge_solutions[pi].push_back(alg);
-                        }
+                        if (pi < 0 ||
+                            pi >= static_cast<int>(a.challenge_solutions.size()))
+                            return;
+                        const auto& before =
+                            gs.snapshots[gs.snapshots.size() - 2];
+                        a.challenge_solutions[pi].push_back(
+                            uci_to_algebraic(before, gs.move_history.back()));
+                    };
+                    // mate_in_N records every attempt; tactics record
+                    // only verified-correct candidates inside the
+                    // is_new_correct branch below.
+                    if (!is_tactic_type(a.current_challenge.type)) {
+                        record_solution();
                     }
                     // Tactic puzzles (find_forks / find_pins): user
                     // must enumerate every legal move that creates the
@@ -479,9 +491,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                     // preserved across Try-Again clicks.
                     if (was_starter) {
                         const std::string& ct = a.current_challenge.type;
-                        bool is_tactic = (ct == "find_forks" ||
-                                           ct == "find_pins");
-                        if (is_tactic) {
+                        if (is_tactic_type(ct)) {
                             std::string uci = gs.move_history.empty()
                                 ? std::string()
                                 : gs.move_history.back();
@@ -501,9 +511,10 @@ static void handle_board_click(AppState& a, double mx, double my,
 
                             if (is_new_correct) {
                                 found.push_back(uci);
+                                record_solution();
+                                int pi = a.current_challenge.current_index;
                                 // Reset to the starting FEN for the
                                 // next candidate.
-                                int pi = a.current_challenge.current_index;
                                 ParsedFEN p = parse_fen(
                                     a.current_challenge.fens[pi]);
                                 if (p.valid) apply_fen_to_state(a.game, p);
@@ -743,7 +754,7 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     // move that produces the target motif so we can track progress
     // as the user plays them one at a time.
     const std::string& ct = a.current_challenge.type;
-    if (ct == "find_forks" || ct == "find_pins") {
+    if (is_tactic_type(ct)) {
         a.current_challenge.required_moves = find_tactic_moves(
             a.game, a.current_challenge.starts_white, ct
         );
@@ -759,15 +770,19 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
 
 void app_reset_challenge_puzzle(AppState& a) {
     int idx = a.current_challenge.current_index;
-    if (idx >= 0 &&
-        idx < static_cast<int>(a.challenge_solutions.size()))
+    bool is_tactic = is_tactic_type(a.current_challenge.type);
+    // Try-Again rewinds the board but keeps tactic progress: earlier
+    // correct fork / pin candidates stay banked in challenge_solutions
+    // (for the summary) and in found_moves (for in-game progress).
+    // mate_in_N wipes its solutions because a failed line is replayed
+    // from scratch, not refined. found_moves still needs save/restore
+    // because app_load_challenge_puzzle clears it; challenge_solutions
+    // is left untouched by load so we just skip the clear.
+    if (!is_tactic && idx >= 0 &&
+        idx < static_cast<int>(a.challenge_solutions.size())) {
         a.challenge_solutions[idx].clear();
-    // Try-Again rewinds the board but should keep tactic progress —
-    // earlier correct fork / pin candidates stay banked. fresh-puzzle
-    // navigation goes through app_load_challenge_puzzle directly,
-    // which clears found_moves; here we save and restore around the
-    // reload.
-    auto saved_found = a.current_challenge.found_moves;
+    }
+    auto saved_found = std::move(a.current_challenge.found_moves);
     app_load_challenge_puzzle(a, idx);
     a.current_challenge.found_moves = std::move(saved_found);
     if (!a.current_challenge.required_moves.empty() &&

@@ -47,6 +47,11 @@ Challenge load_challenge(const std::string& path);
 // ``fen_starts_white`` arrays. No-op for out-of-range indices.
 void challenge_apply_current(Challenge& ch, int index);
 
+// True for the find-all-X tactic puzzle types ("find_forks",
+// "find_pins") — the ones where the user must enumerate every legal
+// motif move rather than play a single forced line.
+bool is_tactic_type(const std::string& type);
+
 // Tactic-puzzle success checks. Both take the destination square of
 // the move that was just executed (the moved piece lives there now).
 //

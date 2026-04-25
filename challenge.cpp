@@ -49,6 +49,10 @@ static int max_moves_for_type(const std::string& t) {
     return 0;
 }
 
+bool is_tactic_type(const std::string& type) {
+    return type == "find_forks" || type == "find_pins";
+}
+
 // Match a comment like "Page 1", "Page  3" — case-insensitive.
 static bool is_page_marker(const std::string& comment) {
     if (comment.size() < 5) return false;
