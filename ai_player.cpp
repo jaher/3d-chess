@@ -30,7 +30,8 @@ char piece_to_fen(int type, bool is_white) {
 std::string board_to_fen(const BoardSquare board[8][8], bool white_turn,
                          bool wk_moved, bool bk_moved,
                          bool wra_moved, bool wrh_moved,
-                         bool bra_moved, bool brh_moved) {
+                         bool bra_moved, bool brh_moved,
+                         int ep_target_col, int ep_target_row) {
     std::string fen;
 
     // Ranks 8 to 1 (row 7 to 0), files a-h (internal col 7 to 0)
@@ -61,7 +62,16 @@ std::string board_to_fen(const BoardSquare board[8][8], bool white_turn,
     if (!bk_moved && !brh_moved) castling += 'k';
     if (!bk_moved && !bra_moved) castling += 'q';
     if (castling.empty()) castling = "-";
-    fen += castling + " - 0 1";
+
+    // En passant target ("e3" / "-"). Internal col 7 = a-file.
+    std::string ep = "-";
+    if (ep_target_col >= 0 && ep_target_col < 8 &&
+        ep_target_row >= 0 && ep_target_row < 8) {
+        char file_ch = static_cast<char>('a' + (7 - ep_target_col));
+        char rank_ch = static_cast<char>('1' + ep_target_row);
+        ep = std::string(1, file_ch) + std::string(1, rank_ch);
+    }
+    fen += castling + " " + ep + " 0 1";
 
     return fen;
 }

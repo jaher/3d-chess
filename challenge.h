@@ -33,6 +33,7 @@ struct ParsedFEN {
     std::vector<BoardPiece> pieces;
     bool white_turn = true;
     CastlingRights castling;
+    int ep_target_col = -1, ep_target_row = -1;
     bool valid = false;
 };
 

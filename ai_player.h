@@ -17,7 +17,8 @@ char piece_to_fen(int type, bool is_white);
 std::string board_to_fen(const BoardSquare board[8][8], bool white_turn,
                          bool wk_moved = false, bool bk_moved = false,
                          bool wra_moved = false, bool wrh_moved = false,
-                         bool bra_moved = false, bool brh_moved = false);
+                         bool bra_moved = false, bool brh_moved = false,
+                         int ep_target_col = -1, int ep_target_row = -1);
 
 // Internal column ↔ standard file index (reversed for camera orientation).
 int internal_col_to_file(int col);

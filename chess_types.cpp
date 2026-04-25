@@ -34,6 +34,8 @@ void GameState::take_snapshot(const std::string& move_uci) {
     snap.white_turn = white_turn;
     snap.castling = castling;
     snap.last_move = move_uci;
+    snap.ep_target_col = ep_target_col;
+    snap.ep_target_row = ep_target_row;
     snapshots.push_back(snap);
 }
 
@@ -42,5 +44,7 @@ void GameState::restore_snapshot(int index) {
     pieces = snap.pieces;
     white_turn = snap.white_turn;
     castling = snap.castling;
+    ep_target_col = snap.ep_target_col;
+    ep_target_row = snap.ep_target_row;
     rebuild_grid();
 }

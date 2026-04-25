@@ -145,6 +145,30 @@ TEST_CASE("parse_fen: position with no pieces is invalid") {
     CHECK_FALSE(p.valid);
 }
 
+TEST_CASE("parse_fen: en passant target is read into ep_target_col/row") {
+    // White just played e2-e4; black's ep target square is e3.
+    ParsedFEN p = parse_fen(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+    REQUIRE(p.valid);
+    // Internal col 7 = a-file → e-file = 7 - 4 = 3. Rank '3' → row 2.
+    CHECK(p.ep_target_col == 3);
+    CHECK(p.ep_target_row == 2);
+}
+
+TEST_CASE("parse_fen: '-' ep field leaves target unset") {
+    ParsedFEN p = parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    REQUIRE(p.valid);
+    CHECK(p.ep_target_col == -1);
+    CHECK(p.ep_target_row == -1);
+}
+
+TEST_CASE("parse_fen: malformed ep field ('z9') leaves target unset") {
+    ParsedFEN p = parse_fen("4k3/8/8/8/8/8/8/4K3 w - z9 0 1");
+    REQUIRE(p.valid);
+    CHECK(p.ep_target_col == -1);
+    CHECK(p.ep_target_row == -1);
+}
+
 TEST_CASE("parse_fen: piece count for a known puzzle position") {
     // Philidor's mate pattern starting position — just a piece count
     // sanity check, not the exact mate puzzle.

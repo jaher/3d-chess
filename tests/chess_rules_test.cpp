@@ -563,6 +563,144 @@ TEST_CASE("piece pinned against own king cannot move off the pinning ray") {
 // King-capture victory branch (execute_move fast-path when destination is
 // an enemy king — used for the engine's no-legality-check shortcut).
 // ===========================================================================
+// ===========================================================================
+// En passant
+// ===========================================================================
+TEST_CASE("execute_move: white pawn double-push sets ep target on the skipped square") {
+    GameState gs = starting_state();
+    CHECK(gs.ep_target_col == -1);
+    CHECK(gs.ep_target_row == -1);
+
+    execute_move(gs, col_of('e'), row_of('2'), col_of('e'), row_of('4'));
+    // Skipped square is e3 (rank 3, internal row 2).
+    CHECK(gs.ep_target_col == col_of('e'));
+    CHECK(gs.ep_target_row == row_of('3'));
+}
+
+TEST_CASE("execute_move: black pawn double-push sets ep target on the skipped square") {
+    GameState gs = state_from_fen(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+    execute_move(gs, col_of('e'), row_of('7'), col_of('e'), row_of('5'));
+    CHECK(gs.ep_target_col == col_of('e'));
+    CHECK(gs.ep_target_row == row_of('6'));
+}
+
+TEST_CASE("execute_move: single-step pawn move clears any prior ep target") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/4P3/4K3 w - e6 0 1");
+    REQUIRE(gs.ep_target_col == col_of('e'));
+    REQUIRE(gs.ep_target_row == row_of('6'));
+
+    execute_move(gs, col_of('e'), row_of('2'), col_of('e'), row_of('3'));
+    CHECK(gs.ep_target_col == -1);
+    CHECK(gs.ep_target_row == -1);
+}
+
+TEST_CASE("execute_move: non-pawn move clears any prior ep target") {
+    GameState gs = state_from_fen("4k3/8/8/8/8/8/8/4K2R w K e6 0 1");
+    REQUIRE(gs.ep_target_col == col_of('e'));
+    REQUIRE(gs.ep_target_row == row_of('6'));
+
+    execute_move(gs, col_of('h'), row_of('1'), col_of('h'), row_of('2'));
+    CHECK(gs.ep_target_col == -1);
+}
+
+TEST_CASE("generate_legal_moves: en passant capture is offered when ep target is set") {
+    // White pawn on e5, black ep target at d6 (= black just played d7-d5).
+    // The white pawn may capture en passant onto d6.
+    GameState gs = state_from_fen("4k3/8/3pP3/8/8/8/8/4K3 w - d6 0 1");
+    // Re-stage so the bypassed black pawn is actually on d5, not d7.
+    gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+
+    auto moves = generate_legal_moves(gs, col_of('e'), row_of('5'));
+    bool found_ep = false;
+    for (const auto& m : moves)
+        if (m.first == col_of('d') && m.second == row_of('6')) found_ep = true;
+    CHECK(found_ep);
+}
+
+TEST_CASE("generate_legal_moves: ep capture NOT offered when ep target is unset") {
+    // Same geometry as the previous test, but FEN has no ep target —
+    // so the diagonal-to-empty-square move must NOT be generated.
+    GameState gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1");
+    auto moves = generate_legal_moves(gs, col_of('e'), row_of('5'));
+    bool found_d6 = false;
+    for (const auto& m : moves)
+        if (m.first == col_of('d') && m.second == row_of('6')) found_d6 = true;
+    CHECK_FALSE(found_d6);
+}
+
+TEST_CASE("execute_move: en passant capture removes the bypassed pawn") {
+    GameState gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    int alive_before = 0;
+    for (const auto& p : gs.pieces) if (p.alive) alive_before++;
+
+    execute_move(gs, col_of('e'), row_of('5'), col_of('d'), row_of('6'));
+
+    // White pawn now on d6.
+    const BoardPiece* mover = piece_at(gs, col_of('d'), row_of('6'));
+    REQUIRE(mover != nullptr);
+    CHECK(mover->type == PAWN);
+    CHECK(mover->is_white);
+
+    // Bypassed black pawn that was on d5 is now dead.
+    CHECK(piece_at(gs, col_of('d'), row_of('5')) == nullptr);
+
+    int alive_after = 0;
+    for (const auto& p : gs.pieces) if (p.alive) alive_after++;
+    CHECK(alive_after == alive_before - 1);
+
+    // ep target itself is cleared after the capture.
+    CHECK(gs.ep_target_col == -1);
+}
+
+TEST_CASE("execute_move: black ep capture removes the bypassed white pawn") {
+    GameState gs = state_from_fen("4k3/8/8/8/3Pp3/8/8/4K3 b - d3 0 1");
+    execute_move(gs, col_of('e'), row_of('4'), col_of('d'), row_of('3'));
+    const BoardPiece* mover = piece_at(gs, col_of('d'), row_of('3'));
+    REQUIRE(mover != nullptr);
+    CHECK(mover->type == PAWN);
+    CHECK_FALSE(mover->is_white);
+    CHECK(piece_at(gs, col_of('d'), row_of('4')) == nullptr);
+}
+
+TEST_CASE("en passant pin: capture is illegal when it exposes own king") {
+    // White king a5, white pawn b5, black pawn c5 (just double-pushed
+    // from c7), black rook h5. ep target = c6. If the white pawn
+    // captures ep, BOTH b5 and c5 disappear from rank 5 — clearing
+    // the line from a5 to h5 and putting the white king in check.
+    // generate_legal_moves must filter that capture out.
+    GameState gs = state_from_fen("4k3/8/8/Kpp4r/8/8/8/8 w - c6 0 1");
+    auto moves = generate_legal_moves(gs, col_of('b'), row_of('5'));
+    bool found_c6 = false;
+    for (const auto& m : moves)
+        if (m.first == col_of('c') && m.second == row_of('6')) found_c6 = true;
+    CHECK_FALSE(found_c6);
+}
+
+TEST_CASE("uci_to_algebraic: en passant capture renders with 'x'") {
+    GameState gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    const BoardSnapshot before = gs.snapshots.back();
+    std::string alg = uci_to_algebraic(before, "e5d6");
+    CHECK(alg.find('x') != std::string::npos);
+    CHECK(alg.find("d6") != std::string::npos);
+    // Standard pawn-capture notation starts with the source file.
+    CHECK(alg[0] == 'e');
+}
+
+TEST_CASE("BoardSnapshot retains ep target across take/restore") {
+    GameState gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+    REQUIRE(!gs.snapshots.empty());
+    CHECK(gs.snapshots.back().ep_target_col == col_of('d'));
+    CHECK(gs.snapshots.back().ep_target_row == row_of('6'));
+
+    // Mutate, then restore — ep target should follow the snapshot.
+    gs.ep_target_col = -1;
+    gs.ep_target_row = -1;
+    gs.restore_snapshot(0);
+    CHECK(gs.ep_target_col == col_of('d'));
+    CHECK(gs.ep_target_row == row_of('6'));
+}
+
 TEST_CASE("execute_move that captures the enemy king ends the game") {
     // White rook on e1, black king on e8. Direct king capture (skipping
     // legal-move filtering) should set game_over and game_result.

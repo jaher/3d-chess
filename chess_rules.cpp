@@ -165,8 +165,16 @@ std::vector<std::pair<int,int>> generate_moves(const GameState& gs, int col, int
             int nc = col + dc, nr = row + dir;
             if (in_bounds(nc, nr)) {
                 int ti = gs.grid[nr][nc];
-                if (ti >= 0 && gs.pieces[ti].is_white != w)
+                if (ti >= 0 && gs.pieces[ti].is_white != w) {
                     moves.push_back({nc, nr});
+                } else if (ti == -1 &&
+                           nc == gs.ep_target_col &&
+                           nr == gs.ep_target_row) {
+                    // En passant: empty diagonal square that matches
+                    // the ep target (set when the enemy pawn just
+                    // double-pushed past us last ply).
+                    moves.push_back({nc, nr});
+                }
             }
         }
         break;
@@ -235,6 +243,27 @@ bool move_leaves_in_check(GameState& gs, int from_c, int from_r, int to_c, int t
     int old_row = gs.pieces[src_idx].row;
     bool dst_was_alive = false;
 
+    // En passant: a pawn moving diagonally to an empty square captures
+    // the enemy pawn that lives at (to_c, from_r), not on the
+    // destination. Without this, the "en passant pin" case (capture
+    // exposes own king along the now-cleared rank) can't be detected.
+    int ep_pawn_idx = -1;
+    bool ep_pawn_was_alive = false;
+    bool is_ep = false;
+    if (gs.pieces[src_idx].type == PAWN && std::abs(from_c - to_c) == 1 &&
+        dst_idx == -1) {
+        int candidate = gs.grid[from_r][to_c];
+        if (candidate >= 0 &&
+            gs.pieces[candidate].type == PAWN &&
+            gs.pieces[candidate].is_white != gs.pieces[src_idx].is_white) {
+            is_ep = true;
+            ep_pawn_idx = candidate;
+            ep_pawn_was_alive = gs.pieces[ep_pawn_idx].alive;
+            gs.pieces[ep_pawn_idx].alive = false;
+            gs.grid[from_r][to_c] = -1;
+        }
+    }
+
     gs.pieces[src_idx].col = to_c;
     gs.pieces[src_idx].row = to_r;
     gs.grid[from_r][from_c] = -1;
@@ -254,6 +283,11 @@ bool move_leaves_in_check(GameState& gs, int from_c, int from_r, int to_c, int t
 
     if (dst_idx >= 0)
         gs.pieces[dst_idx].alive = dst_was_alive;
+
+    if (is_ep) {
+        gs.pieces[ep_pawn_idx].alive = ep_pawn_was_alive;
+        gs.grid[from_r][to_c] = ep_pawn_idx;
+    }
 
     return in_check;
 }
@@ -305,6 +339,15 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
     int src_idx = gs.grid[from_row][from_col];
     int dst_idx = gs.grid[to_row][to_col];
     bool is_white = gs.pieces[src_idx].is_white;
+    PieceType src_type = gs.pieces[src_idx].type;
+
+    // EP target is valid for one ply. Snapshot the previous value (so
+    // we can recognise an ep capture) then clear; new value is set
+    // below if this move is itself a pawn double-push.
+    int prev_ep_col = gs.ep_target_col;
+    int prev_ep_row = gs.ep_target_row;
+    gs.ep_target_col = -1;
+    gs.ep_target_row = -1;
 
     // King captured
     if (dst_idx >= 0 && gs.pieces[dst_idx].type == KING) {
@@ -321,6 +364,18 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
         gs.game_result = is_white ? "White wins!" : "Black wins!";
         std::printf("%s (king captured)\n", gs.game_result.c_str());
         return;
+    }
+
+    // En passant capture: pawn moves diagonally onto the previous-ply
+    // ep target (an empty square). The actual captured pawn lives one
+    // rank back from the destination, on the moving pawn's file of
+    // arrival. Mark it dead before the standard "kill destination"
+    // branch (which would no-op here since dst_idx == -1).
+    if (src_type == PAWN && dst_idx == -1 &&
+        std::abs(to_col - from_col) == 1 &&
+        to_col == prev_ep_col && to_row == prev_ep_row) {
+        int bypassed = gs.grid[from_row][to_col];
+        if (bypassed >= 0) gs.pieces[bypassed].alive = false;
     }
 
     if (dst_idx >= 0)
@@ -366,6 +421,13 @@ void execute_move(GameState& gs, int from_col, int from_row, int to_col, int to_
     if (gs.pieces[src_idx].type == PAWN) {
         if ((is_white && to_row == 7) || (!is_white && to_row == 0))
             gs.pieces[src_idx].type = QUEEN;
+    }
+
+    // Pawn double-push sets the new ep target on the square the pawn
+    // skipped over. Anything else leaves the cleared ep target alone.
+    if (src_type == PAWN && std::abs(to_row - from_row) == 2) {
+        gs.ep_target_col = from_col;
+        gs.ep_target_row = (from_row + to_row) / 2;
     }
 
     std::string uci = move_to_uci(from_col, from_row, to_col, to_row);
@@ -432,6 +494,13 @@ std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci
         if (p.alive && p.col == tc_internal && p.row == tr && p.is_white != src->is_white) {
             capture = true; break;
         }
+    }
+    // En passant: pawn moving diagonally onto the snapshot's ep target
+    // (destination is empty, so the loop above missed it). Render with
+    // an 'x' just like any other pawn capture.
+    if (!capture && src->type == PAWN && fc_internal != tc_internal &&
+        tc_internal == before.ep_target_col && tr == before.ep_target_row) {
+        capture = true;
     }
 
     std::string result;

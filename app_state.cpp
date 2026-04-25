@@ -61,7 +61,8 @@ std::string current_fen(const GameState& gs, bool white_turn) {
     return board_to_fen(board, white_turn,
         gs.castling.white_king_moved,  gs.castling.black_king_moved,
         gs.castling.white_rook_a_moved, gs.castling.white_rook_h_moved,
-        gs.castling.black_rook_a_moved, gs.castling.black_rook_h_moved);
+        gs.castling.black_rook_a_moved, gs.castling.black_rook_h_moved,
+        gs.ep_target_col, gs.ep_target_row);
 }
 
 int env_int(const char* name, int fallback) {

@@ -44,6 +44,10 @@ struct BoardSnapshot {
     bool white_turn;
     CastlingRights castling;
     std::string last_move;
+    // En passant target square (the square BEHIND the pawn that just
+    // double-pushed, where an enemy pawn could land to capture). -1
+    // means no ep target this ply. Mirrored on GameState.
+    int ep_target_col = -1, ep_target_row = -1;
 };
 
 struct GameState {
@@ -51,6 +55,9 @@ struct GameState {
     int grid[8][8];
     bool white_turn = true;
     CastlingRights castling;
+    // En passant target valid for the ply that immediately follows a
+    // pawn double-push. Cleared by every other move. See FEN field 4.
+    int ep_target_col = -1, ep_target_row = -1;
 
     int selected_col = -1, selected_row = -1;
     std::vector<std::pair<int,int>> valid_moves;

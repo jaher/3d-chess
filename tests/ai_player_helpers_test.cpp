@@ -73,6 +73,19 @@ TEST_CASE("board_to_fen: empty board with black to move") {
     CHECK(fen == "8/8/8/8/8/8/8/8 b - - 0 1");
 }
 
+TEST_CASE("board_to_fen: en passant target round-trips to algebraic") {
+    BoardSquare board[8][8];
+    for (int r = 0; r < 8; r++)
+        for (int c = 0; c < 8; c++)
+            board[r][c] = {-1, false};
+
+    // ep target = e3 → internal (col 3, row 2). Standard FEN field "e3".
+    std::string fen = board_to_fen(board, /*white_turn=*/false,
+        true, true, true, true, true, true,
+        /*ep_col=*/3, /*ep_row=*/2);
+    CHECK(fen.find(" e3 ") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // parse_uci_move
 // ---------------------------------------------------------------------------

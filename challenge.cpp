@@ -261,6 +261,17 @@ ParsedFEN parse_fen(const std::string& fen) {
     result.castling.black_rook_h_moved = castling.find('k') == std::string::npos;
     result.castling.black_rook_a_moved = castling.find('q') == std::string::npos;
 
+    // En passant target ("e3", "-", or absent). The string was already
+    // tokenised above; convert it to internal (col, row).
+    if (!en_passant.empty() && en_passant != "-" && en_passant.size() >= 2) {
+        int file_idx = en_passant[0] - 'a';
+        int rank = en_passant[1] - '1';
+        if (file_idx >= 0 && file_idx < 8 && rank >= 0 && rank < 8) {
+            result.ep_target_col = 7 - file_idx;
+            result.ep_target_row = rank;
+        }
+    }
+
     result.valid = !result.pieces.empty();
     return result;
 }
@@ -272,6 +283,8 @@ void apply_fen_to_state(GameState& gs, const ParsedFEN& parsed) {
     gs.pieces = parsed.pieces;
     gs.white_turn = parsed.white_turn;
     gs.castling = parsed.castling;
+    gs.ep_target_col = parsed.ep_target_col;
+    gs.ep_target_row = parsed.ep_target_row;
     gs.selected_col = -1;
     gs.selected_row = -1;
     gs.valid_moves.clear();
