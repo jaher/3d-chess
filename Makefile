@@ -82,7 +82,7 @@ LDFLAGS  += $(WHISPER_LIBS) $(WHISPER_BACKEND_LIBS) -fopenmp
 WHISPER_MODEL_URL    := https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
 WHISPER_MODEL_SHA256 := ?
 
-all: $(TARGET) $(STOCKFISH_BIN)
+all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL)
 
 $(TARGET): $(OBJS) $(WHISPER_LIBS)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
@@ -109,18 +109,18 @@ $(WHISPER_LIB):
 	cmake -B $(WHISPER_BUILD) -S $(WHISPER_DIR) $(WHISPER_CMAKE_ARGS)
 	cmake --build $(WHISPER_BUILD) --config Release -j
 
-# Download the pre-converted distil-small.en GGML model (~166 MB).
-# Skipped if the file already exists. Voice input on the desktop
-# build silently falls back to "unavailable" if this hasn't been run.
-fetch-whisper-model:
-	@mkdir -p $(dir $(WHISPER_MODEL))
-	@if [ -f $(WHISPER_MODEL) ]; then \
-		echo "Model already present at $(WHISPER_MODEL); skipping."; \
-	else \
-		echo "Downloading distil-small.en GGML (~166 MB) ..."; \
-		curl -L --fail -o $(WHISPER_MODEL) $(WHISPER_MODEL_URL); \
-		echo "Saved to $(WHISPER_MODEL)"; \
-	fi
+# Download the pre-converted distil-small.en GGML model (~166 MB) on
+# first build. The file target only fires when the model is missing,
+# so subsequent builds are no-ops. `make fetch-whisper-model` is kept
+# as an explicit alias for users who want to pre-fetch.
+$(WHISPER_MODEL):
+	@mkdir -p $(dir $@)
+	@echo "Downloading distil-small.en GGML (~166 MB) ..."
+	curl -L --fail -o $@ $(WHISPER_MODEL_URL)
+	@echo "Saved to $@"
+
+fetch-whisper-model: $(WHISPER_MODEL)
+	@echo "Model present at $(WHISPER_MODEL)"
 
 clean:
 	rm -f $(OBJS) $(TARGET)

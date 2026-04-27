@@ -100,7 +100,7 @@ git submodule update --init --recursive
 make
 ```
 
-The first build compiles Stockfish from source and downloads its NNUE network file, then builds whisper.cpp via CMake — together this takes a couple of minutes. Subsequent builds are incremental. CMake (≥ 3.10) is required for the whisper.cpp build; on Debian/Ubuntu install it with `sudo apt-get install -y cmake`.
+The first build compiles Stockfish from source, downloads its NNUE network file, builds whisper.cpp via CMake, and fetches the distil-small.en GGML model (~166 MB) for voice input — together this takes a couple of minutes. Subsequent builds are incremental and the model download is skipped once the file is on disk. CMake (≥ 3.10) is required for the whisper.cpp build; on Debian/Ubuntu install it with `sudo apt-get install -y cmake`. To build without the model download (e.g. on CI), use `make chess` (just the binary target) instead of bare `make`.
 
 ## Running
 
@@ -146,16 +146,14 @@ lazily loads a [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 build of the [distil-small.en](https://huggingface.co/distil-whisper/distil-small.en)
 model (~166 MB); after that it stays warm for the session.
 
-One-time setup:
-
-```bash
-make fetch-whisper-model
-```
-
-This downloads the GGML weights to
-`third_party/whisper-models/ggml-distil-small.en.bin` and SHA-256-verifies
-them. The directory is gitignored. If the file isn't present, the first
-SPACE press shows a hint in the title bar and is otherwise a no-op.
+No setup is needed beyond `make` — the default build target depends on
+`third_party/whisper-models/ggml-distil-small.en.bin` and `curl`s it
+into place on first run. The download is skipped on every subsequent
+build. The model directory is gitignored. If the file is ever
+deleted, the next `make` redownloads it; you can also force a
+re-fetch with `make fetch-whisper-model`. Without the file, the first
+SPACE press at runtime shows a hint in the title bar and is otherwise
+a no-op.
 
 The parser is permissive: homophones like "night d3" → knight d3 and
 "right a1" → rook a1 are normalised, spelled digits ("e four") work,
