@@ -181,6 +181,25 @@ static gboolean on_voice_result_main(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+static gboolean on_voice_continuous_result_main(gpointer data) {
+    auto* r = static_cast<VoiceArrived*>(data);
+    app_voice_continuous_apply(g_app, r->utterance, r->error);
+    delete r;
+    return G_SOURCE_REMOVE;
+}
+
+// Bridge between the shared options-screen click handler (in
+// app_state.cpp) and the GTK marshalling code that lives here. Keeps
+// g_idle_add out of the cross-platform layer.
+void app_voice_toggle_continuous_request(AppState& a) {
+    bool target = !a.voice_continuous_enabled;
+    app_voice_set_continuous(a, target,
+        [](const std::string& utterance, const std::string& error) {
+            auto* r = new VoiceArrived{utterance, error};
+            g_idle_add(on_voice_continuous_result_main, r);
+        });
+}
+
 static gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer) {
     if (event->keyval == GDK_KEY_space) {
         app_voice_press(g_app);

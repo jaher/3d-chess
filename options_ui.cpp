@@ -21,9 +21,17 @@ constexpr float OPT_TOG_H   =  0.10f;
 constexpr float OPT_TOG_X   = -OPT_TOG_W * 0.5f;
 constexpr float OPT_TOG_Y   =  0.12f;
 
+// Continuous-voice toggle — same width, sits directly below with a
+// small vertical gap.
+constexpr float OPT_TOG2_W  =  0.60f;
+constexpr float OPT_TOG2_H  =  0.10f;
+constexpr float OPT_TOG2_X  = -OPT_TOG2_W * 0.5f;
+constexpr float OPT_TOG2_Y  = -0.02f;
+
 }  // namespace
 
-int options_hit_test(double mx, double my, int width, int height) {
+int options_hit_test(double mx, double my, int width, int height,
+                     bool continuous_voice_supported) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x >= OPT_BACK_X && ndc_x <= OPT_BACK_X + OPT_BACK_W &&
@@ -32,10 +40,16 @@ int options_hit_test(double mx, double my, int width, int height) {
     if (ndc_x >= OPT_TOG_X && ndc_x <= OPT_TOG_X + OPT_TOG_W &&
         ndc_y >= OPT_TOG_Y - OPT_TOG_H && ndc_y <= OPT_TOG_Y)
         return 2;
+    if (continuous_voice_supported &&
+        ndc_x >= OPT_TOG2_X && ndc_x <= OPT_TOG2_X + OPT_TOG2_W &&
+        ndc_y >= OPT_TOG2_Y - OPT_TOG2_H && ndc_y <= OPT_TOG2_Y)
+        return 3;
     return 0;
 }
 
 void renderer_draw_options(bool cartoon_outline_enabled,
+                           bool voice_continuous_enabled,
+                           bool continuous_voice_supported,
                            int width, int height,
                            int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -54,6 +68,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     };
     add_quad(OPT_BACK_X, OPT_BACK_Y, OPT_BACK_W, OPT_BACK_H);
     add_quad(OPT_TOG_X,  OPT_TOG_Y,  OPT_TOG_W,  OPT_TOG_H);
+    if (continuous_voice_supported) {
+        add_quad(OPT_TOG2_X, OPT_TOG2_Y, OPT_TOG2_W, OPT_TOG2_H);
+    }
 
     GLuint bvao, bvbo;
     glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
@@ -74,14 +91,22 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
     // Toggle tints green when ON, grey when OFF; brighter on hover.
-    if (cartoon_outline_enabled) {
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    0.22f, 0.60f, 0.30f, hover == 2 ? 0.75f : 0.55f);
-    } else {
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    0.28f, 0.30f, 0.36f, hover == 2 ? 0.75f : 0.55f);
+    auto draw_toggle = [&](bool on, int hover_id, int vert_offset) {
+        if (on) {
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.22f, 0.60f, 0.30f,
+                        hover == hover_id ? 0.75f : 0.55f);
+        } else {
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.28f, 0.30f, 0.36f,
+                        hover == hover_id ? 0.75f : 0.55f);
+        }
+        glDrawArrays(GL_TRIANGLES, vert_offset, 6);
+    };
+    draw_toggle(cartoon_outline_enabled, 2, 6);
+    if (continuous_voice_supported) {
+        draw_toggle(voice_continuous_enabled, 3, 12);
     }
-    glDrawArrays(GL_TRIANGLES, 6, 6);
     glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
     // --- Text ---
@@ -99,16 +124,27 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                       OPT_BACK_Y - 0.020f, bw_cw, bw_ch, back_text);
     int back_end = static_cast<int>(text_verts.size() / 5);
 
-    // Label on the toggle — "Cartoon outline: ON / OFF"
+    // Toggle labels. Same character metrics as the existing row.
     float lcw = 0.028f, lch = 0.042f;
-    std::string toggle_text =
+    auto add_toggle_label = [&](const std::string& label, float row_y) {
+        float lw = label.size() * lcw * 0.7f;
+        add_screen_string(text_verts, -lw * 0.5f,
+                          row_y - (OPT_TOG_H - lch) * 0.5f - 0.005f,
+                          lcw, lch, label);
+    };
+    add_toggle_label(
         std::string("Cartoon outline: ") +
-        (cartoon_outline_enabled ? "ON" : "OFF");
-    float lw = toggle_text.size() * lcw * 0.7f;
-    add_screen_string(text_verts, -lw * 0.5f,
-                      OPT_TOG_Y - (OPT_TOG_H - lch) * 0.5f - 0.005f,
-                      lcw, lch, toggle_text);
+            (cartoon_outline_enabled ? "ON" : "OFF"),
+        OPT_TOG_Y);
     int toggle_end = static_cast<int>(text_verts.size() / 5);
+    int toggle2_end = toggle_end;
+    if (continuous_voice_supported) {
+        add_toggle_label(
+            std::string("Continuous voice: ") +
+                (voice_continuous_enabled ? "ON" : "OFF"),
+            OPT_TOG2_Y);
+        toggle2_end = static_cast<int>(text_verts.size() / 5);
+    }
 
     GLuint tvao, tvbo;
     glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
@@ -132,9 +168,16 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
     glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
 
-    float li = hover == 2 ? 1.0f : 0.92f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), li, li, li, 1.0f);
+    float li1 = hover == 2 ? 1.0f : 0.92f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), li1, li1, li1, 1.0f);
     glDrawArrays(GL_TRIANGLES, back_end, toggle_end - back_end);
+
+    if (continuous_voice_supported && toggle2_end > toggle_end) {
+        float li2 = hover == 3 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    li2, li2, li2, 1.0f);
+        glDrawArrays(GL_TRIANGLES, toggle_end, toggle2_end - toggle_end);
+    }
 
     glBindVertexArray(0); glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
 

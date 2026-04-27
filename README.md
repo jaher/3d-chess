@@ -162,6 +162,16 @@ castle", and "o-o / o-o-o". Ambiguous moves (two knights that can both
 reach the destination) surface a status-bar disambiguation hint —
 prefix the file letter, e.g. "b knight d3".
 
+#### Continuous (hands-free) mode
+
+Open the **Options** screen from the main menu and click the
+**Continuous voice** row to flip it on. Once enabled, the mic stays
+open and a background VAD thread watches for speech: say a move,
+pause briefly, and the move plays — no key needed. Click the toggle
+again to turn it back off (it's session-only, off by default on
+launch). While continuous mode is on, SPACE is suppressed with a
+status-bar hint so the two modes never race for the same mic.
+
 The `whisper_input.cpp` parser is pure C++ and exercised by
 `tests/voice_input_test.cpp`. SDL2 capture and whisper.cpp inference
 live in `voice_whisper.cpp` and are excluded from the test binary so

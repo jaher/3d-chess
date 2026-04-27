@@ -216,6 +216,12 @@ struct AppState {
     bool voice_initialized = false;
     bool voice_init_failed = false;
     bool voice_listening   = false;
+
+    // Continuous (hands-free) voice mode. Off by default; toggled by
+    // a row in the Options screen. When on, a dedicated VAD monitor
+    // thread (in voice_whisper.cpp) watches the mic and dispatches
+    // utterances on its own — SPACE becomes a no-op with a hint.
+    bool voice_continuous_enabled = false;
 #endif
 
     // Non-owning pointer to the platform's hook table.
@@ -296,6 +302,33 @@ void app_voice_release(
 void app_voice_apply_result(AppState& a,
                             const std::string& utterance,
                             const std::string& error);
+
+// Continuous (hands-free) voice toggle. `on` flips the
+// voice_continuous_enabled flag. Turning on triggers a lazy
+// voice_init() and starts the VAD monitor thread; the supplied
+// `on_utterance` callback is invoked from a worker thread for each
+// detected utterance — the driver should marshal it onto the GUI
+// thread. Turning off joins the monitor thread (briefly blocking).
+// Status messages mirror the push-to-talk path.
+void app_voice_set_continuous(
+    AppState& a, bool on,
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_utterance);
+
+// Driver-supplied wrapper that flips the continuous-voice flag and
+// constructs a GUI-thread-marshalling callback. Implemented by the
+// platform driver (main.cpp on desktop) — kept out of app_state so
+// the shared layer never references GTK / SDL. Called from
+// release_options() when the user clicks the Continuous voice row.
+void app_voice_toggle_continuous_request(AppState& a);
+
+// GUI-thread tail for continuous-mode utterances (sibling of
+// app_voice_apply_result). Skipped silently if continuous mode has
+// been turned off in the meantime — handles the race where a
+// transcription worker finishes after the toggle flips off.
+void app_voice_continuous_apply(AppState& a,
+                                const std::string& utterance,
+                                const std::string& error);
 
 // Release the voice engine on app exit. Idempotent.
 void app_voice_shutdown(AppState& a);

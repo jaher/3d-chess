@@ -37,6 +37,26 @@ void voice_stop_and_transcribe(
     std::function<void(const std::string& utterance,
                        const std::string& error)> on_done);
 
+// Continuous (hands-free) capture. Opens the SDL device, leaves it
+// running, and launches a dedicated VAD monitor thread that watches
+// the ring buffer and dispatches whisper transcription whenever it
+// detects a pause after speech. on_utterance fires once per detected
+// utterance, from a detached worker thread (off the GUI thread); the
+// caller is responsible for marshalling back via g_idle_add. Returns
+// false if the engine isn't initialised (caller should run voice_init
+// first). Idempotent: a second call while continuous is already
+// running is a no-op.
+bool voice_start_continuous(
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_utterance,
+    std::string& err_out);
+
+// Stop the VAD monitor thread (joins it) and pause the SDL device.
+// Detached transcription workers in flight at the time of the stop
+// continue to run and will eventually fire on_utterance — callers
+// must guard their callback against post-stop deliveries. Idempotent.
+void voice_stop_continuous();
+
 #endif // !__EMSCRIPTEN__
 
 // ---------------------------------------------------------------------------

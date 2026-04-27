@@ -986,13 +986,24 @@ static void release_challenge_select(AppState& a, double mx, double my,
 
 static void release_options(AppState& a, double mx, double my,
                             int width, int height) {
-    int btn = options_hit_test(mx, my, width, height);
+#ifndef __EMSCRIPTEN__
+    constexpr bool kContinuousVoiceSupported = true;
+#else
+    constexpr bool kContinuousVoiceSupported = false;
+#endif
+    int btn = options_hit_test(mx, my, width, height,
+                               kContinuousVoiceSupported);
     if (btn == 1) {
         app_enter_menu(a);
     } else if (btn == 2) {
         a.cartoon_outline = !a.cartoon_outline;
         queue_redraw(a);
     }
+#ifndef __EMSCRIPTEN__
+    else if (btn == 3) {
+        app_voice_toggle_continuous_request(a);
+    }
+#endif
 }
 
 static void release_challenge(AppState& a, double mx, double my,
@@ -1205,7 +1216,13 @@ static void motion_challenge_select(AppState& a, double mx, double my,
 
 static void motion_options(AppState& a, double mx, double my,
                            int width, int height) {
-    int h = options_hit_test(mx, my, width, height);
+#ifndef __EMSCRIPTEN__
+    constexpr bool kContinuousVoiceSupported = true;
+#else
+    constexpr bool kContinuousVoiceSupported = false;
+#endif
+    int h = options_hit_test(mx, my, width, height,
+                             kContinuousVoiceSupported);
     if (h != a.options_hover) {
         a.options_hover = h;
         queue_redraw(a);
@@ -1664,7 +1681,16 @@ static void render_challenge_select(AppState& a, int width, int height) {
 }
 
 static void render_options(AppState& a, int width, int height) {
-    renderer_draw_options(a.cartoon_outline, width, height, a.options_hover);
+#ifndef __EMSCRIPTEN__
+    constexpr bool kContinuousVoiceSupported = true;
+    bool voice_continuous = a.voice_continuous_enabled;
+#else
+    constexpr bool kContinuousVoiceSupported = false;
+    bool voice_continuous = false;
+#endif
+    renderer_draw_options(a.cartoon_outline, voice_continuous,
+                          kContinuousVoiceSupported,
+                          width, height, a.options_hover);
 }
 
 static void render_challenge_summary(AppState& a, int width, int height) {
@@ -1873,6 +1899,11 @@ bool voice_action_allowed(const AppState& a) {
 }  // namespace
 
 void app_voice_press(AppState& a) {
+    if (a.voice_continuous_enabled) {
+        set_status(a,
+            "Continuous mode is on — toggle off in Options to use SPACE");
+        return;
+    }
     if (!voice_action_allowed(a)) return;
     if (a.voice_listening) {
         set_status(a, "Voice — still transcribing previous utterance");
@@ -1901,6 +1932,7 @@ void app_voice_release(
     AppState& a,
     std::function<void(const std::string& utterance,
                        const std::string& error)> on_done) {
+    if (a.voice_continuous_enabled) return;  // SPACE is suppressed
     if (!a.voice_listening) return;
     // Capture-stop / worker-dispatch happens in voice_stop_and_transcribe.
     // The flag stays set until the GUI-thread tail clears it.
@@ -1909,11 +1941,12 @@ void app_voice_release(
     queue_redraw(a);
 }
 
-void app_voice_apply_result(AppState& a,
-                            const std::string& utterance,
-                            const std::string& error) {
-    a.voice_listening = false;
-
+// Shared body for both push-to-talk (app_voice_apply_result) and
+// continuous (app_voice_continuous_apply) result delivery. Caller is
+// responsible for any flag bookkeeping (e.g. clearing voice_listening).
+static void apply_voice_utterance(AppState& a,
+                                  const std::string& utterance,
+                                  const std::string& error) {
     if (!error.empty()) {
         std::string msg = "Voice: " + error;
         set_status(a, msg.c_str());
@@ -1964,12 +1997,76 @@ void app_voice_apply_result(AppState& a,
         trigger_ai(a);
 }
 
+void app_voice_apply_result(AppState& a,
+                            const std::string& utterance,
+                            const std::string& error) {
+    a.voice_listening = false;
+    apply_voice_utterance(a, utterance, error);
+}
+
+void app_voice_continuous_apply(AppState& a,
+                                const std::string& utterance,
+                                const std::string& error) {
+    // Drop late deliveries from a worker that finished after the
+    // toggle was turned off — apply_voice_utterance would otherwise
+    // happily play the move.
+    if (!a.voice_continuous_enabled) return;
+    apply_voice_utterance(a, utterance, error);
+}
+
+void app_voice_set_continuous(
+    AppState& a, bool on,
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_utterance) {
+    if (on == a.voice_continuous_enabled) return;  // idempotent
+
+    if (!on) {
+        voice_stop_continuous();
+        a.voice_continuous_enabled = false;
+        set_status(a, "Voice — continuous listening off");
+        queue_redraw(a);
+        return;
+    }
+
+    // Turning on. Lazy-init if needed; sticky failure otherwise.
+    if (!a.voice_initialized) {
+        if (a.voice_init_failed) {
+            set_status(a, "Voice unavailable — see README");
+            queue_redraw(a);
+            return;
+        }
+        std::string err;
+        set_status(a, "Voice — loading model...");
+        if (!voice_init(voice_model_path(), err)) {
+            a.voice_init_failed = true;
+            std::string msg = "Voice unavailable: " + err +
+                              " (run 'make fetch-whisper-model')";
+            set_status(a, msg.c_str());
+            queue_redraw(a);
+            return;
+        }
+        a.voice_initialized = true;
+    }
+
+    std::string err;
+    if (!voice_start_continuous(std::move(on_utterance), err)) {
+        std::string msg = "Voice continuous start failed: " + err;
+        set_status(a, msg.c_str());
+        queue_redraw(a);
+        return;
+    }
+    a.voice_continuous_enabled = true;
+    set_status(a, "Voice — continuous listening on");
+    queue_redraw(a);
+}
+
 void app_voice_shutdown(AppState& a) {
     if (a.voice_initialized) {
         voice_shutdown();
         a.voice_initialized = false;
     }
     a.voice_listening = false;
+    a.voice_continuous_enabled = false;
 }
 
 #endif  // !__EMSCRIPTEN__
