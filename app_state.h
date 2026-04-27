@@ -8,6 +8,7 @@
 #include "game_state.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -206,6 +207,17 @@ struct AppState {
     // across games within a session until the user toggles again.
     bool cartoon_outline = false;
 
+#ifndef __EMSCRIPTEN__
+    // Voice input (push-to-talk on SPACE). Lazy init on first use so
+    // we don't pay the model-load cost or prompt for mic permission
+    // for users who never press space. ``voice_init_failed`` is
+    // sticky across the session — once we've reported an init
+    // failure (e.g. missing model file) we don't keep retrying.
+    bool voice_initialized = false;
+    bool voice_init_failed = false;
+    bool voice_listening   = false;
+#endif
+
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
 
@@ -267,3 +279,24 @@ void app_render(AppState& a, int width, int height);
 // app_state picks a random legal black move as a fallback.
 void app_ai_move_ready(AppState& a, const char* uci);
 void app_eval_ready(AppState& a, int cp, int score_index);
+
+#ifndef __EMSCRIPTEN__
+// Voice push-to-talk (desktop only). The driver wires these to
+// SPACE key-down / key-up. app_voice_press triggers a lazy voice
+// engine init on first use; app_voice_release stops capture and
+// dispatches transcription on a worker thread, then calls back via
+// `on_done` (which the driver should marshal onto the GUI thread).
+// app_voice_apply_result is the GUI-thread tail that parses the
+// utterance and applies the resulting move.
+void app_voice_press(AppState& a);
+void app_voice_release(
+    AppState& a,
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_done);
+void app_voice_apply_result(AppState& a,
+                            const std::string& utterance,
+                            const std::string& error);
+
+// Release the voice engine on app exit. Idempotent.
+void app_voice_shutdown(AppState& a);
+#endif

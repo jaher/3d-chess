@@ -12,14 +12,16 @@ SHARED_SRCS := \
     ../challenge.cpp \
     ../vec.cpp \
     ../mat.cpp \
-    ../ai_player.cpp
+    ../ai_player.cpp \
+    ../voice_input.cpp
 
 TEST_SRCS := \
     doctest_main.cpp \
     chess_rules_test.cpp \
     ai_player_helpers_test.cpp \
     challenge_test.cpp \
-    linalg_test.cpp
+    linalg_test.cpp \
+    voice_input_test.cpp
 
 HEADERS := doctest.h helpers.h
 

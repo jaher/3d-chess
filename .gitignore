@@ -2,3 +2,5 @@
 chess
 __pycache__/
 .claude_resume.md
+third_party/whisper-models/
+third_party/whisper.cpp/build/

@@ -1,3 +1,6 @@
 [submodule "third_party/stockfish"]
 	path = third_party/stockfish
 	url = https://github.com/official-stockfish/stockfish
+[submodule "third_party/whisper.cpp"]
+	path = third_party/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp

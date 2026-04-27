@@ -166,9 +166,41 @@ static gboolean on_scroll(GtkWidget*, GdkEventScroll* e, gpointer) {
     return TRUE;
 }
 
+// Voice push-to-talk: spacebar press starts capture, release dispatches
+// transcription on a worker thread which posts the result back via
+// g_idle_add. Same marshalling pattern as plat_trigger_ai_move above.
+struct VoiceArrived {
+    std::string utterance;
+    std::string error;
+};
+
+static gboolean on_voice_result_main(gpointer data) {
+    auto* r = static_cast<VoiceArrived*>(data);
+    app_voice_apply_result(g_app, r->utterance, r->error);
+    delete r;
+    return G_SOURCE_REMOVE;
+}
+
 static gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer) {
+    if (event->keyval == GDK_KEY_space) {
+        app_voice_press(g_app);
+        return TRUE;  // suppress GTK's default space-activates-button
+    }
     app_key(g_app, translate_key(event->keyval));
     return TRUE;
+}
+
+static gboolean on_key_release(GtkWidget*, GdkEventKey* event, gpointer) {
+    if (event->keyval == GDK_KEY_space) {
+        app_voice_release(g_app,
+            [](const std::string& utterance, const std::string& error) {
+                // Worker thread → marshal onto the GTK main loop.
+                auto* r = new VoiceArrived{utterance, error};
+                g_idle_add(on_voice_result_main, r);
+            });
+        return TRUE;
+    }
+    return FALSE;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,10 +284,13 @@ int main(int argc, char* argv[]) {
                      G_CALLBACK(on_scroll),         nullptr);
     g_signal_connect(g_window,  "key-press-event",
                      G_CALLBACK(on_key_press),      nullptr);
+    g_signal_connect(g_window,  "key-release-event",
+                     G_CALLBACK(on_key_release),    nullptr);
 
     gtk_widget_show_all(g_window);
 
     app_enter_menu(g_app);
     gtk_main();
+    app_voice_shutdown(g_app);
     return 0;
 }

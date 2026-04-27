@@ -5,6 +5,7 @@
 #include "chess_rules.h"
 #include "cloth_flag.h"
 #include "mat.h"
+#include "voice_input.h"
 
 #include <algorithm>
 #include <climits>
@@ -1842,6 +1843,136 @@ void app_render(AppState& a, int width, int height) {
     render_challenge_transition_trigger(a, width, height, now);
     render_challenge_transition_overlay(a, width, height, now);
 }
+
+// ===========================================================================
+// Voice input (push-to-talk on SPACE) — desktop only
+// ===========================================================================
+#ifndef __EMSCRIPTEN__
+
+namespace {
+
+// Resolve the model path at first-use time so users can override via
+// CHESS_WHISPER_MODEL without recompiling.
+std::string voice_model_path() {
+    if (const char* env = std::getenv("CHESS_WHISPER_MODEL"))
+        if (*env) return env;
+    return "third_party/whisper-models/ggml-distil-small.en.bin";
+}
+
+// Returns true when voice can run right now (right mode, our turn,
+// nothing blocking). Doesn't touch any state — pure check.
+bool voice_action_allowed(const AppState& a) {
+    if (a.mode != MODE_PLAYING) return false;
+    const GameState& gs = a.game;
+    if (gs.ai_thinking || gs.ai_animating) return false;
+    if (gs.analysis_mode || gs.game_over)  return false;
+    if (gs.white_turn != a.human_plays_white) return false;
+    return true;
+}
+
+}  // namespace
+
+void app_voice_press(AppState& a) {
+    if (!voice_action_allowed(a)) return;
+    if (a.voice_listening) {
+        set_status(a, "Voice — still transcribing previous utterance");
+        return;
+    }
+    if (!a.voice_initialized) {
+        if (a.voice_init_failed) return;  // sticky — already reported
+        std::string err;
+        set_status(a, "Voice — loading model...");
+        if (!voice_init(voice_model_path(), err)) {
+            a.voice_init_failed = true;
+            std::string msg = "Voice unavailable: " + err +
+                              " (run 'make fetch-whisper-model')";
+            set_status(a, msg.c_str());
+            return;
+        }
+        a.voice_initialized = true;
+    }
+    voice_start_capture();
+    a.voice_listening = true;
+    set_status(a, "Voice — listening (release SPACE to send)");
+    queue_redraw(a);
+}
+
+void app_voice_release(
+    AppState& a,
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_done) {
+    if (!a.voice_listening) return;
+    // Capture-stop / worker-dispatch happens in voice_stop_and_transcribe.
+    // The flag stays set until the GUI-thread tail clears it.
+    voice_stop_and_transcribe(std::move(on_done));
+    set_status(a, "Voice — transcribing...");
+    queue_redraw(a);
+}
+
+void app_voice_apply_result(AppState& a,
+                            const std::string& utterance,
+                            const std::string& error) {
+    a.voice_listening = false;
+
+    if (!error.empty()) {
+        std::string msg = "Voice: " + error;
+        set_status(a, msg.c_str());
+        queue_redraw(a);
+        return;
+    }
+
+    GameState& gs = a.game;
+    if (!voice_action_allowed(a)) {
+        std::string msg = std::string("Voice ignored '") + utterance +
+                          "' — not your turn";
+        set_status(a, msg.c_str());
+        queue_redraw(a);
+        return;
+    }
+
+    std::string uci, perr;
+    if (!parse_voice_move(utterance, gs, uci, perr)) {
+        std::string msg = "Voice — heard '" + utterance + "': " + perr;
+        set_status(a, msg.c_str());
+        queue_redraw(a);
+        return;
+    }
+
+    int from_col, from_row, to_col, to_row;
+    if (!parse_uci_move(uci, from_col, from_row, to_col, to_row)) {
+        set_status(a, "Voice — internal error decoding parser UCI");
+        queue_redraw(a);
+        return;
+    }
+
+    bool sfx_capture = gs.grid[to_row][to_col] >= 0;
+    execute_move(gs, from_col, from_row, to_col, to_row);
+    gs.selected_col = gs.selected_row = -1;
+    gs.valid_moves.clear();
+    play_move_sfx(gs, sfx_capture);
+
+    std::string msg = std::string("Voice — heard '") + utterance +
+                      "' (" + uci + ")";
+    set_status(a, msg.c_str());
+    queue_redraw(a);
+
+    // Same post-move flow as a successful click in MODE_PLAYING:
+    // refresh status, kick the eval, and dispatch the AI's reply.
+    app_refresh_status(a);
+    trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
+    if (gs.white_turn != a.human_plays_white && !gs.game_over)
+        trigger_ai(a);
+}
+
+void app_voice_shutdown(AppState& a) {
+    if (a.voice_initialized) {
+        voice_shutdown();
+        a.voice_initialized = false;
+    }
+    a.voice_listening = false;
+}
+
+#endif  // !__EMSCRIPTEN__
 
 // ===========================================================================
 // Lifecycle

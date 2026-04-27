@@ -27,6 +27,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
 - **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory
 - **Options screen** — reached from the main menu **Options** button; currently toggles the cartoon-outline post-process used during gameplay (also bindable to the **S** key while playing)
+- **Voice move input** (desktop only) — hold **SPACE** during your turn and speak a move ("knight d3", "e4", "castle kingside"). Release to transcribe and play. Powered by an on-device [whisper.cpp](https://github.com/ggerganov/whisper.cpp) build of [distil-small.en](https://huggingface.co/distil-whisper/distil-small.en) (~166 MB). The first press lazily loads the model; if no model file is present the status bar shows a hint to run `make fetch-whisper-model`. CPU inference works out of the box; opt-in CUDA/Metal/Vulkan acceleration via `make WHISPER_BACKEND=cuda` (etc.)
 
 ## Dependencies
 
@@ -81,7 +82,7 @@ The Makefile auto-detects Darwin and prepends Homebrew's pkgconfig directory
 
 ## Cloning
 
-Clone recursively so that the Stockfish submodule is fetched:
+Clone recursively so that the Stockfish and whisper.cpp submodules are fetched:
 
 ```bash
 git clone --recurse-submodules https://github.com/jaher/3d-chess
@@ -99,7 +100,7 @@ git submodule update --init --recursive
 make
 ```
 
-The first build compiles Stockfish from source and downloads its NNUE network file, which takes a minute or two. Subsequent builds are incremental.
+The first build compiles Stockfish from source and downloads its NNUE network file, then builds whisper.cpp via CMake — together this takes a couple of minutes. Subsequent builds are incremental. CMake (≥ 3.10) is required for the whisper.cpp build; on Debian/Ubuntu install it with `sudo apt-get install -y cmake`.
 
 ## Running
 
@@ -136,6 +137,66 @@ To skip the engine binary (e.g. on CI without Python), use `make test_pure` inst
 - `CHESS_STOCKFISH_PATH` — path to a custom Stockfish binary. If unset, the app first looks for `./third_party/stockfish/src/stockfish`, then falls back to the `stockfish` binary on `$PATH`.
 
 A system-installed `stockfish` (e.g. via `apt-get install stockfish`) is used automatically as a fallback if the vendored binary isn't available.
+
+### Voice move input (desktop only)
+
+Hold **SPACE** while it's your turn to speak a move ("knight d3", "e4",
+"castle kingside"). Release to transcribe and play. The first press
+lazily loads a [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+build of the [distil-small.en](https://huggingface.co/distil-whisper/distil-small.en)
+model (~166 MB); after that it stays warm for the session.
+
+One-time setup:
+
+```bash
+make fetch-whisper-model
+```
+
+This downloads the GGML weights to
+`third_party/whisper-models/ggml-distil-small.en.bin` and SHA-256-verifies
+them. The directory is gitignored. If the file isn't present, the first
+SPACE press shows a hint in the title bar and is otherwise a no-op.
+
+The parser is permissive: homophones like "night d3" → knight d3 and
+"right a1" → rook a1 are normalised, spelled digits ("e four") work,
+and castling accepts "castle kingside / queenside", "short / long
+castle", and "o-o / o-o-o". Ambiguous moves (two knights that can both
+reach the destination) surface a status-bar disambiguation hint —
+prefix the file letter, e.g. "b knight d3".
+
+The `whisper_input.cpp` parser is pure C++ and exercised by
+`tests/voice_input_test.cpp`. SDL2 capture and whisper.cpp inference
+live in `voice_whisper.cpp` and are excluded from the test binary so
+the unit tests stay self-contained.
+
+#### Optional: GPU acceleration
+
+CPU is the default and is fast enough for the chess-move vocabulary.
+If you want GPU acceleration, opt in at build time via
+`WHISPER_BACKEND`:
+
+```bash
+make WHISPER_BACKEND=cuda      # NVIDIA — needs nvcc on $PATH
+make WHISPER_BACKEND=metal     # macOS Metal (default on Darwin)
+make WHISPER_BACKEND=vulkan    # Vulkan (Linux/Windows GPUs)
+make WHISPER_BACKEND=auto      # detect: CUDA on Linux if nvcc present, Metal on macOS, else CPU
+make WHISPER_BACKEND=cpu       # explicit CPU (the default on Linux)
+```
+
+#### macOS microphone permission
+
+SDL2's audio capture relies on the standard macOS Core Audio API, so
+the first run will prompt for microphone permission. If you've packaged
+the binary into a `.app`, the bundle's `Info.plist` needs an
+`NSMicrophoneUsageDescription` entry; running the raw `./chess` binary
+from a terminal works without one but still has to be granted
+permission once.
+
+#### Web build
+
+The voice input is desktop-only — `voice_input.cpp` and
+`voice_whisper.cpp` are excluded from `web/Makefile` and the
+WebAssembly bundle. Spacebar in the browser does nothing voice-related.
 
 ## Browser / WebAssembly version
 
@@ -315,6 +376,7 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
 | **Left drag** | Rotate camera around the board |
 | **Scroll wheel** | Zoom in/out |
 | **Click withdraw flag** | Open the "Withdraw from game?" confirmation modal (bottom-right corner) |
+| **Hold SPACE** (your turn, desktop only) | Push-to-talk: speak a move ("knight d3", "e4", "castle kingside"); release to play |
 | **A** or **Left/Right arrow** | Enter analysis mode |
 | **Left arrow** (analysis) | Step back one move |
 | **Right arrow** (analysis) | Step forward one move |
@@ -373,11 +435,24 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   ai_player.h/cpp          -- Stockfish UCI integration
                               (subprocess on desktop; helpers shared)
 
+  # Voice input (desktop only — excluded from web/Makefile)
+  voice_input.h/cpp        -- Pure-logic voice-utterance parser
+                              (homophone normalisation, castling,
+                              piece+disambig+destination resolution)
+  voice_whisper.cpp        -- SDL2 microphone capture + whisper.cpp
+                              inference glue. Runs on a worker thread
+                              and posts results back via a callback.
+
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring
+                              (incl. SPACE push-to-talk → voice_input)
 
   # Assets
   third_party/stockfish/   -- Native Stockfish engine (git submodule)
+  third_party/whisper.cpp/ -- whisper.cpp inference engine (git submodule, desktop only)
+  third_party/whisper-models/
+                           -- distil-small.en GGML weights (downloaded by
+                              `make fetch-whisper-model`, gitignored)
   models/                  -- High-res STL piece models (desktop build)
   models-web/              -- Decimated STL pieces (~80k tris, intermediate)
   models-web-packed/       -- Gzipped indexed-mesh packed pieces (~4 MB total,
@@ -404,6 +479,7 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
     ai_player_helpers_test.cpp
     challenge_test.cpp
     linalg_test.cpp
+    voice_input_test.cpp      Voice-utterance parser tests (pure logic)
     engine_test.cpp           Stockfish subprocess wrapper tests
                               (driven by fake_stockfish.py)
     fake_stockfish.py         minimal UCI-speaking script used by
