@@ -41,14 +41,19 @@ void voice_stop_and_transcribe(
 // running, and launches a dedicated VAD monitor thread that watches
 // the ring buffer and dispatches whisper transcription whenever it
 // detects a pause after speech. on_utterance fires once per detected
-// utterance, from a detached worker thread (off the GUI thread); the
-// caller is responsible for marshalling back via g_idle_add. Returns
-// false if the engine isn't initialised (caller should run voice_init
-// first). Idempotent: a second call while continuous is already
-// running is a no-op.
+// utterance from a worker thread (off the GUI thread); on_partial
+// fires every time the streaming worker finishes a pass during
+// speech and may be used to surface a live "what whisper is hearing"
+// indicator. Both callbacks run off the GUI thread — the caller is
+// responsible for marshalling back via g_idle_add. on_partial may be
+// nullptr if the caller doesn't care about live updates. Returns
+// false if the engine isn't initialised (run voice_init first).
+// Idempotent: a second call while continuous is already running is
+// a no-op.
 bool voice_start_continuous(
     std::function<void(const std::string& utterance,
                        const std::string& error)> on_utterance,
+    std::function<void(const std::string& partial)> on_partial,
     std::string& err_out);
 
 // Stop the VAD monitor thread (joins it) and pause the SDL device.

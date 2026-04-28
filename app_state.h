@@ -305,15 +305,18 @@ void app_voice_apply_result(AppState& a,
 
 // Continuous (hands-free) voice toggle. `on` flips the
 // voice_continuous_enabled flag. Turning on triggers a lazy
-// voice_init() and starts the VAD monitor thread; the supplied
-// `on_utterance` callback is invoked from a worker thread for each
-// detected utterance — the driver should marshal it onto the GUI
-// thread. Turning off joins the monitor thread (briefly blocking).
-// Status messages mirror the push-to-talk path.
+// voice_init() and starts the VAD monitor thread; on_utterance
+// fires once per finalized utterance, on_partial every time the
+// streaming worker produces a transcript during speech. Both
+// callbacks run off the GUI thread — the driver marshals them onto
+// the GUI thread (e.g. via g_idle_add). Turning off joins the
+// monitor thread (briefly blocking). Status messages mirror the
+// push-to-talk path.
 void app_voice_set_continuous(
     AppState& a, bool on,
     std::function<void(const std::string& utterance,
-                       const std::string& error)> on_utterance);
+                       const std::string& error)> on_utterance,
+    std::function<void(const std::string& partial)> on_partial);
 
 // Driver-supplied wrapper that flips the continuous-voice flag and
 // constructs a GUI-thread-marshalling callback. Implemented by the
@@ -329,6 +332,13 @@ void app_voice_toggle_continuous_request(AppState& a);
 void app_voice_continuous_apply(AppState& a,
                                 const std::string& utterance,
                                 const std::string& error);
+
+// GUI-thread tail for live streaming-pass transcripts. Surfaces the
+// current best-guess text in the status bar so the user can see
+// what whisper is hearing in real time. Skipped silently when
+// continuous mode is off.
+void app_voice_continuous_apply_partial(AppState& a,
+                                        const std::string& partial);
 
 // Release the voice engine on app exit. Idempotent.
 void app_voice_shutdown(AppState& a);

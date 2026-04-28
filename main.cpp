@@ -188,6 +188,18 @@ static gboolean on_voice_continuous_result_main(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+// Live partial transcripts: the streaming worker fires one per
+// successful pass, surfacing in the title bar so the user can see
+// what whisper is hearing in real time.
+struct VoicePartial { std::string text; };
+
+static gboolean on_voice_continuous_partial_main(gpointer data) {
+    auto* r = static_cast<VoicePartial*>(data);
+    app_voice_continuous_apply_partial(g_app, r->text);
+    delete r;
+    return G_SOURCE_REMOVE;
+}
+
 // Bridge between the shared options-screen click handler (in
 // app_state.cpp) and the GTK marshalling code that lives here. Keeps
 // g_idle_add out of the cross-platform layer.
@@ -197,6 +209,10 @@ void app_voice_toggle_continuous_request(AppState& a) {
         [](const std::string& utterance, const std::string& error) {
             auto* r = new VoiceArrived{utterance, error};
             g_idle_add(on_voice_continuous_result_main, r);
+        },
+        [](const std::string& partial) {
+            auto* r = new VoicePartial{partial};
+            g_idle_add(on_voice_continuous_partial_main, r);
         });
 }
 

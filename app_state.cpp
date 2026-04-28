@@ -2014,10 +2014,19 @@ void app_voice_continuous_apply(AppState& a,
     apply_voice_utterance(a, utterance, error);
 }
 
+void app_voice_continuous_apply_partial(AppState& a,
+                                        const std::string& partial) {
+    if (!a.voice_continuous_enabled) return;
+    if (partial.empty()) return;
+    std::string msg = "Hearing: '" + partial + "'";
+    set_status(a, msg.c_str());
+}
+
 void app_voice_set_continuous(
     AppState& a, bool on,
     std::function<void(const std::string& utterance,
-                       const std::string& error)> on_utterance) {
+                       const std::string& error)> on_utterance,
+    std::function<void(const std::string& partial)> on_partial) {
     if (on == a.voice_continuous_enabled) return;  // idempotent
 
     if (!on) {
@@ -2049,7 +2058,8 @@ void app_voice_set_continuous(
     }
 
     std::string err;
-    if (!voice_start_continuous(std::move(on_utterance), err)) {
+    if (!voice_start_continuous(std::move(on_utterance),
+                                std::move(on_partial), err)) {
         std::string msg = "Voice continuous start failed: " + err;
         set_status(a, msg.c_str());
         queue_redraw(a);
