@@ -342,6 +342,22 @@ VoiceCommand parse_voice_command(const std::string& utterance,
     std::string s = normalize_command(utterance);
     if (s.empty()) return VoiceCommand::None;
 
+    // Modal confirmation eats every utterance — same way the
+    // withdraw modal eats every mouse click. Only yes/no register;
+    // anything else returns None and the caller short-circuits the
+    // chess-move parser so we don't surface "no destination square".
+    if (ctx.withdraw_confirm_open) {
+        if (match_any(s, {"yes", "yeah", "yep", "yup",
+                          "confirm", "ok", "okay", "sure",
+                          "do it", "go ahead"}))
+            return VoiceCommand::ConfirmYes;
+        if (match_any(s, {"no", "nope", "nah",
+                          "cancel", "never mind", "nevermind",
+                          "stop", "abort"}))
+            return VoiceCommand::ConfirmNo;
+        return VoiceCommand::None;
+    }
+
     switch (ctx.mode) {
     case MODE_MENU:
         if (match_any(s, {"play", "start", "new game", "begin",

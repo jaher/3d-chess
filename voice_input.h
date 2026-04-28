@@ -100,6 +100,8 @@ enum class VoiceCommand {
     OpenChallenges,
     ContinuePlaying,      // Analysis-mode "Continue Playing"
     Resign,               // Mid-game "Resign" — opens withdraw modal
+    ConfirmYes,           // Withdraw modal "Yes"
+    ConfirmNo,            // Withdraw modal "No"
     NextPuzzle,           // Challenge "Next" after solve
     TryAgain,             // Challenge "Try Again" after mistake
     ToggleCartoonOutline,
@@ -118,6 +120,7 @@ struct VoiceCommandContext {
     bool challenge_solved     = false;
     bool challenge_mistake_ready = false;
     bool challenge_show_summary  = false;
+    bool withdraw_confirm_open   = false;
 };
 
 // Match `utterance` against the buttons currently on screen. Returns

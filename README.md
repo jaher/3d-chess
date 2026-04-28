@@ -182,6 +182,8 @@ button labels for the screen you're on. Examples:
 - **Options**: "back", "cartoon outline", "continuous voice"
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
+- **Resign confirmation modal**: "yes" / "no" — modal eats every other
+  utterance until you decide
 - **Game over / analysis**: "back to menu", "continue playing", "new game"
 - **Challenge solved**: "next", "next puzzle"
 - **Challenge mistake**: "try again", "retry"

@@ -1880,6 +1880,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
     ctx.challenge_solved         = a.challenge_solved;
     ctx.challenge_mistake_ready  = mistake_reveal_ready(a);
     ctx.challenge_show_summary   = a.challenge_show_summary;
+    ctx.withdraw_confirm_open    = a.withdraw_confirm_open;
 
     VoiceCommand cmd = parse_voice_command(utterance, ctx);
     if (cmd == VoiceCommand::None) return false;
@@ -1911,11 +1912,24 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         break;
     case VoiceCommand::Resign:
         // Same effect as clicking the withdraw flag: open the
-        // confirmation modal. The user can confirm with the existing
-        // Yes/No buttons (voice support for the modal is future work).
+        // confirmation modal. The user confirms by saying yes/no
+        // (handled below) or by clicking the modal buttons.
         if (a.mode == MODE_PLAYING && !a.game.game_over &&
             !a.game.analysis_mode) {
             a.withdraw_confirm_open = true;
+            a.withdraw_hover = 0;
+        }
+        break;
+    case VoiceCommand::ConfirmYes:
+        if (a.withdraw_confirm_open) {
+            a.withdraw_confirm_open = false;
+            a.withdraw_hover = 0;
+            app_enter_menu(a);
+        }
+        break;
+    case VoiceCommand::ConfirmNo:
+        if (a.withdraw_confirm_open) {
+            a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
         }
         break;
@@ -1970,6 +1984,17 @@ void apply_voice_utterance(AppState& a,
     // move utterance like "knight d3" never accidentally triggers
     // one. Falls through to move parsing if nothing matches.
     if (try_voice_command(a, utterance)) return;
+
+    // The withdraw confirmation modal is, well, modal. If it's open
+    // and we got here, the utterance wasn't yes/no — surface a hint
+    // and don't try to parse it as a chess move.
+    if (a.withdraw_confirm_open) {
+        std::string msg = std::string("Voice — say 'yes' or 'no' (heard '") +
+                          utterance + "')";
+        set_status(a, msg.c_str());
+        queue_redraw(a);
+        return;
+    }
 
     GameState& gs = a.game;
     if (!voice_action_allowed(a)) {
