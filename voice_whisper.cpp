@@ -36,12 +36,53 @@ constexpr int kBufferSamplesMax = kSampleRate * 30;  // 30 s safety cap
 // the float32 samples (range [-1, 1]); 0.01 ≈ -40 dBFS, comfortably
 // above typical room noise but below normal speech. `kSilenceMs` is
 // how long the trailing silence has to persist before we dispatch.
+//
+// Silence threshold is short here (350 ms) because the streaming
+// worker has been transcribing the audio in parallel during speech —
+// we don't pay full inference latency at end-of-speech, so a short
+// pause is enough to commit the move.
 constexpr float kSpeechThreshold      = 0.012f;
 constexpr float kSilenceThreshold     = 0.006f;
 constexpr int   kVadTickMs            = 200;
-constexpr int   kSilenceMs            = 600;
+constexpr int   kSilenceMs            = 350;
 constexpr int   kVadWindowSamples     = kSampleRate / 10;   // 100 ms RMS window
 constexpr int   kMinUtteranceSamples  = kSampleRate / 4;    // 250 ms
+
+// Streaming worker tuning. While the user is speaking, a persistent
+// background thread runs whisper repeatedly on the audio captured so
+// far. By the time VAD says "end of speech", the latest streaming
+// pass already has the transcript — we use it directly instead of
+// running a fresh inference at end-of-speech.
+//
+// `kStreamMaxAudioSec` caps how much audio each streaming pass sees
+// (chess utterances are ≤ 2 s; padding past that wastes encoder
+// work). `kStreamFreshnessMs` is the staleness window for trusting
+// the latest streaming result; older than that, we fall back to a
+// fresh pass on the full buffer to avoid clipping the final word.
+constexpr int   kStreamSleepMs         = 30;
+constexpr int   kStreamMaxAudioSec     = 3;
+constexpr int   kStreamFreshnessMs     = 600;
+constexpr size_t kStreamCoverageSlackSamples = kSampleRate / 2;  // 500 ms
+
+// Whisper params used by every inference call. `audio_ctx = 512`
+// caps the encoder's mel context length — default is 1500 (30 s)
+// which is wasteful for chess utterances that fit in 2 s.
+// n_threads picks up the host's core count (capped at 8 — whisper
+// scales poorly past that).
+constexpr int kWhisperAudioCtx = 512;
+
+int whisper_thread_count() {
+    unsigned hc = std::thread::hardware_concurrency();
+    if (hc < 2) hc = 2;
+    if (hc > 8) hc = 8;
+    return static_cast<int>(hc);
+}
+
+int64_t voice_now_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(
+        steady_clock::now().time_since_epoch()).count();
+}
 
 struct VoiceState {
     std::mutex          mu;
@@ -57,25 +98,39 @@ struct VoiceState {
     std::atomic<bool>   continuous_running{false};
     std::thread         monitor_thread;
     std::function<void(const std::string&, const std::string&)> on_utterance;
+
+    // Streaming worker. `should_stream` is set true by the monitor
+    // when speech starts, cleared when it ends; the streaming thread
+    // polls this every kStreamSleepMs.
+    std::atomic<bool>   should_stream{false};
+    std::thread         stream_thread;
+    // Latest streaming result (protected by mu). audio_size is the
+    // sample count fed into the pass that produced this text;
+    // finish_us is the monotonic timestamp when it landed. Both are
+    // zeroed when entering a new utterance so a stale result from
+    // the previous turn can't be mistaken for the new one.
+    std::string         last_stream_text;
+    int64_t             last_stream_finish_us = 0;
+    size_t              last_stream_audio_size = 0;
 };
 
 VoiceState g_voice;
 
 // Run whisper_full() on the supplied PCM and return the trimmed text
-// or an error. Pure compute — caller handles the transcribing flag
-// and threading. Defined out here so both push-to-talk and
-// continuous-mode workers share one implementation.
-void run_whisper(std::vector<float> pcm,
-                 std::function<void(const std::string&,
-                                    const std::string&)> on_done) {
+// or an error string. Pure compute — caller handles the transcribing
+// flag and threading. Defined out here so push-to-talk, continuous
+// final-pass, and streaming workers all share one implementation.
+bool run_whisper_text(const std::vector<float>& pcm,
+                      std::string& text_out,
+                      std::string& err_out) {
     whisper_context* ctx = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_voice.mu);
         ctx = g_voice.ctx;
     }
     if (!ctx) {
-        if (on_done) on_done("", "Voice engine shut down");
-        return;
+        err_out = "Voice engine shut down";
+        return false;
     }
 
     whisper_full_params wparams =
@@ -86,14 +141,15 @@ void run_whisper(std::vector<float> pcm,
     wparams.print_special    = false;
     wparams.translate        = false;
     wparams.language         = "en";
-    wparams.n_threads        = 4;
+    wparams.n_threads        = whisper_thread_count();
     wparams.no_context       = true;
     wparams.single_segment   = true;
+    wparams.audio_ctx        = kWhisperAudioCtx;
 
     if (whisper_full(ctx, wparams, pcm.data(),
                      static_cast<int>(pcm.size())) != 0) {
-        if (on_done) on_done("", "Whisper inference failed");
-        return;
+        err_out = "Whisper inference failed";
+        return false;
     }
 
     std::string text;
@@ -107,11 +163,68 @@ void run_whisper(std::vector<float> pcm,
                      text[a] == '\n' || text[a] == '\r')) ++a;
     while (b > a && (text[b-1] == ' ' || text[b-1] == '\t' ||
                      text[b-1] == '\n' || text[b-1] == '\r')) --b;
-    text = text.substr(a, b - a);
+    text_out = text.substr(a, b - a);
+    return true;
+}
 
+// Callback-style wrapper around run_whisper_text. Used by the
+// push-to-talk and continuous final-pass paths, which post results
+// back to the GUI thread via a marshalling callback.
+void run_whisper(std::vector<float> pcm,
+                 std::function<void(const std::string&,
+                                    const std::string&)> on_done) {
+    std::string text, err;
+    if (!run_whisper_text(pcm, text, err)) {
+        if (on_done) on_done("", err);
+        return;
+    }
     if (on_done) {
         if (text.empty()) on_done("", "No speech recognised");
         else              on_done(text, "");
+    }
+}
+
+// Streaming worker: while continuous_running is true, polls
+// should_stream and runs whisper passes on the current buffer. Each
+// pass produces a transcript that the VAD monitor can consume on
+// end-of-speech, hiding inference latency under the audio capture.
+void voice_stream_loop() {
+    while (g_voice.continuous_running.load()) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(kStreamSleepMs));
+        if (!g_voice.continuous_running.load()) break;
+        if (!g_voice.should_stream.load()) continue;
+
+        // Grab a tail of the buffer. Cap at kStreamMaxAudioSec so
+        // the encoder stays cheap for long-winded utterances.
+        std::vector<float> pcm;
+        size_t covered_size = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_voice.mu);
+            const size_t total = g_voice.buffer.size();
+            const size_t cap =
+                static_cast<size_t>(kSampleRate * kStreamMaxAudioSec);
+            const size_t offset = total > cap ? total - cap : 0;
+            pcm.assign(g_voice.buffer.begin() + offset,
+                       g_voice.buffer.end());
+            covered_size = total;
+        }
+        if (static_cast<int>(pcm.size()) < kMinUtteranceSamples) continue;
+        if (!g_voice.should_stream.load()) continue;  // re-check
+
+        std::string text, err;
+        if (!run_whisper_text(pcm, text, err)) continue;
+        if (text.empty()) continue;
+
+        // Drop results that arrive after the monitor already moved
+        // on (should_stream cleared mid-inference); their text is
+        // for an utterance that's already been dispatched.
+        if (!g_voice.should_stream.load()) continue;
+
+        std::lock_guard<std::mutex> lk(g_voice.mu);
+        g_voice.last_stream_text       = std::move(text);
+        g_voice.last_stream_finish_us  = voice_now_us();
+        g_voice.last_stream_audio_size = covered_size;
     }
 }
 
@@ -129,12 +242,22 @@ float tail_rms(const std::vector<float>& buf) {
 }
 
 // Monitor loop: runs on g_voice.monitor_thread while
-// continuous_running is true. Owns its own VAD state; communicates
-// with the rest of the system only by reading the buffer and (on a
-// dispatch) spawning a detached whisper worker.
+// continuous_running is true. Owns the VAD state; gates the
+// streaming worker via should_stream; consumes streaming results on
+// end-of-speech and dispatches them to the user-supplied callback.
 void voice_continuous_loop() {
     bool in_speech = false;
     int  silence_ms = 0;
+
+    auto enter_speech = [&]() {
+        // Reset streaming state so we never reuse the previous
+        // utterance's transcript.
+        std::lock_guard<std::mutex> lk(g_voice.mu);
+        g_voice.last_stream_text.clear();
+        g_voice.last_stream_finish_us = 0;
+        g_voice.last_stream_audio_size = 0;
+        g_voice.should_stream.store(true);
+    };
 
     while (g_voice.continuous_running.load()) {
         std::this_thread::sleep_for(
@@ -152,6 +275,7 @@ void voice_continuous_loop() {
         }
 
         if (rms > kSpeechThreshold) {
+            if (!in_speech) enter_speech();
             in_speech  = true;
             silence_ms = 0;
             continue;
@@ -180,26 +304,53 @@ void voice_continuous_loop() {
         silence_ms += kVadTickMs;
         if (silence_ms < kSilenceMs) continue;
 
-        // Trailing silence reached: dispatch the utterance. Snapshot
-        // the callback under the same lock as the buffer swap so a
-        // concurrent voice_shutdown() can't tear it out from under
-        // the worker.
+        // End-of-speech reached. Stop streaming, then decide whether
+        // to consume the latest streaming result or run a fresh
+        // pass on the full buffer.
+        g_voice.should_stream.store(false);
+
         std::vector<float> pcm;
         std::function<void(const std::string&, const std::string&)> cb;
+        std::string streamed_text;
+        int64_t     stream_finish_us = 0;
+        size_t      stream_audio_size = 0;
+        size_t      total_size = 0;
         {
             std::lock_guard<std::mutex> lk(g_voice.mu);
             pcm.swap(g_voice.buffer);
-            cb = g_voice.on_utterance;
+            total_size        = pcm.size();
+            cb                = g_voice.on_utterance;
+            streamed_text     = std::move(g_voice.last_stream_text);
+            stream_finish_us  = g_voice.last_stream_finish_us;
+            stream_audio_size = g_voice.last_stream_audio_size;
+            g_voice.last_stream_text.clear();
+            g_voice.last_stream_finish_us = 0;
+            g_voice.last_stream_audio_size = 0;
         }
         in_speech  = false;
         silence_ms = 0;
 
         if (static_cast<int>(pcm.size()) < kMinUtteranceSamples) continue;
 
+        // Use streaming result if it's recent and was on most of the
+        // captured audio. The streaming pass missed at most one
+        // sleep-interval's worth of samples plus the tail silence;
+        // if the gap is bigger than that, the user must have spoken
+        // a final word the streaming pass didn't cover — fall back.
+        bool fresh = stream_finish_us != 0 &&
+            (voice_now_us() - stream_finish_us) <
+            kStreamFreshnessMs * 1000;
+        bool covers = stream_audio_size + kStreamCoverageSlackSamples
+            >= total_size;
+        if (!streamed_text.empty() && fresh && covers) {
+            if (cb) cb(streamed_text, "");
+            continue;
+        }
+
+        // Fresh-pass fallback. Use the existing detached-worker
+        // pattern with the transcribing flag to serialise.
         bool expected = false;
         if (!g_voice.transcribing.compare_exchange_strong(expected, true)) {
-            // Previous transcription still running — drop this one
-            // and let the next utterance ride.
             continue;
         }
 
@@ -208,6 +359,9 @@ void voice_continuous_loop() {
             g_voice.transcribing.store(false);
         }).detach();
     }
+
+    // On exit, make sure the streaming worker is parked.
+    g_voice.should_stream.store(false);
 }
 
 // SDL audio callback (capture). Runs on SDL's audio thread; locks
@@ -345,24 +499,29 @@ bool voice_start_continuous(
         if (g_voice.continuous_running.load()) return true;  // idempotent
         g_voice.buffer.clear();
         g_voice.on_utterance = std::move(on_utterance);
+        g_voice.last_stream_text.clear();
+        g_voice.last_stream_finish_us = 0;
+        g_voice.last_stream_audio_size = 0;
     }
     g_voice.capturing.store(true);
     SDL_PauseAudioDevice(g_voice.capture_dev, 0);
+    g_voice.should_stream.store(false);
     g_voice.continuous_running.store(true);
     g_voice.monitor_thread = std::thread(voice_continuous_loop);
+    g_voice.stream_thread  = std::thread(voice_stream_loop);
     return true;
 }
 
 void voice_stop_continuous() {
-    if (!g_voice.continuous_running.exchange(false)) {
-        // Wasn't running — but if a stale thread handle exists (e.g.
-        // the monitor exited on its own), still join it for hygiene.
-        if (g_voice.monitor_thread.joinable())
-            g_voice.monitor_thread.join();
-        return;
-    }
+    bool was_running = g_voice.continuous_running.exchange(false);
+    g_voice.should_stream.store(false);
+
     if (g_voice.monitor_thread.joinable())
         g_voice.monitor_thread.join();
+    if (g_voice.stream_thread.joinable())
+        g_voice.stream_thread.join();
+
+    if (!was_running) return;
 
     std::lock_guard<std::mutex> lk(g_voice.mu);
     if (g_voice.capture_dev) {
@@ -370,6 +529,9 @@ void voice_stop_continuous() {
     }
     g_voice.capturing.store(false);
     g_voice.buffer.clear();
+    g_voice.last_stream_text.clear();
+    g_voice.last_stream_finish_us = 0;
+    g_voice.last_stream_audio_size = 0;
 }
 
 #endif  // !__EMSCRIPTEN__
