@@ -289,3 +289,140 @@ bool parse_voice_move(const std::string& utterance,
     uci_out = move_to_uci(matches[0].first, matches[0].second, dest_col, dest_row);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// UI-button command parser
+// ---------------------------------------------------------------------------
+namespace {
+
+// Normalise a transcribed utterance for command matching: lowercase,
+// drop everything that isn't a letter or whitespace (apostrophes,
+// punctuation, digits — none of our button labels contain digits),
+// collapse runs of whitespace, trim.
+std::string normalize_command(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    bool last_space = true;
+    for (char c : s) {
+        unsigned char u = static_cast<unsigned char>(c);
+        if (std::isalpha(u)) {
+            out.push_back(static_cast<char>(std::tolower(u)));
+            last_space = false;
+        } else if (std::isspace(u)) {
+            if (!last_space) {
+                out.push_back(' ');
+                last_space = true;
+            }
+        }
+        // skip anything else
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+
+bool match_any(const std::string& s,
+               std::initializer_list<const char*> phrases) {
+    for (const char* p : phrases)
+        if (s == p) return true;
+    return false;
+}
+
+bool is_back_phrase(const std::string& s) {
+    return match_any(s, {
+        "back", "back to menu", "back to the menu",
+        "back to main menu", "main menu", "menu",
+        "go back", "exit", "quit", "leave",
+    });
+}
+
+}  // namespace
+
+VoiceCommand parse_voice_command(const std::string& utterance,
+                                 const VoiceCommandContext& ctx) {
+    std::string s = normalize_command(utterance);
+    if (s.empty()) return VoiceCommand::None;
+
+    switch (ctx.mode) {
+    case MODE_MENU:
+        if (match_any(s, {"play", "start", "new game", "begin",
+                          "go", "start game", "play chess"}))
+            return VoiceCommand::StartGame;
+        if (match_any(s, {"challenges", "challenge", "puzzles", "puzzle"}))
+            return VoiceCommand::OpenChallenges;
+        if (match_any(s, {"options", "settings", "preferences"}))
+            return VoiceCommand::OpenOptions;
+        break;
+
+    case MODE_PREGAME:
+        if (match_any(s, {"start", "play", "go", "begin",
+                          "start game", "lets go", "lets start"}))
+            return VoiceCommand::StartGame;
+        if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
+        if (match_any(s, {"white", "play white", "im white",
+                          "i play white", "i am white"}))
+            return VoiceCommand::PlayWhite;
+        if (match_any(s, {"black", "play black", "im black",
+                          "i play black", "i am black"}))
+            return VoiceCommand::PlayBlack;
+        break;
+
+    case MODE_OPTIONS:
+        if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
+        if (match_any(s, {"cartoon outline", "outline", "cartoon",
+                          "toggle outline", "toggle cartoon",
+                          "toggle cartoon outline"}))
+            return VoiceCommand::ToggleCartoonOutline;
+        if (match_any(s, {"continuous voice", "voice mode",
+                          "toggle voice", "voice on", "voice off",
+                          "voice"}))
+            return VoiceCommand::ToggleContinuousVoice;
+        break;
+
+    case MODE_PLAYING:
+        if (ctx.game_over || ctx.analysis_mode) {
+            if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
+            if (ctx.analysis_mode &&
+                match_any(s, {"continue playing", "keep playing",
+                              "play on", "continue", "resume"}))
+                return VoiceCommand::ContinuePlaying;
+            if (ctx.game_over && !ctx.analysis_mode &&
+                match_any(s, {"new game", "play again", "rematch",
+                              "new match", "again"}))
+                return VoiceCommand::NewGame;
+        } else {
+            // Live game — same set of commands the withdraw flag
+            // exposes via mouse click. Opens the confirmation modal.
+            if (match_any(s, {"resign", "withdraw", "give up",
+                              "i resign", "i give up", "surrender",
+                              "raise the flag", "wave the flag"}))
+                return VoiceCommand::Resign;
+        }
+        break;
+
+    case MODE_CHALLENGE_SELECT:
+        if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
+        break;
+
+    case MODE_CHALLENGE:
+        if (ctx.challenge_show_summary) {
+            if (is_back_phrase(s) ||
+                match_any(s, {"done", "ok", "okay", "finish"}))
+                return VoiceCommand::BackToMenu;
+            break;
+        }
+        if (ctx.challenge_solved &&
+            match_any(s, {"next", "next puzzle", "next challenge",
+                          "continue", "go next"}))
+            return VoiceCommand::NextPuzzle;
+        if (ctx.challenge_mistake_ready &&
+            match_any(s, {"try again", "retry", "again",
+                          "restart", "reset"}))
+            return VoiceCommand::TryAgain;
+        if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
+        break;
+
+    default:
+        break;
+    }
+    return VoiceCommand::None;
+}

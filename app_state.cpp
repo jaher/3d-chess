@@ -1869,6 +1869,90 @@ bool voice_action_allowed(const AppState& a) {
     return true;
 }
 
+// Try the supplied utterance against the UI-button command parser and
+// dispatch if it matches. Returns true if a command fired (caller
+// should not also try parsing as a chess move).
+bool try_voice_command(AppState& a, const std::string& utterance) {
+    VoiceCommandContext ctx;
+    ctx.mode                     = a.mode;
+    ctx.game_over                = a.game.game_over;
+    ctx.analysis_mode            = a.game.analysis_mode;
+    ctx.challenge_solved         = a.challenge_solved;
+    ctx.challenge_mistake_ready  = mistake_reveal_ready(a);
+    ctx.challenge_show_summary   = a.challenge_show_summary;
+
+    VoiceCommand cmd = parse_voice_command(utterance, ctx);
+    if (cmd == VoiceCommand::None) return false;
+
+    switch (cmd) {
+    case VoiceCommand::BackToMenu:
+        app_enter_menu(a);
+        break;
+    case VoiceCommand::StartGame:
+        if (a.mode == MODE_MENU)         app_enter_pregame(a);
+        else if (a.mode == MODE_PREGAME) app_enter_game(a);
+        break;
+    case VoiceCommand::NewGame:
+        app_enter_pregame(a);
+        break;
+    case VoiceCommand::OpenOptions:
+        app_enter_options(a);
+        break;
+    case VoiceCommand::OpenChallenges:
+        app_enter_challenge_select(a);
+        break;
+    case VoiceCommand::ContinuePlaying:
+        if (a.game.analysis_mode) {
+            game_exit_analysis(a.game);
+            a.continue_playing_hover = false;
+            a.endgame_menu_hover = false;
+            app_refresh_status(a);
+        }
+        break;
+    case VoiceCommand::Resign:
+        // Same effect as clicking the withdraw flag: open the
+        // confirmation modal. The user can confirm with the existing
+        // Yes/No buttons (voice support for the modal is future work).
+        if (a.mode == MODE_PLAYING && !a.game.game_over &&
+            !a.game.analysis_mode) {
+            a.withdraw_confirm_open = true;
+            a.withdraw_hover = 0;
+        }
+        break;
+    case VoiceCommand::NextPuzzle: {
+        int next = a.current_challenge.current_index + 1;
+        if (next < static_cast<int>(a.current_challenge.fens.size())) {
+            a.transition_pending_next = next;
+        } else {
+            a.challenge_show_summary = true;
+        }
+        break;
+    }
+    case VoiceCommand::TryAgain:
+        app_reset_challenge_puzzle(a);
+        break;
+    case VoiceCommand::ToggleCartoonOutline:
+        a.cartoon_outline = !a.cartoon_outline;
+        break;
+    case VoiceCommand::ToggleContinuousVoice:
+        app_voice_toggle_continuous_request(a);
+        break;
+    case VoiceCommand::PlayWhite:
+        a.human_plays_white = true;
+        break;
+    case VoiceCommand::PlayBlack:
+        a.human_plays_white = false;
+        break;
+    case VoiceCommand::None:
+        return false;
+    }
+
+    std::string msg = std::string("Voice — \"") + utterance + "\"";
+    set_status(a, msg.c_str());
+    queue_redraw(a);
+    return true;
+}
+
 // Shared body for both push-to-talk (app_voice_apply_result) and
 // continuous (app_voice_continuous_apply) result delivery. Caller is
 // responsible for any flag bookkeeping (e.g. clearing voice_listening).
@@ -1881,6 +1965,11 @@ void apply_voice_utterance(AppState& a,
         queue_redraw(a);
         return;
     }
+
+    // UI-button commands first — they're mode-specific so a chess
+    // move utterance like "knight d3" never accidentally triggers
+    // one. Falls through to move parsing if nothing matches.
+    if (try_voice_command(a, utterance)) return;
 
     GameState& gs = a.game;
     if (!voice_action_allowed(a)) {

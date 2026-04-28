@@ -172,6 +172,26 @@ again to turn it back off (it's session-only, off by default on
 launch). While continuous mode is on, SPACE is suppressed with a
 status-bar hint so the two modes never race for the same mic.
 
+#### Voice UI commands
+
+In addition to chess moves, the same speech engine recognises spoken
+button labels for the screen you're on. Examples:
+
+- **Main menu**: "play", "challenges", "options"
+- **Pregame**: "start", "white", "black", "back"
+- **Options**: "back", "cartoon outline", "continuous voice"
+- **Live game**: "resign" / "withdraw" (opens the same confirmation as
+  clicking the white flag)
+- **Game over / analysis**: "back to menu", "continue playing", "new game"
+- **Challenge solved**: "next", "next puzzle"
+- **Challenge mistake**: "try again", "retry"
+- **Challenge summary**: "back", "done"
+
+Recognition is mode-aware: each phrase only matches when the
+corresponding button is on screen. Chess moves and UI commands
+share the parser — say "knight d3" to move, "back to menu" to leave
+the game.
+
 The `whisper_input.cpp` parser is pure C++ and exercised by
 `tests/voice_input_test.cpp`. SDL2 capture and whisper.cpp inference
 live in `voice_whisper.cpp` and are excluded from the test binary so

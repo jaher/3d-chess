@@ -82,3 +82,46 @@ bool parse_voice_move(const std::string& utterance,
                       const GameState& gs,
                       std::string& uci_out,
                       std::string& error_out);
+
+// ---------------------------------------------------------------------------
+// UI-button voice commands. Pure parser. Recognises spoken button
+// labels ("back to menu", "next puzzle", "try again", ...) and maps
+// them to a VoiceCommand enum the dispatcher can act on. Mode-aware
+// so commands only match in screens where the corresponding button
+// is on screen — saying "back to menu" mid-game (live, no game over)
+// returns None, not BackToMenu, because there's no such button visible.
+// ---------------------------------------------------------------------------
+enum class VoiceCommand {
+    None,
+    BackToMenu,
+    StartGame,            // Menu / Pregame "Play" / "Start"
+    NewGame,              // Game-over → start a fresh game
+    OpenOptions,
+    OpenChallenges,
+    ContinuePlaying,      // Analysis-mode "Continue Playing"
+    Resign,               // Mid-game "Resign" — opens withdraw modal
+    NextPuzzle,           // Challenge "Next" after solve
+    TryAgain,             // Challenge "Try Again" after mistake
+    ToggleCartoonOutline,
+    ToggleContinuousVoice,
+    PlayWhite,            // Pregame side toggle
+    PlayBlack,
+};
+
+// Snapshot of the bits of AppState that affect which commands are
+// valid. Filled by the caller before invoking parse_voice_command —
+// keeps the parser pure (no AppState dependency).
+struct VoiceCommandContext {
+    GameMode mode             = MODE_MENU;
+    bool game_over            = false;
+    bool analysis_mode        = false;
+    bool challenge_solved     = false;
+    bool challenge_mistake_ready = false;
+    bool challenge_show_summary  = false;
+};
+
+// Match `utterance` against the buttons currently on screen. Returns
+// VoiceCommand::None if nothing fits — the caller can then fall
+// through to parse_voice_move for a chess-move attempt.
+VoiceCommand parse_voice_command(const std::string& utterance,
+                                 const VoiceCommandContext& ctx);
