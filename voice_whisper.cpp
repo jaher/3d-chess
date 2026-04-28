@@ -14,9 +14,11 @@
 #include <SDL.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -33,20 +35,40 @@ constexpr int kSampleRate = 16000;
 constexpr int kBufferSamplesMax = kSampleRate * 30;  // 30 s safety cap
 
 // VAD tuning for continuous mode. Energy thresholds are linear RMS on
-// the float32 samples (range [-1, 1]); 0.01 ≈ -40 dBFS, comfortably
-// above typical room noise but below normal speech. `kSilenceMs` is
-// how long the trailing silence has to persist before we dispatch.
+// the float32 samples (range [-1, 1]). 0.025 ≈ -32 dBFS, well above
+// typical room noise (-50 to -60 dBFS) and squarely below normal
+// conversational speech (-20 to -30 dBFS). Override with the env
+// var CHESS_VOICE_VAD_THRESHOLD if your mic / room noise floor is
+// different.
 //
-// Silence threshold is short here (350 ms) because the streaming
-// worker has been transcribing the audio in parallel during speech —
-// we don't pay full inference latency at end-of-speech, so a short
-// pause is enough to commit the move.
-constexpr float kSpeechThreshold      = 0.012f;
-constexpr float kSilenceThreshold     = 0.006f;
+// `kSilenceMs` is short (350 ms) because the streaming worker has
+// been transcribing in parallel during speech — we don't pay full
+// inference latency at end-of-speech, so a short pause is enough to
+// commit the move. `kSpeechOnsetTicks` requires a couple of
+// consecutive above-threshold VAD ticks before we declare speech,
+// rejecting brief spikes (door slam, mouse click, throat clear).
+constexpr float kSpeechThresholdDefault = 0.025f;
+constexpr float kSilenceThresholdDefault = 0.012f;
 constexpr int   kVadTickMs            = 200;
 constexpr int   kSilenceMs            = 350;
+constexpr int   kSpeechOnsetTicks     = 2;
 constexpr int   kVadWindowSamples     = kSampleRate / 10;   // 100 ms RMS window
 constexpr int   kMinUtteranceSamples  = kSampleRate / 4;    // 250 ms
+
+float vad_speech_threshold() {
+    if (const char* v = std::getenv("CHESS_VOICE_VAD_THRESHOLD")) {
+        float f = static_cast<float>(std::atof(v));
+        if (f > 0.0001f && f < 1.0f) return f;
+    }
+    return kSpeechThresholdDefault;
+}
+float vad_silence_threshold() {
+    if (const char* v = std::getenv("CHESS_VOICE_VAD_SILENCE_THRESHOLD")) {
+        float f = static_cast<float>(std::atof(v));
+        if (f > 0.0001f && f < 1.0f) return f;
+    }
+    return kSilenceThresholdDefault;
+}
 
 // Streaming worker tuning. While the user is speaking, a persistent
 // background thread runs whisper repeatedly on the audio captured so
@@ -140,6 +162,55 @@ struct TranscribingGuard {
     }
 };
 
+// Whisper readily hallucinates well-known phrases ("Thank you.",
+// "Thanks for watching!", bracketed sound markers, etc.) when fed
+// silence or non-speech noise. The no_speech threshold inside
+// whisper_full catches most of them, but a few slip through. Drop
+// any output whose normalised form appears in this list, plus
+// trivial outputs (empty after stripping punctuation).
+bool is_likely_hallucination(const std::string& raw) {
+    std::string s;
+    s.reserve(raw.size());
+    for (char c : raw) {
+        if (std::isalpha(static_cast<unsigned char>(c)) ||
+            std::isdigit(static_cast<unsigned char>(c)) ||
+            c == ' ') {
+            s.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c))));
+        }
+    }
+    // Collapse runs of whitespace.
+    std::string norm;
+    bool last_space = true;
+    for (char c : s) {
+        if (c == ' ') {
+            if (!last_space) norm.push_back(' ');
+            last_space = true;
+        } else {
+            norm.push_back(c);
+            last_space = false;
+        }
+    }
+    while (!norm.empty() && norm.back() == ' ') norm.pop_back();
+
+    if (norm.empty()) return true;
+    if (norm.size() < 2) return true;  // single char ("."  → "", "I" → "i")
+
+    static const char* kPhrases[] = {
+        "thank you", "thanks", "thanks for watching",
+        "thank you for watching", "thanks for watching everyone",
+        "you", "yeah", "uh", "um", "hmm", "okay", "ok",
+        "blank audio", "music", "applause", "silence",
+        "no speech", "subtitles", "subtitles by",
+        "subscribe", "like and subscribe",
+        "bye", "bye bye", "goodbye",
+    };
+    for (const char* p : kPhrases) {
+        if (norm == p) return true;
+    }
+    return false;
+}
+
 // Run whisper_full() on the supplied PCM and return the trimmed text
 // or an error string. Pure compute — caller handles the transcribing
 // flag and threading. Defined out here so push-to-talk, continuous
@@ -169,6 +240,14 @@ bool run_whisper_text(const std::vector<float>& pcm,
     wparams.no_context       = true;
     wparams.single_segment   = true;
     wparams.audio_ctx        = kWhisperAudioCtx;
+    // Hallucination guards. Whisper readily invents text on silence
+    // ("Thank you.", "Thanks for watching!", "[BLANK_AUDIO]", ...).
+    // Boost the no-speech threshold from 0.6 (default) to 0.8 so
+    // marginal segments are dropped, and tell the decoder to
+    // suppress non-speech tokens (music notes, sfx markers).
+    wparams.no_speech_thold          = 0.8f;
+    wparams.suppress_blank           = true;
+    wparams.suppress_nst             = true;
 
     if (whisper_full(ctx, wparams, pcm.data(),
                      static_cast<int>(pcm.size())) != 0) {
@@ -187,7 +266,13 @@ bool run_whisper_text(const std::vector<float>& pcm,
                      text[a] == '\n' || text[a] == '\r')) ++a;
     while (b > a && (text[b-1] == ' ' || text[b-1] == '\t' ||
                      text[b-1] == '\n' || text[b-1] == '\r')) --b;
-    text_out = text.substr(a, b - a);
+    text = text.substr(a, b - a);
+
+    if (is_likely_hallucination(text)) {
+        text_out.clear();
+    } else {
+        text_out = std::move(text);
+    }
     return true;
 }
 
@@ -333,6 +418,10 @@ void voice_continuous_loop() {
 void voice_continuous_loop_inner() {
     bool in_speech = false;
     int  silence_ms = 0;
+    int  onset_ticks = 0;
+
+    const float speech_thr  = vad_speech_threshold();
+    const float silence_thr = vad_silence_threshold();
 
     auto enter_speech = [&]() {
         // Reset streaming state so we never reuse the previous
@@ -359,12 +448,19 @@ void voice_continuous_loop_inner() {
             rms = tail_rms(g_voice.buffer);
         }
 
-        if (rms > kSpeechThreshold) {
-            if (!in_speech) enter_speech();
+        if (rms > speech_thr) {
+            if (!in_speech) {
+                // Require kSpeechOnsetTicks consecutive ticks above
+                // threshold before declaring speech — rejects a
+                // single noise spike.
+                if (++onset_ticks < kSpeechOnsetTicks) continue;
+                enter_speech();
+            }
             in_speech  = true;
             silence_ms = 0;
             continue;
         }
+        onset_ticks = 0;
         if (!in_speech) {
             // Pre-speech silence: don't let the buffer grow forever
             // while the user just isn't talking. Trim so we never
@@ -380,7 +476,7 @@ void voice_continuous_loop_inner() {
             }
             continue;
         }
-        if (rms > kSilenceThreshold) {
+        if (rms > silence_thr) {
             // Voiced-but-quiet: still in speech, just don't accrue
             // silence yet.
             continue;
