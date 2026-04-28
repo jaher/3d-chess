@@ -122,6 +122,24 @@ struct VoiceState {
 
 VoiceState g_voice;
 
+// RAII guard that releases g_voice.transcribing on scope exit. The
+// flag is the global "whisper context is in use" lock — leaking it
+// (e.g. via an exception thrown out of run_whisper_text) wedges
+// continuous mode permanently because every future streaming pass
+// and every monitor-thread fallback would silently CAS-fail.
+struct TranscribingGuard {
+    bool acquired = false;
+    bool try_acquire() {
+        bool expected = false;
+        acquired = g_voice.transcribing.compare_exchange_strong(
+            expected, true);
+        return acquired;
+    }
+    ~TranscribingGuard() {
+        if (acquired) g_voice.transcribing.store(false);
+    }
+};
+
 // Run whisper_full() on the supplied PCM and return the trimmed text
 // or an error string. Pure compute — caller handles the transcribing
 // flag and threading. Defined out here so push-to-talk, continuous
@@ -225,16 +243,31 @@ void voice_stream_loop() {
 
         // Serialise with the monitor's fresh-pass fallback. If the
         // monitor is mid-final-pass, skip this iteration; we'll try
-        // again in kStreamSleepMs.
-        bool expected = false;
-        if (!g_voice.transcribing.compare_exchange_strong(expected, true)) {
+        // again in kStreamSleepMs. Guard releases the flag on every
+        // exit path including exceptions thrown by run_whisper_text.
+        std::string text, err;
+        bool ok = false;
+        {
+            TranscribingGuard guard;
+            if (!guard.try_acquire()) continue;
+            try {
+                ok = run_whisper_text(pcm, text, err);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr,
+                    "voice: streaming whisper threw: %s\n", e.what());
+                continue;
+            } catch (...) {
+                std::fprintf(stderr,
+                    "voice: streaming whisper threw unknown\n");
+                continue;
+            }
+        }
+
+        if (!ok) {
+            std::fprintf(stderr, "voice: streaming pass failed: %s\n",
+                         err.c_str());
             continue;
         }
-        std::string text, err;
-        bool ok = run_whisper_text(pcm, text, err);
-        g_voice.transcribing.store(false);
-
-        if (!ok) continue;
         if (text.empty()) continue;
 
         // Drop results that arrive after the monitor already moved
@@ -271,7 +304,33 @@ float tail_rms(const std::vector<float>& buf) {
 // continuous_running is true. Owns the VAD state; gates the
 // streaming worker via should_stream; consumes streaming results on
 // end-of-speech and dispatches them to the user-supplied callback.
+//
+// Wrapped in a top-level try/catch so an unexpected exception
+// (bad_alloc from a vector resize, system_error from a mutex, a
+// user callback throwing) doesn't silently kill the loop and
+// permanently wedge continuous mode. Errors print to stderr; the
+// loop keeps going.
+void voice_continuous_loop_inner();
 void voice_continuous_loop() {
+    while (g_voice.continuous_running.load()) {
+        try {
+            voice_continuous_loop_inner();
+            return;  // clean exit
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "voice: monitor loop threw: %s — restarting\n",
+                e.what());
+        } catch (...) {
+            std::fprintf(stderr,
+                "voice: monitor loop threw unknown — restarting\n");
+        }
+        // Cool-down so a tight throw-loop doesn't pin a core.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    g_voice.should_stream.store(false);
+}
+
+void voice_continuous_loop_inner() {
     bool in_speech = false;
     int  silence_ms = 0;
 
@@ -381,17 +440,27 @@ void voice_continuous_loop() {
             continue;
         }
 
-        // Fresh-pass fallback. Use the existing detached-worker
-        // pattern with the transcribing flag to serialise.
-        bool expected = false;
-        if (!g_voice.transcribing.compare_exchange_strong(expected, true)) {
+        // Fresh-pass fallback. Run inline on this thread (the
+        // monitor) so the RAII guard protects the transcribing flag
+        // even if whisper or the callback throws. The monitor
+        // briefly stalls while inference runs — fine, the SDL
+        // capture thread keeps appending samples independently.
+        TranscribingGuard guard;
+        if (!guard.try_acquire()) {
+            std::fprintf(stderr,
+                "voice: end-of-speech fallback couldn't acquire "
+                "transcribing flag — utterance dropped\n");
             continue;
         }
-
-        std::thread([pcm = std::move(pcm), cb = std::move(cb)]() mutable {
+        try {
             run_whisper(std::move(pcm), std::move(cb));
-            g_voice.transcribing.store(false);
-        }).detach();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "voice: fallback whisper threw: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr,
+                "voice: fallback whisper threw unknown\n");
+        }
     }
 
     // On exit, make sure the streaming worker is parked.
@@ -516,9 +585,23 @@ void voice_stop_and_transcribe(
         return;
     }
 
-    std::thread([pcm = std::move(pcm), on_done = std::move(on_done)]() mutable {
-        run_whisper(std::move(pcm), std::move(on_done));
-        g_voice.transcribing.store(false);
+    // Worker thread inherits the flag; releases unconditionally on
+    // exit via the local Releaser RAII (covers exceptions thrown by
+    // whisper or by the user-supplied on_done callback).
+    std::thread([pcm = std::move(pcm),
+                 on_done = std::move(on_done)]() mutable {
+        struct Releaser {
+            ~Releaser() { g_voice.transcribing.store(false); }
+        } releaser;
+        try {
+            run_whisper(std::move(pcm), std::move(on_done));
+        } catch (const std::exception& e) {
+            std::fprintf(stderr,
+                "voice: PTT whisper threw: %s\n", e.what());
+        } catch (...) {
+            std::fprintf(stderr,
+                "voice: PTT whisper threw unknown\n");
+        }
     }).detach();
 }
 
