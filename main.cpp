@@ -200,6 +200,13 @@ static gboolean on_voice_continuous_partial_main(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+// Desktop always supports continuous voice (whisper.cpp is built
+// in). The web build uses a runtime feature-detect — see
+// web/voice_web.cpp.
+bool app_voice_continuous_supported() {
+    return true;
+}
+
 // Bridge between the shared options-screen click handler (in
 // app_state.cpp) and the GTK marshalling code that lives here. Keeps
 // g_idle_add out of the cross-platform layer.

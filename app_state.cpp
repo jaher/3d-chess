@@ -986,24 +986,16 @@ static void release_challenge_select(AppState& a, double mx, double my,
 
 static void release_options(AppState& a, double mx, double my,
                             int width, int height) {
-#ifndef __EMSCRIPTEN__
-    constexpr bool kContinuousVoiceSupported = true;
-#else
-    constexpr bool kContinuousVoiceSupported = false;
-#endif
-    int btn = options_hit_test(mx, my, width, height,
-                               kContinuousVoiceSupported);
+    bool supported = app_voice_continuous_supported();
+    int btn = options_hit_test(mx, my, width, height, supported);
     if (btn == 1) {
         app_enter_menu(a);
     } else if (btn == 2) {
         a.cartoon_outline = !a.cartoon_outline;
         queue_redraw(a);
-    }
-#ifndef __EMSCRIPTEN__
-    else if (btn == 3) {
+    } else if (btn == 3 && supported) {
         app_voice_toggle_continuous_request(a);
     }
-#endif
 }
 
 static void release_challenge(AppState& a, double mx, double my,
@@ -1216,13 +1208,8 @@ static void motion_challenge_select(AppState& a, double mx, double my,
 
 static void motion_options(AppState& a, double mx, double my,
                            int width, int height) {
-#ifndef __EMSCRIPTEN__
-    constexpr bool kContinuousVoiceSupported = true;
-#else
-    constexpr bool kContinuousVoiceSupported = false;
-#endif
     int h = options_hit_test(mx, my, width, height,
-                             kContinuousVoiceSupported);
+                             app_voice_continuous_supported());
     if (h != a.options_hover) {
         a.options_hover = h;
         queue_redraw(a);
@@ -1681,15 +1668,10 @@ static void render_challenge_select(AppState& a, int width, int height) {
 }
 
 static void render_options(AppState& a, int width, int height) {
-#ifndef __EMSCRIPTEN__
-    constexpr bool kContinuousVoiceSupported = true;
-    bool voice_continuous = a.voice_continuous_enabled;
-#else
-    constexpr bool kContinuousVoiceSupported = false;
-    bool voice_continuous = false;
-#endif
-    renderer_draw_options(a.cartoon_outline, voice_continuous,
-                          kContinuousVoiceSupported,
+    bool supported = app_voice_continuous_supported();
+    renderer_draw_options(a.cartoon_outline,
+                          supported && a.voice_continuous_enabled,
+                          supported,
                           width, height, a.options_hover);
 }
 
@@ -1871,19 +1853,10 @@ void app_render(AppState& a, int width, int height) {
 }
 
 // ===========================================================================
-// Voice input (push-to-talk on SPACE) — desktop only
+// Voice input — universal helpers (used by both desktop whisper.cpp and
+// web SpeechRecognition drivers).
 // ===========================================================================
-#ifndef __EMSCRIPTEN__
-
 namespace {
-
-// Resolve the model path at first-use time so users can override via
-// CHESS_WHISPER_MODEL without recompiling.
-std::string voice_model_path() {
-    if (const char* env = std::getenv("CHESS_WHISPER_MODEL"))
-        if (*env) return env;
-    return "third_party/whisper-models/ggml-distil-small.en.bin";
-}
 
 // Returns true when voice can run right now (right mode, our turn,
 // nothing blocking). Doesn't touch any state — pure check.
@@ -1896,57 +1869,12 @@ bool voice_action_allowed(const AppState& a) {
     return true;
 }
 
-}  // namespace
-
-void app_voice_press(AppState& a) {
-    if (a.voice_continuous_enabled) {
-        set_status(a,
-            "Continuous mode is on — toggle off in Options to use SPACE");
-        return;
-    }
-    if (!voice_action_allowed(a)) return;
-    if (a.voice_listening) {
-        set_status(a, "Voice — still transcribing previous utterance");
-        return;
-    }
-    if (!a.voice_initialized) {
-        if (a.voice_init_failed) return;  // sticky — already reported
-        std::string err;
-        set_status(a, "Voice — loading model...");
-        if (!voice_init(voice_model_path(), err)) {
-            a.voice_init_failed = true;
-            std::string msg = "Voice unavailable: " + err +
-                              " (run 'make fetch-whisper-model')";
-            set_status(a, msg.c_str());
-            return;
-        }
-        a.voice_initialized = true;
-    }
-    voice_start_capture();
-    a.voice_listening = true;
-    set_status(a, "Voice — listening (release SPACE to send)");
-    queue_redraw(a);
-}
-
-void app_voice_release(
-    AppState& a,
-    std::function<void(const std::string& utterance,
-                       const std::string& error)> on_done) {
-    if (a.voice_continuous_enabled) return;  // SPACE is suppressed
-    if (!a.voice_listening) return;
-    // Capture-stop / worker-dispatch happens in voice_stop_and_transcribe.
-    // The flag stays set until the GUI-thread tail clears it.
-    voice_stop_and_transcribe(std::move(on_done));
-    set_status(a, "Voice — transcribing...");
-    queue_redraw(a);
-}
-
 // Shared body for both push-to-talk (app_voice_apply_result) and
 // continuous (app_voice_continuous_apply) result delivery. Caller is
 // responsible for any flag bookkeeping (e.g. clearing voice_listening).
-static void apply_voice_utterance(AppState& a,
-                                  const std::string& utterance,
-                                  const std::string& error) {
+void apply_voice_utterance(AppState& a,
+                           const std::string& utterance,
+                           const std::string& error) {
     if (!error.empty()) {
         std::string msg = "Voice: " + error;
         set_status(a, msg.c_str());
@@ -1997,12 +1925,7 @@ static void apply_voice_utterance(AppState& a,
         trigger_ai(a);
 }
 
-void app_voice_apply_result(AppState& a,
-                            const std::string& utterance,
-                            const std::string& error) {
-    a.voice_listening = false;
-    apply_voice_utterance(a, utterance, error);
-}
+}  // namespace
 
 void app_voice_continuous_apply(AppState& a,
                                 const std::string& utterance,
@@ -2020,6 +1943,75 @@ void app_voice_continuous_apply_partial(AppState& a,
     if (partial.empty()) return;
     std::string msg = "Hearing: '" + partial + "'";
     set_status(a, msg.c_str());
+}
+
+// ===========================================================================
+// Voice push-to-talk (SPACE) + desktop continuous mode — whisper.cpp,
+// desktop only. Web has its own continuous-mode driver in
+// web/voice_web.cpp.
+// ===========================================================================
+#ifndef __EMSCRIPTEN__
+
+namespace {
+
+// Resolve the model path at first-use time so users can override via
+// CHESS_WHISPER_MODEL without recompiling.
+std::string voice_model_path() {
+    if (const char* env = std::getenv("CHESS_WHISPER_MODEL"))
+        if (*env) return env;
+    return "third_party/whisper-models/ggml-distil-small.en.bin";
+}
+
+}  // namespace
+
+void app_voice_press(AppState& a) {
+    if (a.voice_continuous_enabled) {
+        set_status(a,
+            "Continuous mode is on — toggle off in Options to use SPACE");
+        return;
+    }
+    if (!voice_action_allowed(a)) return;
+    if (a.voice_listening) {
+        set_status(a, "Voice — still transcribing previous utterance");
+        return;
+    }
+    if (!a.voice_initialized) {
+        if (a.voice_init_failed) return;  // sticky — already reported
+        std::string err;
+        set_status(a, "Voice — loading model...");
+        if (!voice_init(voice_model_path(), err)) {
+            a.voice_init_failed = true;
+            std::string msg = "Voice unavailable: " + err +
+                              " (run 'make fetch-whisper-model')";
+            set_status(a, msg.c_str());
+            return;
+        }
+        a.voice_initialized = true;
+    }
+    voice_start_capture();
+    a.voice_listening = true;
+    set_status(a, "Voice — listening (release SPACE to send)");
+    queue_redraw(a);
+}
+
+void app_voice_release(
+    AppState& a,
+    std::function<void(const std::string& utterance,
+                       const std::string& error)> on_done) {
+    if (a.voice_continuous_enabled) return;  // SPACE is suppressed
+    if (!a.voice_listening) return;
+    // Capture-stop / worker-dispatch happens in voice_stop_and_transcribe.
+    // The flag stays set until the GUI-thread tail clears it.
+    voice_stop_and_transcribe(std::move(on_done));
+    set_status(a, "Voice — transcribing...");
+    queue_redraw(a);
+}
+
+void app_voice_apply_result(AppState& a,
+                            const std::string& utterance,
+                            const std::string& error) {
+    a.voice_listening = false;
+    apply_voice_utterance(a, utterance, error);
 }
 
 void app_voice_set_continuous(

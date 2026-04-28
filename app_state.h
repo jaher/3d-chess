@@ -216,13 +216,13 @@ struct AppState {
     bool voice_initialized = false;
     bool voice_init_failed = false;
     bool voice_listening   = false;
+#endif
 
     // Continuous (hands-free) voice mode. Off by default; toggled by
-    // a row in the Options screen. When on, a dedicated VAD monitor
-    // thread (in voice_whisper.cpp) watches the mic and dispatches
-    // utterances on its own — SPACE becomes a no-op with a hint.
+    // a row in the Options screen. Desktop drives a whisper.cpp
+    // monitor thread; web drives the browser's SpeechRecognition
+    // API (web/voice_web.cpp).
     bool voice_continuous_enabled = false;
-#endif
 
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
@@ -287,13 +287,13 @@ void app_ai_move_ready(AppState& a, const char* uci);
 void app_eval_ready(AppState& a, int cp, int score_index);
 
 #ifndef __EMSCRIPTEN__
-// Voice push-to-talk (desktop only). The driver wires these to
-// SPACE key-down / key-up. app_voice_press triggers a lazy voice
-// engine init on first use; app_voice_release stops capture and
-// dispatches transcription on a worker thread, then calls back via
-// `on_done` (which the driver should marshal onto the GUI thread).
-// app_voice_apply_result is the GUI-thread tail that parses the
-// utterance and applies the resulting move.
+// Voice push-to-talk (desktop only — SDL2 + whisper.cpp). The
+// driver wires these to SPACE key-down / key-up. app_voice_press
+// triggers a lazy voice engine init on first use; app_voice_release
+// stops capture and dispatches transcription on a worker thread,
+// then calls back via `on_done` (which the driver should marshal
+// onto the GUI thread). app_voice_apply_result is the GUI-thread
+// tail that parses the utterance and applies the resulting move.
 void app_voice_press(AppState& a);
 void app_voice_release(
     AppState& a,
@@ -303,43 +303,42 @@ void app_voice_apply_result(AppState& a,
                             const std::string& utterance,
                             const std::string& error);
 
-// Continuous (hands-free) voice toggle. `on` flips the
-// voice_continuous_enabled flag. Turning on triggers a lazy
-// voice_init() and starts the VAD monitor thread; on_utterance
-// fires once per finalized utterance, on_partial every time the
-// streaming worker produces a transcript during speech. Both
-// callbacks run off the GUI thread — the driver marshals them onto
-// the GUI thread (e.g. via g_idle_add). Turning off joins the
-// monitor thread (briefly blocking). Status messages mirror the
-// push-to-talk path.
+// Continuous (hands-free) voice toggle (desktop). On flips the
+// voice_continuous_enabled flag, lazy-initialises the whisper.cpp
+// engine, and starts the VAD monitor thread. Web has its own
+// implementation in web/voice_web.cpp.
 void app_voice_set_continuous(
     AppState& a, bool on,
     std::function<void(const std::string& utterance,
                        const std::string& error)> on_utterance,
     std::function<void(const std::string& partial)> on_partial);
 
-// Driver-supplied wrapper that flips the continuous-voice flag and
-// constructs a GUI-thread-marshalling callback. Implemented by the
-// platform driver (main.cpp on desktop) — kept out of app_state so
-// the shared layer never references GTK / SDL. Called from
-// release_options() when the user clicks the Continuous voice row.
-void app_voice_toggle_continuous_request(AppState& a);
-
-// GUI-thread tail for continuous-mode utterances (sibling of
-// app_voice_apply_result). Skipped silently if continuous mode has
-// been turned off in the meantime — handles the race where a
-// transcription worker finishes after the toggle flips off.
-void app_voice_continuous_apply(AppState& a,
-                                const std::string& utterance,
-                                const std::string& error);
-
-// GUI-thread tail for live streaming-pass transcripts. Surfaces the
-// current best-guess text in the status bar so the user can see
-// what whisper is hearing in real time. Skipped silently when
-// continuous mode is off.
-void app_voice_continuous_apply_partial(AppState& a,
-                                        const std::string& partial);
-
 // Release the voice engine on app exit. Idempotent.
 void app_voice_shutdown(AppState& a);
 #endif
+
+// Continuous-mode driver bridge. Defined per-platform: main.cpp on
+// desktop, web/voice_web.cpp on web. Wired to the Continuous voice
+// row in the Options screen. Hides the start/stop plumbing
+// (whisper.cpp threads or browser SpeechRecognition) behind a
+// platform-neutral signature.
+void app_voice_toggle_continuous_request(AppState& a);
+
+// Reports whether continuous voice can be enabled at all on this
+// build (and, for web, whether the browser supports
+// SpeechRecognition). Defined per-platform; lets the Options UI
+// hide the row when there's no chance of it working.
+bool app_voice_continuous_supported();
+
+// GUI-thread tail for continuous-mode utterances and live partial
+// transcripts. Both ungated so the web driver can call them too.
+// _continuous_apply is the finalize-and-execute path (sibling of
+// app_voice_apply_result on desktop); _apply_partial just surfaces
+// the latest best-guess in the status bar. Both are no-ops when the
+// toggle is off — handles the race where a worker delivers after
+// the toggle flips.
+void app_voice_continuous_apply(AppState& a,
+                                const std::string& utterance,
+                                const std::string& error);
+void app_voice_continuous_apply_partial(AppState& a,
+                                        const std::string& partial);

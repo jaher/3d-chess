@@ -23,12 +23,14 @@
 #include "../stl_model.h"
 
 // ---------------------------------------------------------------------------
-// Bridge into web/ai_player_web.cpp
+// Bridge into web/ai_player_web.cpp + web/voice_web.cpp
 // ---------------------------------------------------------------------------
 extern void web_request_ai_move(const std::string& fen, int movetime_ms);
 extern void web_request_eval(const std::string& fen, int movetime_ms,
                              int score_index);
 extern void web_set_ai_elo(int elo);
+
+extern "C" void voice_web_bind_app(AppState* a);
 
 namespace web_ai {
     extern bool        move_ready;
@@ -398,6 +400,7 @@ int chess_start(void) {
 
     app_init(g_app, &g_platform);
     g_app.loaded_models = g_loaded_models;
+    voice_web_bind_app(&g_app);
     app_enter_menu(g_app);
     js_log("entering main loop");
 

@@ -202,9 +202,21 @@ permission once.
 
 #### Web build
 
-The voice input is desktop-only — `voice_input.cpp` and
-`voice_whisper.cpp` are excluded from `web/Makefile` and the
-WebAssembly bundle. Spacebar in the browser does nothing voice-related.
+The browser uses a different speech engine. SPACE push-to-talk and
+whisper.cpp are desktop-only — `voice_whisper.cpp` is excluded from
+the WebAssembly bundle, so spacebar in the browser does nothing
+voice-related and there's no model to download.
+
+Continuous mode in the browser uses the built-in `SpeechRecognition`
+API instead. Toggle **Continuous voice** in Options the same way as
+on desktop; the browser will prompt for mic permission on first
+enable, then stream partial transcripts (visible in the status bar)
+and final utterances directly to the move parser. Zero model weight,
+zero startup latency, accuracy is excellent — but it requires a
+browser that ships SpeechRecognition: Chrome, Edge, and Safari yes;
+Firefox no (the toggle is hidden when the API isn't available).
+The web pipeline relies on the browser vendor's cloud STT under the
+hood, so audio leaves the device.
 
 ## Browser / WebAssembly version
 
@@ -443,13 +455,19 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   ai_player.h/cpp          -- Stockfish UCI integration
                               (subprocess on desktop; helpers shared)
 
-  # Voice input (desktop only — excluded from web/Makefile)
+  # Voice input
   voice_input.h/cpp        -- Pure-logic voice-utterance parser
                               (homophone normalisation, castling,
-                              piece+disambig+destination resolution)
-  voice_whisper.cpp        -- SDL2 microphone capture + whisper.cpp
-                              inference glue. Runs on a worker thread
-                              and posts results back via a callback.
+                              piece+disambig+destination resolution).
+                              Shared between desktop and web.
+  voice_whisper.cpp        -- Desktop only: SDL2 microphone capture +
+                              whisper.cpp inference glue. Runs on a
+                              worker thread and posts results back
+                              via a callback.
+  web/voice_web.cpp        -- Web only: bridge to the browser's
+                              SpeechRecognition API. Streams partials
+                              and finals directly into the same parser
+                              as the desktop path.
 
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring
