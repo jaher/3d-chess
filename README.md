@@ -184,6 +184,7 @@ button labels for the screen you're on. Examples:
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other
   utterance until you decide
+- **Chessnut Move toggle (in Options)**: "chessnut" / "robot board"
 - **Game over / analysis**: "back to menu", "continue playing", "new game"
 - **Challenge solved**: "next", "next puzzle"
 - **Challenge mistake**: "try again", "retry"
@@ -239,6 +240,35 @@ browser that ships SpeechRecognition: Chrome, Edge, and Safari yes;
 Firefox no (the toggle is hidden when the API isn't available).
 The web pipeline relies on the browser vendor's cloud STT under the
 hood, so audio leaves the device.
+
+### Chessnut Move physical board (desktop only)
+
+If you own a [Chessnut Move](https://www.chessnutech.com/) robotic
+chessboard, the desktop app can mirror every move onto the physical
+pieces over Bluetooth Low Energy. Toggle **Chessnut Move** in the
+Options screen (off by default). On enable the app:
+
+1. Spawns `tools/chessnut_bridge.py` as a helper subprocess (mirrors
+   the Stockfish subprocess pattern).
+2. Scans for a BLE peripheral named `Chessnut Move` and connects.
+3. Sends the current FEN to the board with the firmware-replanning
+   force flag — the board automatically positions every piece to
+   match.
+4. After every subsequent move (yours via click / voice, or
+   Stockfish's), pushes the new FEN. The motors handle the motion
+   planning; we just declare the target state.
+
+Requirements: Python 3.10+ with the `bleak` package
+(`pip install --user bleak`) and a Bluetooth adapter visible to
+BlueZ. Override the script path with `CHESS_CHESSNUT_BRIDGE` and the
+interpreter with `CHESS_PYTHON` if your environment differs.
+
+The protocol details (GATT UUIDs, opcodes, piece encoding) live in
+the reverse-engineering notes at `~/chessnutapp/PROTOCOL.md` —
+extracted from the official Android app and cross-verified against
+the documented Chessnut Air community protocol. Move's wire format
+is a strict superset of Air's, with one extra opcode (`0x42`) for
+the motor-driven `setMoveBoard` command.
 
 ## Browser / WebAssembly version
 
@@ -490,6 +520,17 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               SpeechRecognition API. Streams partials
                               and finals directly into the same parser
                               as the desktop path.
+
+  # Chessnut Move physical-board mirroring (desktop only)
+  chessnut_bridge.h/cpp    -- Subprocess wrapper for the BLE helper
+                              (fork+exec, line-based pipes, status
+                              reader thread). Mirrors the Stockfish
+                              subprocess pattern.
+  tools/chessnut_bridge.py -- Long-running Python helper. Uses
+                              `bleak` for BLE, encodes the FEN into
+                              the 32-byte 4-bits-per-square format
+                              the Move firmware expects, and
+                              dispatches the 0x42 setMoveBoard frame.
 
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring

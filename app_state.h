@@ -224,6 +224,17 @@ struct AppState {
     // API (web/voice_web.cpp).
     bool voice_continuous_enabled = false;
 
+#ifndef __EMSCRIPTEN__
+    // Chessnut Move physical board mirroring. Off by default;
+    // toggled by a row in the Options screen. When on, the desktop
+    // app spawns tools/chessnut_bridge.py over BLE and pushes the
+    // current FEN to the board on every state change. Desktop only
+    // — the web build has no Bluetooth access.
+    bool chessnut_enabled        = false;
+    bool chessnut_bridge_running = false;   // helper subprocess alive
+    bool chessnut_connected      = false;   // BLE link to board open
+#endif
+
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
 
@@ -315,6 +326,27 @@ void app_voice_set_continuous(
 
 // Release the voice engine on app exit. Idempotent.
 void app_voice_shutdown(AppState& a);
+
+// Chessnut Move board mirroring (desktop only). Toggle handler
+// spawns / stops the BLE bridge subprocess and resyncs the physical
+// board to the current FEN when first connecting. The marshal
+// callback is invoked on the GUI thread when status lines arrive
+// from the bridge — driver implementations are responsible for
+// posting via g_idle_add (or equivalent) before calling
+// app_chessnut_apply_status.
+void app_chessnut_set_enabled(
+    AppState& a, bool on,
+    std::function<void(const std::string& status)> on_status);
+void app_chessnut_apply_status(AppState& a, const std::string& status);
+void app_chessnut_sync_board(AppState& a, bool force);
+void app_chessnut_shutdown(AppState& a);
+
+// Per-platform driver bridge (defined by main.cpp on desktop).
+// Mirrors the voice toggle bridge — keeps GTK marshalling out of
+// the shared layer. Called from release_options() on the new
+// "Chessnut Move" toggle row.
+void app_chessnut_toggle_request(AppState& a);
+bool app_chessnut_supported();
 #endif
 
 // Continuous-mode driver bridge. Defined per-platform: main.cpp on

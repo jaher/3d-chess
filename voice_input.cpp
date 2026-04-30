@@ -392,6 +392,10 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "toggle voice", "voice on", "voice off",
                           "voice"}))
             return VoiceCommand::ToggleContinuousVoice;
+        if (match_any(s, {"chessnut", "chessnut move", "robot board",
+                          "physical board", "toggle chessnut",
+                          "toggle move"}))
+            return VoiceCommand::ToggleChessnut;
         break;
 
     case MODE_PLAYING:

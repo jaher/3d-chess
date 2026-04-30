@@ -106,6 +106,7 @@ enum class VoiceCommand {
     TryAgain,             // Challenge "Try Again" after mistake
     ToggleCartoonOutline,
     ToggleContinuousVoice,
+    ToggleChessnut,       // Chessnut Move physical-board mirroring
     PlayWhite,            // Pregame side toggle
     PlayBlack,
 };

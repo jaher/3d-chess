@@ -44,3 +44,24 @@ in sync. Specifically:
 Skip when the control has no sensible spoken form (drag handles,
 sliders, dropdown rows tied to mouse position, hover-only chrome) —
 note that explicitly in the response so the omission is visible.
+
+## Chessnut Move bridge
+
+Whenever something changes the on-board piece layout, the physical
+Chessnut Move board needs to be re-synced. Most callers don't think
+about this directly — `app_chessnut_sync_board(a, force)` is invoked
+right after every `execute_move()` on the desktop side, and after
+`app_enter_game()` / `app_load_challenge_puzzle()` for first-time
+positioning. If you add a new code path that mutates `a.game`
+(undo / redo, programmatic position load, mid-game FEN edits, …),
+add a `app_chessnut_sync_board(a, /*force=*/false)` call in the
+same gated `#ifndef __EMSCRIPTEN__` block — otherwise the physical
+board will drift out of sync with the on-screen state.
+
+If you change the wire format (e.g. switch to a different opcode or
+re-encode the board), update both ends in lockstep:
+`tools/chessnut_bridge.py` (the Python encoder), and any C++
+callers of `ChessnutBridge::send_fen` / `send_led_hex`. Cross-check
+against `~/chessnutapp/PROTOCOL.md` and the decompiled Android app
+in `~/chessnutapp/decompiled/` — those are the source of truth for
+what the firmware expects.

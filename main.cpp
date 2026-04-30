@@ -207,6 +207,33 @@ bool app_voice_continuous_supported() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Chessnut Move bridge — status marshalling on the GTK main loop
+// ---------------------------------------------------------------------------
+struct ChessnutStatus { std::string line; };
+
+static gboolean on_chessnut_status_main(gpointer data) {
+    auto* s = static_cast<ChessnutStatus*>(data);
+    app_chessnut_apply_status(g_app, s->line);
+    delete s;
+    return G_SOURCE_REMOVE;
+}
+
+bool app_chessnut_supported() {
+    // Always offered on desktop; the bridge will surface a runtime
+    // failure if python3 / bleak / Bluetooth aren't available.
+    return true;
+}
+
+void app_chessnut_toggle_request(AppState& a) {
+    bool target = !a.chessnut_enabled;
+    app_chessnut_set_enabled(a, target,
+        [](const std::string& status) {
+            auto* s = new ChessnutStatus{status};
+            g_idle_add(on_chessnut_status_main, s);
+        });
+}
+
 // Bridge between the shared options-screen click handler (in
 // app_state.cpp) and the GTK marshalling code that lives here. Keeps
 // g_idle_add out of the cross-platform layer.
@@ -334,5 +361,6 @@ int main(int argc, char* argv[]) {
     app_enter_menu(g_app);
     gtk_main();
     app_voice_shutdown(g_app);
+    app_chessnut_shutdown(g_app);
     return 0;
 }

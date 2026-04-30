@@ -28,10 +28,17 @@ constexpr float OPT_TOG2_H  =  0.10f;
 constexpr float OPT_TOG2_X  = -OPT_TOG2_W * 0.5f;
 constexpr float OPT_TOG2_Y  = -0.02f;
 
+// Chessnut Move toggle — third row.
+constexpr float OPT_TOG3_W  =  0.60f;
+constexpr float OPT_TOG3_H  =  0.10f;
+constexpr float OPT_TOG3_X  = -OPT_TOG3_W * 0.5f;
+constexpr float OPT_TOG3_Y  = -0.16f;
+
 }  // namespace
 
 int options_hit_test(double mx, double my, int width, int height,
-                     bool continuous_voice_supported) {
+                     bool continuous_voice_supported,
+                     bool chessnut_supported) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x >= OPT_BACK_X && ndc_x <= OPT_BACK_X + OPT_BACK_W &&
@@ -44,12 +51,18 @@ int options_hit_test(double mx, double my, int width, int height,
         ndc_x >= OPT_TOG2_X && ndc_x <= OPT_TOG2_X + OPT_TOG2_W &&
         ndc_y >= OPT_TOG2_Y - OPT_TOG2_H && ndc_y <= OPT_TOG2_Y)
         return 3;
+    if (chessnut_supported &&
+        ndc_x >= OPT_TOG3_X && ndc_x <= OPT_TOG3_X + OPT_TOG3_W &&
+        ndc_y >= OPT_TOG3_Y - OPT_TOG3_H && ndc_y <= OPT_TOG3_Y)
+        return 4;
     return 0;
 }
 
 void renderer_draw_options(bool cartoon_outline_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
+                           bool chessnut_enabled,
+                           bool chessnut_supported,
                            int width, int height,
                            int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -70,6 +83,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     add_quad(OPT_TOG_X,  OPT_TOG_Y,  OPT_TOG_W,  OPT_TOG_H);
     if (continuous_voice_supported) {
         add_quad(OPT_TOG2_X, OPT_TOG2_Y, OPT_TOG2_W, OPT_TOG2_H);
+    }
+    if (chessnut_supported) {
+        add_quad(OPT_TOG3_X, OPT_TOG3_Y, OPT_TOG3_W, OPT_TOG3_H);
     }
 
     GLuint bvao, bvbo;
@@ -104,8 +120,13 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glDrawArrays(GL_TRIANGLES, vert_offset, 6);
     };
     draw_toggle(cartoon_outline_enabled, 2, 6);
+    int next_offset = 12;
     if (continuous_voice_supported) {
-        draw_toggle(voice_continuous_enabled, 3, 12);
+        draw_toggle(voice_continuous_enabled, 3, next_offset);
+        next_offset += 6;
+    }
+    if (chessnut_supported) {
+        draw_toggle(chessnut_enabled, 4, next_offset);
     }
     glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
@@ -145,6 +166,14 @@ void renderer_draw_options(bool cartoon_outline_enabled,
             OPT_TOG2_Y);
         toggle2_end = static_cast<int>(text_verts.size() / 5);
     }
+    int toggle3_end = toggle2_end;
+    if (chessnut_supported) {
+        add_toggle_label(
+            std::string("Chessnut Move: ") +
+                (chessnut_enabled ? "ON" : "OFF"),
+            OPT_TOG3_Y);
+        toggle3_end = static_cast<int>(text_verts.size() / 5);
+    }
 
     GLuint tvao, tvbo;
     glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
@@ -177,6 +206,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     li2, li2, li2, 1.0f);
         glDrawArrays(GL_TRIANGLES, toggle_end, toggle2_end - toggle_end);
+    }
+    if (chessnut_supported && toggle3_end > toggle2_end) {
+        float li3 = hover == 4 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    li3, li3, li3, 1.0f);
+        glDrawArrays(GL_TRIANGLES, toggle2_end, toggle3_end - toggle2_end);
     }
 
     glBindVertexArray(0); glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
