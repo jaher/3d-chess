@@ -26,14 +26,15 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             challenge_ui.cpp pregame_ui.cpp shatter_transition.cpp \
             text_atlas.cpp options_ui.cpp \
             voice_input.cpp voice_whisper.cpp \
-            chessnut_bridge.cpp
+            chessnut_bridge.cpp chessnut_bridge_native.cpp \
+            chessnut_bridge_python.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
             challenge.h cloth_flag.h vec.h mat.h shader.h stl_model.h \
             ai_player.h time_control.h audio.h compression.h menu_physics.h \
             menu_input.h challenge_ui.h pregame_ui.h shatter_transition.h \
             render_internal.h text_atlas.h options_ui.h \
-            voice_input.h chessnut_bridge.h
+            voice_input.h chessnut_bridge.h chessnut_bridge_impl.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish
@@ -77,6 +78,19 @@ CXXFLAGS += -I$(WHISPER_DIR)/include -I$(WHISPER_DIR)/ggml/include
 # -fopenmp on g++/clang++ does the right thing on every platform.
 LDFLAGS  += $(WHISPER_LIBS) $(WHISPER_BACKEND_LIBS) -fopenmp
 
+# SimpleBLE for the Chessnut Move bridge. Built via its own CMake;
+# we link the static lib + libdbus-1 (BlueZ's IPC channel on Linux).
+SIMPLEBLE_DIR    := third_party/simpleble
+SIMPLEBLE_BUILD  := $(SIMPLEBLE_DIR)/build
+SIMPLEBLE_LIB    := $(SIMPLEBLE_BUILD)/lib/libsimpleble.a
+SIMPLEBLE_INC    := $(SIMPLEBLE_DIR)/simpleble/include
+SIMPLEBLE_EXP    := $(SIMPLEBLE_BUILD)/export
+SIMPLEBLE_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+                        -DSIMPLEBLE_PLAIN=ON
+CXXFLAGS += -I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
+            -I$(SIMPLEBLE_DIR)/dependencies/external
+LDFLAGS  += $(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1)
+
 # Pre-converted distil-small.en GGML, hosted by the whisper.cpp/HF
 # community. Pinning by sha256 keeps the build reproducible — replace
 # WHISPER_MODEL_URL / WHISPER_MODEL_SHA256 if the upstream link rotates.
@@ -85,7 +99,7 @@ WHISPER_MODEL_SHA256 := ?
 
 all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL)
 
-$(TARGET): $(OBJS) $(WHISPER_LIBS)
+$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.cpp $(HEADERS)
@@ -123,13 +137,27 @@ $(WHISPER_MODEL):
 fetch-whisper-model: $(WHISPER_MODEL)
 	@echo "Model present at $(WHISPER_MODEL)"
 
+# SimpleBLE — built via its own CMake. The cross-platform BLE
+# library used by chessnut_bridge_native.cpp. Plain build (no
+# Vendoring of the BLE Pro features) keeps the static lib at
+# ~5 MB. On Linux the runtime dependency is libdbus-1.
+$(SIMPLEBLE_LIB):
+	@if [ ! -f $(SIMPLEBLE_DIR)/simpleble/CMakeLists.txt ]; then \
+		echo "SimpleBLE submodule not initialized."; \
+		echo "Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	cmake -B $(SIMPLEBLE_BUILD) -S $(SIMPLEBLE_DIR)/simpleble \
+		$(SIMPLEBLE_CMAKE_ARGS)
+	cmake --build $(SIMPLEBLE_BUILD) --config Release -j
+
 clean:
 	rm -f $(OBJS) $(TARGET)
 	-$(MAKE) -C tests clean
 
 distclean: clean
 	-$(MAKE) -C $(STOCKFISH_DIR)/src clean
-	-rm -rf $(WHISPER_BUILD)
+	-rm -rf $(WHISPER_BUILD) $(SIMPLEBLE_BUILD)
 
 # Build and run the unit-test binary (see tests/). No GL, no GTK, no
 # Stockfish subprocess, no whisper.cpp — just the pure-logic layer.

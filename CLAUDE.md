@@ -59,9 +59,16 @@ same gated `#ifndef __EMSCRIPTEN__` block — otherwise the physical
 board will drift out of sync with the on-screen state.
 
 If you change the wire format (e.g. switch to a different opcode or
-re-encode the board), update both ends in lockstep:
-`tools/chessnut_bridge.py` (the Python encoder), and any C++
-callers of `ChessnutBridge::send_fen` / `send_led_hex`. Cross-check
-against `~/chessnutapp/PROTOCOL.md` and the decompiled Android app
-in `~/chessnutapp/decompiled/` — those are the source of truth for
-what the firmware expects.
+re-encode the board), update **both** implementations in lockstep:
+
+- Native (default): `chessnut_bridge_native.cpp` — `fen_to_board_bytes`,
+  `make_set_move_board`, `make_led_frame` and the handshake bytes
+  in `do_connect`.
+- Python (`CHESS_CHESSNUT_USE_PYTHON=1`): `tools/chessnut_bridge.py` —
+  same function names. The Python encoder is unit-testable without
+  bleak installed and is the recommended place to prototype
+  protocol changes.
+
+Cross-check against `~/chessnutapp/PROTOCOL.md` and the decompiled
+Android app in `~/chessnutapp/decompiled/` — those are the source
+of truth for what the firmware expects.

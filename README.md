@@ -248,8 +248,10 @@ chessboard, the desktop app can mirror every move onto the physical
 pieces over Bluetooth Low Energy. Toggle **Chessnut Move** in the
 Options screen (off by default). On enable the app:
 
-1. Spawns `tools/chessnut_bridge.py` as a helper subprocess (mirrors
-   the Stockfish subprocess pattern).
+1. Initialises the in-process BLE client
+   ([SimpleBLE](https://github.com/OpenBluetoothToolbox/SimpleBLE)
+   submodule, BlueZ on Linux / IOBluetooth on macOS / Windows
+   Runtime on Windows).
 2. Scans for a BLE peripheral named `Chessnut Move` and connects.
 3. Sends the current FEN to the board with the firmware-replanning
    force flag — the board automatically positions every piece to
@@ -258,9 +260,30 @@ Options screen (off by default). On enable the app:
    Stockfish's), pushes the new FEN. The motors handle the motion
    planning; we just declare the target state.
 
-Requirements: Python 3.10+ with the `bleak` package
-(`pip install --user bleak`) and a Bluetooth adapter visible to
-BlueZ. Override the script path with `CHESS_CHESSNUT_BRIDGE` and the
+Build dependency: `libdbus-1-dev` (required by SimpleBLE on Linux).
+On Debian/Ubuntu: `sudo apt-get install -y libdbus-1-dev`. The
+SimpleBLE static library builds automatically on first
+`make` invocation, the same way whisper.cpp does. No Python
+runtime dependency in the default path.
+
+#### Debugging fallback: Python bridge
+
+For protocol experimentation or debugging, set
+`CHESS_CHESSNUT_USE_PYTHON=1` to swap the in-process implementation
+for the `tools/chessnut_bridge.py` helper subprocess (uses
+[`bleak`](https://github.com/hbldh/bleak); install with
+`pip install --user bleak`). The Python helper logs every BLE
+notification to stdout and is easy to drive by hand for one-off
+captures:
+
+```bash
+python3 tools/chessnut_bridge.py
+INIT
+FEN_FORCE rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+QUIT
+```
+
+Override the script path with `CHESS_CHESSNUT_BRIDGE` and the
 interpreter with `CHESS_PYTHON` if your environment differs.
 
 The protocol details (GATT UUIDs, opcodes, piece encoding) live in
@@ -522,15 +545,23 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               as the desktop path.
 
   # Chessnut Move physical-board mirroring (desktop only)
-  chessnut_bridge.h/cpp    -- Subprocess wrapper for the BLE helper
-                              (fork+exec, line-based pipes, status
-                              reader thread). Mirrors the Stockfish
-                              subprocess pattern.
+  chessnut_bridge.h        -- Public PIMPL interface. Selects a
+                              concrete impl at construction time
+                              based on CHESS_CHESSNUT_USE_PYTHON.
+  chessnut_bridge.cpp      -- Public dispatcher (forwards to the
+                              chosen impl).
+  chessnut_bridge_impl.h   -- Internal Impl interface + factories.
+  chessnut_bridge_native.cpp
+                           -- Default impl: SimpleBLE in-process.
+                              FEN → 32-byte 4-bits-per-square →
+                              0x42 setMoveBoard frame, all in C++.
+  chessnut_bridge_python.cpp
+                           -- Debug-fallback impl: fork+exec the
+                              Python helper for protocol traces.
   tools/chessnut_bridge.py -- Long-running Python helper. Uses
-                              `bleak` for BLE, encodes the FEN into
-                              the 32-byte 4-bits-per-square format
-                              the Move firmware expects, and
-                              dispatches the 0x42 setMoveBoard frame.
+                              `bleak` for BLE; same encoder as the
+                              native impl. Useful for hand-driven
+                              protocol experimentation.
 
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring
