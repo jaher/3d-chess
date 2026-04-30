@@ -241,12 +241,12 @@ Firefox no (the toggle is hidden when the API isn't available).
 The web pipeline relies on the browser vendor's cloud STT under the
 hood, so audio leaves the device.
 
-### Chessnut Move physical board (desktop only)
+### Chessnut Move physical board
 
 If you own a [Chessnut Move](https://www.chessnutech.com/) robotic
-chessboard, the desktop app can mirror every move onto the physical
-pieces over Bluetooth Low Energy. Toggle **Chessnut Move** in the
-Options screen (off by default). On enable the app:
+chessboard, the app can mirror every move onto the physical pieces
+over Bluetooth Low Energy. Toggle **Chessnut Move** in the Options
+screen (off by default). Available on **both desktop and web**. On enable the app:
 
 1. Initialises the in-process BLE client
    ([SimpleBLE](https://github.com/OpenBluetoothToolbox/SimpleBLE)
@@ -285,6 +285,32 @@ QUIT
 
 Override the script path with `CHESS_CHESSNUT_BRIDGE` and the
 interpreter with `CHESS_PYTHON` if your environment differs.
+
+#### Web build (Web Bluetooth)
+
+The browser version uses the
+[Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API)
+(`navigator.bluetooth.requestDevice`). Same wire format, same
+encoder, just no SimpleBLE / no Python — the browser provides the
+BLE stack. Browser support:
+
+- **Chrome / Edge / Opera (desktop + Android)**: full support.
+- **Safari (macOS / iOS)**: not supported. The toggle is hidden.
+- **Firefox**: not supported. The toggle is hidden.
+
+Two browser-specific caveats:
+
+1. **HTTPS or localhost only.** Web Bluetooth refuses to run on
+   plain HTTP — `make serve` works (localhost), but a deployed copy
+   needs TLS.
+2. **Permissions don't persist.** Each page reload re-prompts the
+   "Choose a device" dialog. The first click on the toggle (a
+   user-gesture click) opens the picker; subsequent moves write
+   transparently for the rest of the session.
+
+If a phone is paired with the board over the official app, the
+browser can't open a second BLE connection — disconnect the phone
+first.
 
 The protocol details (GATT UUIDs, opcodes, piece encoding) live in
 the reverse-engineering notes at `~/chessnutapp/PROTOCOL.md` —
@@ -544,24 +570,29 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               and finals directly into the same parser
                               as the desktop path.
 
-  # Chessnut Move physical-board mirroring (desktop only)
-  chessnut_bridge.h        -- Public PIMPL interface. Selects a
-                              concrete impl at construction time
-                              based on CHESS_CHESSNUT_USE_PYTHON.
-  chessnut_bridge.cpp      -- Public dispatcher (forwards to the
-                              chosen impl).
+  # Chessnut Move physical-board mirroring
+  chessnut_encode.h        -- Header-only FEN → 32-byte board
+                              encoder + 0x42 setMoveBoard frame
+                              builder. Shared by every impl below
+                              so the wire format can't drift.
+  chessnut_bridge.h        -- Desktop-only public PIMPL interface.
+                              Selects a concrete impl at
+                              construction time based on
+                              CHESS_CHESSNUT_USE_PYTHON.
+  chessnut_bridge.cpp      -- Desktop dispatcher.
   chessnut_bridge_impl.h   -- Internal Impl interface + factories.
   chessnut_bridge_native.cpp
-                           -- Default impl: SimpleBLE in-process.
-                              FEN → 32-byte 4-bits-per-square →
-                              0x42 setMoveBoard frame, all in C++.
+                           -- Default desktop impl: SimpleBLE
+                              in-process. Worker thread + queue.
   chessnut_bridge_python.cpp
                            -- Debug-fallback impl: fork+exec the
                               Python helper for protocol traces.
   tools/chessnut_bridge.py -- Long-running Python helper. Uses
-                              `bleak` for BLE; same encoder as the
-                              native impl. Useful for hand-driven
-                              protocol experimentation.
+                              `bleak` for BLE.
+  web/chessnut_web.cpp     -- Web build: bridge to the browser's
+                              navigator.bluetooth API. Reuses
+                              chessnut_encode.h for the wire
+                              format.
 
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring

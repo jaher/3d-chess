@@ -59,15 +59,22 @@ same gated `#ifndef __EMSCRIPTEN__` block — otherwise the physical
 board will drift out of sync with the on-screen state.
 
 If you change the wire format (e.g. switch to a different opcode or
-re-encode the board), update **both** implementations in lockstep:
+re-encode the board), there's a single source of truth:
+`chessnut_encode.h`. The header-only encoder is shared by:
 
-- Native (default): `chessnut_bridge_native.cpp` — `fen_to_board_bytes`,
-  `make_set_move_board`, `make_led_frame` and the handshake bytes
-  in `do_connect`.
-- Python (`CHESS_CHESSNUT_USE_PYTHON=1`): `tools/chessnut_bridge.py` —
-  same function names. The Python encoder is unit-testable without
-  bleak installed and is the recommended place to prototype
-  protocol changes.
+- Desktop native impl (`chessnut_bridge_native.cpp`).
+- Web Bluetooth impl (`web/chessnut_web.cpp`).
+
+Update `chessnut_encode.h` and **also** mirror the change in the
+Python prototype helper at `tools/chessnut_bridge.py` (same
+function names, same byte layout — kept in sync as the
+hand-driven debugging tool).
+
+The connection-time handshake bytes (`0x0B 0x04 0x03 0xE8 0x00 0xC8`
+and `0x27 0x01 0x00`) live separately in each driver
+(`do_connect` in the native impl, the EM_JS `chessnut_web_start_js`
+shim in the web impl, the Python `build_init_handshake` function).
+If those need to change, update all three.
 
 Cross-check against `~/chessnutapp/PROTOCOL.md` and the decompiled
 Android app in `~/chessnutapp/decompiled/` — those are the source

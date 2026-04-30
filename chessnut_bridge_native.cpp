@@ -7,6 +7,7 @@
 #ifndef __EMSCRIPTEN__
 
 #include "chessnut_bridge_impl.h"
+#include "chessnut_encode.h"  // shared with web/chessnut_web.cpp
 
 #include <atomic>
 #include <chrono>
@@ -45,88 +46,11 @@ const std::string NOTIFY_UUIDS[] = {
 };
 const std::string WRITE_UUID = std::string("1b7e8272") + SUFFIX;
 
-// ---------------------------------------------------------------------------
-// Piece encoding — must match ChessnutService.PIECEMAP byte-for-byte.
-// ---------------------------------------------------------------------------
-uint8_t piece_to_nibble(char c) {
-    switch (c) {
-    case ' ': return 0;
-    case 'q': return 1;
-    case 'k': return 2;
-    case 'b': return 3;
-    case 'p': return 4;
-    case 'n': return 5;
-    case 'R': return 6;
-    case 'P': return 7;
-    case 'r': return 8;
-    case 'B': return 9;
-    case 'N': return 10;
-    case 'Q': return 11;
-    case 'K': return 12;
-    default:  return 0;
-    }
-}
-
-// Encode the placement portion of a FEN into the 32-byte 4-bits-
-// per-square format the Move firmware expects. Pair index `i2`
-// runs 0..3 but is stored at offset `(3 - i2)` within each row, so
-// the h-pair lands at offset 0 of the row and the a-pair at offset
-// 3. Mirrors fen_to_board_bytes() in tools/chessnut_bridge.py.
-std::vector<uint8_t> fen_to_board_bytes(const std::string& fen) {
-    std::vector<uint8_t> board(32, 0);
-    std::string placement = fen.substr(0, fen.find(' '));
-    std::vector<std::string> rows;
-    std::string acc;
-    for (char c : placement) {
-        if (c == '/') { rows.push_back(acc); acc.clear(); }
-        else acc.push_back(c);
-    }
-    rows.push_back(acc);
-    if (rows.size() != 8) {
-        throw std::runtime_error("fen has wrong rank count");
-    }
-    for (int i = 0; i < 8; i++) {
-        std::string expanded;
-        for (char c : rows[i]) {
-            if (c >= '1' && c <= '8') expanded.append(c - '0', ' ');
-            else                      expanded.push_back(c);
-        }
-        if (expanded.size() != 8) {
-            throw std::runtime_error("fen row not 8 squares wide");
-        }
-        for (int i2 = 0; i2 < 4; i2++) {
-            uint8_t hi = piece_to_nibble(expanded[i2 * 2]);
-            uint8_t lo = piece_to_nibble(expanded[i2 * 2 + 1]);
-            board[(i * 4) + (3 - i2)] = static_cast<uint8_t>((hi << 4) | lo);
-        }
-    }
-    return board;
-}
-
-SimpleBLE::ByteArray make_set_move_board(const std::string& fen, bool force) {
-    std::vector<uint8_t> board = fen_to_board_bytes(fen);
-    SimpleBLE::ByteArray frame;
-    frame.reserve(35);
-    frame.push_back(static_cast<uint8_t>(0x42));  // opcode setMoveBoard
-    frame.push_back(static_cast<uint8_t>(0x21));  // payload length
-    for (uint8_t b : board) frame.push_back(static_cast<uint8_t>(b));
-    frame.push_back(static_cast<uint8_t>(force ? 0 : 1));  // 0 = always replan
-    return frame;
-}
-
-SimpleBLE::ByteArray make_led_frame(const std::string& bitmask_hex) {
-    if (bitmask_hex.size() != 16)
-        throw std::runtime_error("LED bitmask must be 16 hex chars");
-    SimpleBLE::ByteArray frame;
-    frame.reserve(10);
-    frame.push_back(static_cast<uint8_t>(0x0A));
-    frame.push_back(static_cast<uint8_t>(0x08));
-    for (size_t i = 0; i < 16; i += 2) {
-        unsigned v = 0;
-        std::sscanf(bitmask_hex.substr(i, 2).c_str(), "%x", &v);
-        frame.push_back(static_cast<uint8_t>(v));
-    }
-    return frame;
+SimpleBLE::ByteArray to_byte_array(const std::vector<uint8_t>& bytes) {
+    SimpleBLE::ByteArray out;
+    out.reserve(bytes.size());
+    for (uint8_t b : bytes) out.push_back(static_cast<uint8_t>(b));
+    return out;
 }
 
 SimpleBLE::ByteArray frame_from_bytes(std::initializer_list<uint8_t> bs) {
@@ -208,9 +132,15 @@ private:
                     }
                     return;
                 case Command::CONNECT: do_connect(); break;
-                case Command::FEN:        do_write(make_set_move_board(c.arg, false), "FEN"); break;
-                case Command::FEN_FORCE:  do_write(make_set_move_board(c.arg, true),  "FEN_FORCE"); break;
-                case Command::LED:        do_write(make_led_frame(c.arg),             "LED"); break;
+                case Command::FEN:
+                    do_write(to_byte_array(chessnut::make_set_move_board(c.arg, false)), "FEN");
+                    break;
+                case Command::FEN_FORCE:
+                    do_write(to_byte_array(chessnut::make_set_move_board(c.arg, true)), "FEN_FORCE");
+                    break;
+                case Command::LED:
+                    do_write(to_byte_array(chessnut::make_led_frame(c.arg)), "LED");
+                    break;
                 }
             } catch (const std::exception& e) {
                 emit(std::string("ERROR ") + e.what());

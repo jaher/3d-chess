@@ -459,9 +459,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                 gs.valid_moves.clear();
                 play_move_sfx(gs, sfx_capture);
                 queue_redraw(a);
-#ifndef __EMSCRIPTEN__
                 app_chessnut_sync_board(a, /*force=*/false);
-#endif
 
                 if (is_challenge) {
                     if (was_starter) a.challenge_moves_made++;
@@ -738,12 +736,10 @@ void app_enter_game(AppState& a) {
     }
     app_refresh_status(a);
     queue_redraw(a);
-#ifndef __EMSCRIPTEN__
     // First-time-on-start position sync. force=true so the firmware
     // always replans from current sensor state — handles boards
     // that were left in arbitrary positions after the last session.
     app_chessnut_sync_board(a, /*force=*/true);
-#endif
     // If the human plays black, Stockfish makes the first move as white.
     if (!a.human_plays_white) trigger_ai(a);
 }
@@ -814,10 +810,8 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
                   static_cast<int>(a.current_challenge.fens.size()));
     set_status(a, buf);
     queue_redraw(a);
-#ifndef __EMSCRIPTEN__
     // Position the physical board to match the new puzzle's FEN.
     app_chessnut_sync_board(a, /*force=*/true);
-#endif
 }
 
 void app_reset_challenge_puzzle(AppState& a) {
@@ -1004,11 +998,7 @@ static void release_challenge_select(AppState& a, double mx, double my,
 static void release_options(AppState& a, double mx, double my,
                             int width, int height) {
     bool voice_supported    = app_voice_continuous_supported();
-#ifndef __EMSCRIPTEN__
     bool chessnut_supported = app_chessnut_supported();
-#else
-    bool chessnut_supported = false;
-#endif
     int btn = options_hit_test(mx, my, width, height,
                                voice_supported, chessnut_supported);
     if (btn == 1) {
@@ -1018,12 +1008,9 @@ static void release_options(AppState& a, double mx, double my,
         queue_redraw(a);
     } else if (btn == 3 && voice_supported) {
         app_voice_toggle_continuous_request(a);
-    }
-#ifndef __EMSCRIPTEN__
-    else if (btn == 4 && chessnut_supported) {
+    } else if (btn == 4 && chessnut_supported) {
         app_chessnut_toggle_request(a);
     }
-#endif
 }
 
 static void release_challenge(AppState& a, double mx, double my,
@@ -1236,14 +1223,9 @@ static void motion_challenge_select(AppState& a, double mx, double my,
 
 static void motion_options(AppState& a, double mx, double my,
                            int width, int height) {
-#ifndef __EMSCRIPTEN__
-    bool chessnut_supported = app_chessnut_supported();
-#else
-    bool chessnut_supported = false;
-#endif
     int h = options_hit_test(mx, my, width, height,
                              app_voice_continuous_supported(),
-                             chessnut_supported);
+                             app_chessnut_supported());
     if (h != a.options_hover) {
         a.options_hover = h;
         queue_redraw(a);
@@ -1533,9 +1515,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         play_move_sfx(gs, sfx_capture);
         gs.ai_thinking = false;
         app_refresh_status(a);
-#ifndef __EMSCRIPTEN__
         app_chessnut_sync_board(a, /*force=*/false);
-#endif
         if (a.mode == MODE_PLAYING) {
             trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
         }
@@ -1706,17 +1686,11 @@ static void render_challenge_select(AppState& a, int width, int height) {
 
 static void render_options(AppState& a, int width, int height) {
     bool voice_supported = app_voice_continuous_supported();
-#ifndef __EMSCRIPTEN__
     bool chessnut_supported = app_chessnut_supported();
-    bool chessnut_on = a.chessnut_enabled;
-#else
-    bool chessnut_supported = false;
-    bool chessnut_on = false;
-#endif
     renderer_draw_options(a.cartoon_outline,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
-                          chessnut_on,
+                          chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           width, height, a.options_hover);
 }
@@ -1998,9 +1972,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         app_voice_toggle_continuous_request(a);
         break;
     case VoiceCommand::ToggleChessnut:
-#ifndef __EMSCRIPTEN__
         if (app_chessnut_supported()) app_chessnut_toggle_request(a);
-#endif
         break;
     case VoiceCommand::PlayWhite:
         a.human_plays_white = true;
@@ -2076,9 +2048,7 @@ void apply_voice_utterance(AppState& a,
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
     play_move_sfx(gs, sfx_capture);
-#ifndef __EMSCRIPTEN__
     app_chessnut_sync_board(a, /*force=*/false);
-#endif
 
     std::string msg = std::string("Voice — heard '") + utterance +
                       "' (" + uci + ")";
@@ -2239,12 +2209,58 @@ void app_voice_shutdown(AppState& a) {
     a.voice_continuous_enabled = false;
 }
 
+#endif  // !__EMSCRIPTEN__
+
 // ===========================================================================
-// Chessnut Move (BLE) board mirroring — desktop only
+// Chessnut Move physical-board mirroring
 // ===========================================================================
+//
+// app_chessnut_apply_status is platform-independent — it interprets
+// the status protocol (READY / CONNECTED / DISCONNECTED / ERROR /
+// ACK / NOTIFY) emitted by both the desktop bridge and the web
+// driver, and updates AppState + status bar accordingly.
+//
+// app_chessnut_set_enabled / sync_board / shutdown / toggle_request /
+// supported are platform-specific:
+//   - Desktop: defined just below, drives ChessnutBridge.
+//   - Web:     defined in web/chessnut_web.cpp, drives
+//              navigator.bluetooth via EM_JS shims.
+//
+// app_current_fen is exposed on AppState so the web side can
+// snapshot the position without re-implementing FEN serialisation.
+
+std::string app_current_fen(const AppState& a) {
+    return current_fen(a.game, a.game.white_turn);
+}
+
+void app_chessnut_apply_status(AppState& a, const std::string& status) {
+    if (!a.chessnut_enabled) return;
+    if (status.rfind("CONNECTED", 0) == 0) {
+        a.chessnut_connected = true;
+        std::string msg = "Chessnut Move: " + status;
+        set_status(a, msg.c_str());
+        // Initial sync on connect — push current position with
+        // force=1 so the firmware always replans from sensor state.
+        app_chessnut_sync_board(a, /*force=*/true);
+    } else if (status == "DISCONNECTED") {
+        a.chessnut_connected = false;
+        set_status(a, "Chessnut Move: disconnected");
+    } else if (status.rfind("READY", 0) == 0) {
+        // Helper booted; nothing more to do here.
+    } else if (status.rfind("ACK ", 0) == 0) {
+        // Successful command — no UI noise needed.
+    } else if (status.rfind("ERROR ", 0) == 0 ||
+               status.rfind("FATAL ", 0) == 0) {
+        std::string msg = "Chessnut Move: " + status;
+        set_status(a, msg.c_str());
+    }
+    queue_redraw(a);
+}
+
+#ifndef __EMSCRIPTEN__
 namespace {
-// Bridge instance is owned here so its destructor reaps the
-// subprocess on app exit. AppState carries flags only.
+// Bridge instance owned here so its destructor reaps the
+// SimpleBLE / subprocess resources on app exit.
 std::unique_ptr<ChessnutBridge> g_chessnut_bridge;
 }  // namespace
 
@@ -2267,8 +2283,7 @@ void app_chessnut_set_enabled(
     if (!g_chessnut_bridge) g_chessnut_bridge = std::make_unique<ChessnutBridge>();
     if (!g_chessnut_bridge->start(std::move(on_status))) {
         g_chessnut_bridge.reset();
-        set_status(a,
-            "Chessnut Move: bridge failed to start (need python3 + bleak)");
+        set_status(a, "Chessnut Move: bridge failed to start");
         queue_redraw(a);
         return;
     }
@@ -2280,34 +2295,9 @@ void app_chessnut_set_enabled(
     g_chessnut_bridge->request_connect();
 }
 
-void app_chessnut_apply_status(AppState& a, const std::string& status) {
-    if (!a.chessnut_enabled) return;
-    if (status.rfind("CONNECTED", 0) == 0) {
-        a.chessnut_connected = true;
-        std::string msg = "Chessnut Move: " + status;
-        set_status(a, msg.c_str());
-        // Initial sync on connect — push current position with
-        // force=1 so the firmware always replans from sensor state.
-        app_chessnut_sync_board(a, /*force=*/true);
-    } else if (status == "DISCONNECTED") {
-        a.chessnut_connected = false;
-        set_status(a, "Chessnut Move: disconnected");
-    } else if (status.rfind("READY", 0) == 0) {
-        // Helper booted; INIT was already sent by set_enabled.
-    } else if (status.rfind("ACK ", 0) == 0) {
-        // Successful command — no UI noise needed.
-    } else if (status.rfind("ERROR ", 0) == 0 ||
-               status.rfind("FATAL ", 0) == 0) {
-        std::string msg = "Chessnut Move: " + status;
-        set_status(a, msg.c_str());
-    }
-    queue_redraw(a);
-}
-
 void app_chessnut_sync_board(AppState& a, bool force) {
     if (!g_chessnut_bridge || !a.chessnut_connected) return;
-    std::string fen = current_fen(a.game, a.game.white_turn);
-    g_chessnut_bridge->send_fen(fen, force);
+    g_chessnut_bridge->send_fen(app_current_fen(a), force);
 }
 
 void app_chessnut_shutdown(AppState& a) {
@@ -2317,7 +2307,6 @@ void app_chessnut_shutdown(AppState& a) {
     if (g_chessnut_bridge) g_chessnut_bridge->stop();
     g_chessnut_bridge.reset();
 }
-
 #endif  // !__EMSCRIPTEN__
 
 // ===========================================================================
