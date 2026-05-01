@@ -2393,16 +2393,39 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // landing.
     if (diffs.size() == 1) return;
 
+    // Settling window after we last pushed a sync — while the
+    // motors are mid-motion the sensor frames don't match the
+    // digital position. Suppress the auto-reject path during this
+    // window so we don't fight our own motors and create a re-sync
+    // loop. Legal moves can still apply (the if branches below
+    // bail through `reject` only when the sensor state is invalid).
+    constexpr int64_t kSyncSettlingUs = 2'000'000;  // 2 s
+    int64_t now = now_us(a);
+    bool settling = (a.chessnut_last_sync_us != 0) &&
+                    (now - a.chessnut_last_sync_us < kSyncSettlingUs);
+
+    auto reject = [&](const char* reason) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] reject: %s — diff=%zu\n",
+            reason, diffs.size());
+        if (settling) return;  // wait for our own motors to finish
+        std::string msg = std::string("Chessnut: ") + reason +
+                          " — re-syncing board";
+        set_status(a, msg.c_str());
+        audio_play(SoundEffect::Mistake);
+        // Force-sync drives pieces back to the digital state. The
+        // next ~2 s of NOTIFY frames will land in the settling
+        // window above and be ignored.
+        app_chessnut_sync_board(a, /*force=*/true);
+    };
+
     // Only handle the simple-move pattern automatically: exactly
     // two squares differ — one piece left, one piece arrived —
     // and the moved piece type+colour matches between source and
     // destination. Castling (4 diffs) and en passant (3 diffs)
     // would also need handling but are rarer; deferring those.
     if (diffs.size() != 2) {
-        std::fprintf(stderr,
-            "[chessnut/sensor] %zu-square diff — ignoring "
-            "(castling / en-passant / sensor noise)\n",
-            diffs.size());
+        reject("unrecognised state (multi-piece change)");
         return;
     }
 
@@ -2416,17 +2439,14 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         if (d.before != ' ' && d.after == ' ') from = &d;
         else                                    to   = &d;
     }
-    if (!from || !to) return;
+    if (!from || !to) {
+        reject("unrecognised state (no clear from/to)");
+        return;
+    }
     if (from->before != to->after) {
         // Not a piece "moved" pattern — could be promotion or a
         // sensor glitch where two unrelated squares changed.
-        // Punt to a future commit (promotion needs the user to
-        // pick a piece anyway).
-        std::fprintf(stderr,
-            "[chessnut/sensor] non-move diff %c→%c at (%d,%d) -> "
-            "(%d,%d) — ignoring\n",
-            from->before, to->after,
-            from->row, from->col, to->row, to->col);
+        reject("piece type mismatch (promotion or sensor glitch)");
         return;
     }
 
@@ -2437,6 +2457,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             static_cast<int>(a.mode),
             a.game.ai_thinking ? 1 : 0,
             a.game.game_over ? 1 : 0);
+        reject("not your turn / game not active");
         return;
     }
 
@@ -2449,10 +2470,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     int piece_idx = gs.grid[from->row][from->col];
     if (piece_idx < 0 ||
         (gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
-        std::fprintf(stderr,
-            "[chessnut/sensor] move (%d,%d)->(%d,%d) ignores: "
-            "wrong-side piece moved\n",
-            from->col, from->row, to->col, to->row);
+        reject("wrong side moved");
         return;
     }
     auto legal = generate_legal_moves(gs, from->col, from->row);
@@ -2461,9 +2479,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         if (mc == to->col && mr == to->row) { ok = true; break; }
     }
     if (!ok) {
-        std::fprintf(stderr,
-            "[chessnut/sensor] move (%d,%d)->(%d,%d) is not legal\n",
-            from->col, from->row, to->col, to->row);
+        reject("illegal move");
         return;
     }
 
@@ -2704,6 +2720,7 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         "[chessnut/sync] send force=%d fen=%s\n",
         force ? 1 : 0, fen.c_str());
     g_chessnut_bridge->send_fen(fen, force);
+    a.chessnut_last_sync_us = now_us(a);
     app_chessnut_highlight_last_move(a);
 }
 

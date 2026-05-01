@@ -248,6 +248,12 @@ struct AppState {
     // while in the "enabled but disconnected" state. Used by
     // app_tick to throttle retries to one per kChessnutReconnectMs.
     int64_t chessnut_last_reconnect_us = 0;
+    // Monotonic timestamp (us) of the most recent force-/soft-sync
+    // we pushed to the firmware. While the firmware is mid-motion,
+    // sensor frames don't match the digital position — we use this
+    // to suppress the auto-reject behaviour during a settling
+    // window so we don't fight our own motors.
+    int64_t chessnut_last_sync_us = 0;
 
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask
