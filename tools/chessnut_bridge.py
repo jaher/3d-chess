@@ -238,20 +238,24 @@ class Bridge:
         await scanner.start()
         await asyncio.sleep(5.0)
         await scanner.stop()
-        if not seen:
-            await self.stdout("(no devices visible)")
-            return
 
-        chessnut_marker = "2877-41c3-b46e-cf057c562023"
-        for addr, (name, uuids) in seen.items():
-            tag = ""
-            for u in uuids:
-                if chessnut_marker in u.lower():
-                    tag = " [CHESSNUT]"
-                    break
-            uuid_str = ",".join(uuids) if uuids else "-"
-            await self.stdout(
-                f"DEVICE {addr} {name or '(no name)'}{tag} svc={uuid_str}")
+        if seen:
+            chessnut_marker = "2877-41c3-b46e-cf057c562023"
+            for addr, (name, uuids) in seen.items():
+                tag = ""
+                for u in uuids:
+                    if chessnut_marker in u.lower():
+                        tag = " [CHESSNUT]"
+                        break
+                # The C++ picker parses "DEVICE <addr> <name>" and
+                # ignores anything past the first space-after-name,
+                # so the [CHESSNUT] / svc=… tags ride along as the
+                # name's tail without confusing the parser.
+                await self.stdout(
+                    f"DEVICE {addr} {name or '(no name)'}{tag}")
+        else:
+            await self.stdout("(no devices visible)")
+        await self.stdout("SCAN_COMPLETE")
 
     def on_disconnect(self, _client) -> None:
         # Schedule the report on the running loop — bleak fires this

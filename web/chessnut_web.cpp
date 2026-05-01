@@ -211,4 +211,18 @@ void app_chessnut_shutdown(AppState& a) {
     chessnut_web_stop_js();
 }
 
+// Web doesn't need the in-app picker — navigator.bluetooth.requestDevice
+// already pops a browser-native chooser dialog. These exist so the
+// shared header signature is satisfied.
+void app_chessnut_open_picker(AppState& /*a*/)  {}
+void app_chessnut_close_picker(AppState& /*a*/) {}
+void app_chessnut_pick_device(AppState& a, const std::string& /*addr*/) {
+    // No-op: the browser already picked a device when set_enabled fired.
+    // If callers ever route here on web, just turn the toggle on.
+    if (!a.chessnut_enabled) {
+        app_chessnut_set_enabled(a, true,
+                                 [](const std::string&) {});
+    }
+}
+
 #endif  // __EMSCRIPTEN__

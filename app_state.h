@@ -237,6 +237,21 @@ struct AppState {
     bool chessnut_bridge_running = false;
     bool chessnut_connected      = false;
 
+    // In-app device picker state. When the user toggles Chessnut
+    // Move on without a cached MAC (or when they explicitly ask
+    // to re-pair), we run a BLE scan and render the discovered
+    // peripherals as clickable rows under the existing toggles.
+    // Web build doesn't use this — the browser provides its own
+    // picker via navigator.bluetooth.requestDevice.
+    struct ChessnutScannedDevice {
+        std::string address;
+        std::string name;
+    };
+    bool chessnut_picker_open = false;
+    bool chessnut_picker_scanning = false;
+    std::vector<ChessnutScannedDevice> chessnut_devices;
+    int chessnut_picker_hover = -1;  // index of the hovered row, -1 = none
+
     // Non-owning pointer to the platform's hook table.
     const AppPlatform* platform = nullptr;
 
@@ -349,6 +364,20 @@ bool app_chessnut_supported();
 // AppState so non-app_state.cpp callers (e.g. web/chessnut_web.cpp)
 // can drive the bridge without re-implementing FEN serialisation.
 std::string app_current_fen(const AppState& a);
+
+// Open the device picker — clears the device list, kicks off a
+// fresh BLE scan, and switches the Options screen into
+// picker-rendering mode. Web build is a no-op (the browser owns
+// the picker dialog).
+void app_chessnut_open_picker(AppState& a);
+
+// User clicked a device row — connect to that MAC, close the
+// picker, cache the address for next time. Web no-op.
+void app_chessnut_pick_device(AppState& a, const std::string& address);
+
+// Cancel the picker without connecting (back arrow / explicit
+// cancel button).
+void app_chessnut_close_picker(AppState& a);
 
 // Continuous-mode driver bridge. Defined per-platform: main.cpp on
 // desktop, web/voice_web.cpp on web. Wired to the Continuous voice

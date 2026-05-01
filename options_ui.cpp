@@ -34,11 +34,26 @@ constexpr float OPT_TOG3_H  =  0.10f;
 constexpr float OPT_TOG3_X  = -OPT_TOG3_W * 0.5f;
 constexpr float OPT_TOG3_Y  = -0.16f;
 
+// Chessnut Move BLE-device picker. Sits below the toggles when
+// `picker_open` is true. The header (cancel/rescan) is one row;
+// each device is its own clickable row underneath.
+constexpr float PICK_HDR_W  =  0.60f;
+constexpr float PICK_HDR_H  =  0.07f;
+constexpr float PICK_HDR_X  = -PICK_HDR_W * 0.5f;
+constexpr float PICK_HDR_Y  = -0.30f;
+constexpr float PICK_ROW_W  =  0.80f;
+constexpr float PICK_ROW_H  =  0.08f;
+constexpr float PICK_ROW_X  = -PICK_ROW_W * 0.5f;
+constexpr float PICK_ROW_TOP =  -0.40f;
+constexpr int   PICK_MAX_ROWS = 9;  // -0.40 down to ~ -1.05; viewport floor
+
 }  // namespace
 
 int options_hit_test(double mx, double my, int width, int height,
                      bool continuous_voice_supported,
-                     bool chessnut_supported) {
+                     bool chessnut_supported,
+                     bool picker_open,
+                     int picker_device_count) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x >= OPT_BACK_X && ndc_x <= OPT_BACK_X + OPT_BACK_W &&
@@ -55,6 +70,21 @@ int options_hit_test(double mx, double my, int width, int height,
         ndc_x >= OPT_TOG3_X && ndc_x <= OPT_TOG3_X + OPT_TOG3_W &&
         ndc_y >= OPT_TOG3_Y - OPT_TOG3_H && ndc_y <= OPT_TOG3_Y)
         return 4;
+    if (picker_open) {
+        // Header row: cancel/rescan.
+        if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
+            ndc_y >= PICK_HDR_Y - PICK_HDR_H && ndc_y <= PICK_HDR_Y)
+            return 5;
+        // Device rows.
+        int n = picker_device_count;
+        if (n > PICK_MAX_ROWS) n = PICK_MAX_ROWS;
+        for (int i = 0; i < n; ++i) {
+            float top = PICK_ROW_TOP - static_cast<float>(i) * PICK_ROW_H;
+            if (ndc_x >= PICK_ROW_X && ndc_x <= PICK_ROW_X + PICK_ROW_W &&
+                ndc_y >= top - PICK_ROW_H && ndc_y <= top)
+                return 100 + i;
+        }
+    }
     return 0;
 }
 
@@ -63,6 +93,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                            bool continuous_voice_supported,
                            bool chessnut_enabled,
                            bool chessnut_supported,
+                           bool picker_open,
+                           bool picker_scanning,
+                           const OptionsScannedDevice* picker_devices,
+                           int picker_device_count,
                            int width, int height,
                            int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -86,6 +120,16 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported) {
         add_quad(OPT_TOG3_X, OPT_TOG3_Y, OPT_TOG3_W, OPT_TOG3_H);
+    }
+    int picker_visible = 0;
+    if (picker_open) {
+        add_quad(PICK_HDR_X, PICK_HDR_Y, PICK_HDR_W, PICK_HDR_H);
+        picker_visible = picker_device_count;
+        if (picker_visible > PICK_MAX_ROWS) picker_visible = PICK_MAX_ROWS;
+        for (int i = 0; i < picker_visible; ++i) {
+            float top = PICK_ROW_TOP - static_cast<float>(i) * PICK_ROW_H;
+            add_quad(PICK_ROW_X, top, PICK_ROW_W, PICK_ROW_H);
+        }
     }
 
     GLuint bvao, bvbo;
@@ -127,6 +171,23 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported) {
         draw_toggle(chessnut_enabled, 4, next_offset);
+        next_offset += 6;
+    }
+    if (picker_open) {
+        // Header (cancel/rescan) — neutral grey, brighter on hover.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.30f, 0.30f, 0.36f, hover == 5 ? 0.75f : 0.55f);
+        glDrawArrays(GL_TRIANGLES, next_offset, 6);
+        next_offset += 6;
+        // Each device row — slightly cooler shade so they're
+        // visually distinct from the toggles.
+        for (int i = 0; i < picker_visible; ++i) {
+            bool h = hover == 100 + i;
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.18f, 0.30f, 0.46f, h ? 0.80f : 0.55f);
+            glDrawArrays(GL_TRIANGLES, next_offset, 6);
+            next_offset += 6;
+        }
     }
     glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
@@ -174,6 +235,45 @@ void renderer_draw_options(bool cartoon_outline_enabled,
             OPT_TOG3_Y);
         toggle3_end = static_cast<int>(text_verts.size() / 5);
     }
+    int picker_text_start = toggle3_end;
+    int picker_text_end   = toggle3_end;
+    if (picker_open) {
+        // Header text — "Scanning…" while the scan is live, then a
+        // hint plus an explicit "Cancel" affordance once it ends.
+        std::string hdr = picker_scanning
+            ? "Scanning for Bluetooth devices…"
+            : (picker_device_count == 0
+                 ? "No devices found — click to rescan / cancel"
+                 : "Pick a device — click to cancel");
+        float hdr_cw = 0.020f, hdr_ch = 0.030f;
+        float hdr_w  = hdr.size() * hdr_cw * 0.7f;
+        add_screen_string(text_verts, -hdr_w * 0.5f,
+                          PICK_HDR_Y - (PICK_HDR_H - hdr_ch) * 0.5f - 0.005f,
+                          hdr_cw, hdr_ch, hdr);
+
+        // Each row — "AA:BB:CC:DD:EE:FF  Display name".
+        int rows = picker_device_count;
+        if (rows > PICK_MAX_ROWS) rows = PICK_MAX_ROWS;
+        float row_cw = 0.018f, row_ch = 0.028f;
+        for (int i = 0; i < rows; ++i) {
+            float top = PICK_ROW_TOP - static_cast<float>(i) * PICK_ROW_H;
+            std::string line;
+            if (picker_devices[i].address) line += picker_devices[i].address;
+            line += "  ";
+            if (picker_devices[i].name) line += picker_devices[i].name;
+            // Truncate so we never overflow the row visually. ASCII
+            // ellipsis since the font atlas only ships latin glyphs.
+            constexpr size_t kMaxChars = 56;
+            if (line.size() > kMaxChars) {
+                line.resize(kMaxChars - 3);
+                line += "...";
+            }
+            add_screen_string(text_verts, PICK_ROW_X + 0.02f,
+                              top - (PICK_ROW_H - row_ch) * 0.5f - 0.004f,
+                              row_cw, row_ch, line);
+        }
+        picker_text_end = static_cast<int>(text_verts.size() / 5);
+    }
 
     GLuint tvao, tvbo;
     glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
@@ -212,6 +312,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     li3, li3, li3, 1.0f);
         glDrawArrays(GL_TRIANGLES, toggle2_end, toggle3_end - toggle2_end);
+    }
+    if (picker_open && picker_text_end > picker_text_start) {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.96f, 0.96f, 0.92f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, picker_text_start,
+                     picker_text_end - picker_text_start);
     }
 
     glBindVertexArray(0); glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);

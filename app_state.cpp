@@ -1000,7 +1000,9 @@ static void release_options(AppState& a, double mx, double my,
     bool voice_supported    = app_voice_continuous_supported();
     bool chessnut_supported = app_chessnut_supported();
     int btn = options_hit_test(mx, my, width, height,
-                               voice_supported, chessnut_supported);
+                               voice_supported, chessnut_supported,
+                               a.chessnut_picker_open,
+                               static_cast<int>(a.chessnut_devices.size()));
     if (btn == 1) {
         app_enter_menu(a);
     } else if (btn == 2) {
@@ -1010,6 +1012,14 @@ static void release_options(AppState& a, double mx, double my,
         app_voice_toggle_continuous_request(a);
     } else if (btn == 4 && chessnut_supported) {
         app_chessnut_toggle_request(a);
+    } else if (btn == 5 && a.chessnut_picker_open) {
+        app_chessnut_close_picker(a);
+    } else if (btn >= 100 && a.chessnut_picker_open) {
+        int idx = btn - 100;
+        if (idx >= 0 &&
+            idx < static_cast<int>(a.chessnut_devices.size())) {
+            app_chessnut_pick_device(a, a.chessnut_devices[idx].address);
+        }
     }
 }
 
@@ -1225,9 +1235,16 @@ static void motion_options(AppState& a, double mx, double my,
                            int width, int height) {
     int h = options_hit_test(mx, my, width, height,
                              app_voice_continuous_supported(),
-                             app_chessnut_supported());
+                             app_chessnut_supported(),
+                             a.chessnut_picker_open,
+                             static_cast<int>(a.chessnut_devices.size()));
     if (h != a.options_hover) {
         a.options_hover = h;
+        queue_redraw(a);
+    }
+    int row = (h >= 100) ? (h - 100) : -1;
+    if (row != a.chessnut_picker_hover) {
+        a.chessnut_picker_hover = row;
         queue_redraw(a);
     }
 }
@@ -1687,11 +1704,24 @@ static void render_challenge_select(AppState& a, int width, int height) {
 static void render_options(AppState& a, int width, int height) {
     bool voice_supported = app_voice_continuous_supported();
     bool chessnut_supported = app_chessnut_supported();
+    // Project AppState's std::string-backed device list into the
+    // C-pointer struct the renderer expects. Lifetime is fine —
+    // the strings outlive this stack frame and the renderer
+    // doesn't retain pointers.
+    std::vector<OptionsScannedDevice> devs;
+    devs.reserve(a.chessnut_devices.size());
+    for (const auto& d : a.chessnut_devices) {
+        devs.push_back({d.address.c_str(), d.name.c_str()});
+    }
     renderer_draw_options(a.cartoon_outline,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
+                          a.chessnut_picker_open,
+                          a.chessnut_picker_scanning,
+                          devs.data(),
+                          static_cast<int>(devs.size()),
                           width, height, a.options_hover);
 }
 
@@ -2234,9 +2264,47 @@ std::string app_current_fen(const AppState& a) {
 }
 
 void app_chessnut_apply_status(AppState& a, const std::string& status) {
-    if (!a.chessnut_enabled) return;
+    // The picker is shown even when chessnut_enabled is false —
+    // we open the picker BEFORE flipping the toggle on. Don't
+    // gate DEVICE / SCAN_COMPLETE behind chessnut_enabled.
+    if (status.rfind("DEVICE ", 0) == 0) {
+        // Format: "DEVICE <mac> <name…>"  (name may contain spaces)
+        std::string rest = status.substr(7);
+        size_t sp = rest.find(' ');
+        AppState::ChessnutScannedDevice d;
+        if (sp == std::string::npos) {
+            d.address = rest;
+        } else {
+            d.address = rest.substr(0, sp);
+            d.name    = rest.substr(sp + 1);
+        }
+        if (!d.address.empty()) {
+            // De-dup: if we already have a row for this MAC, keep
+            // the first one (it's likely got the same name and we
+            // don't want the picker rows to flicker).
+            bool already = false;
+            for (const auto& e : a.chessnut_devices) {
+                if (e.address == d.address) { already = true; break; }
+            }
+            if (!already) a.chessnut_devices.push_back(std::move(d));
+        }
+        queue_redraw(a);
+        return;
+    }
+    if (status == "SCAN_COMPLETE") {
+        a.chessnut_picker_scanning = false;
+        set_status(a, a.chessnut_devices.empty()
+            ? "Chessnut Move: no devices found"
+            : "Chessnut Move: pick a device below");
+        queue_redraw(a);
+        return;
+    }
+    if (!a.chessnut_enabled && !a.chessnut_picker_open) return;
     if (status.rfind("CONNECTED", 0) == 0) {
         a.chessnut_connected = true;
+        a.chessnut_picker_open = false;  // close picker on success
+        a.chessnut_picker_scanning = false;
+        a.chessnut_devices.clear();
         std::string msg = "Chessnut Move: " + status;
         set_status(a, msg.c_str());
         // Initial sync on connect — push current position with
@@ -2262,7 +2330,37 @@ namespace {
 // Bridge instance owned here so its destructor reaps the
 // SimpleBLE / subprocess resources on app exit.
 std::unique_ptr<ChessnutBridge> g_chessnut_bridge;
+
+// Last on_status callback supplied to set_enabled, kept here so the
+// picker entry points (open / pick / close) can re-use the same
+// status routing without forcing every caller to thread the
+// callback through.
+std::function<void(const std::string&)> g_chessnut_status_cb;
 }  // namespace
+
+// Make sure the bridge subprocess / SimpleBLE worker is alive and
+// the status callback is wired. Returns true if the bridge is
+// usable after this call.
+static bool ensure_chessnut_bridge(
+    AppState& a,
+    std::function<void(const std::string&)> on_status) {
+    if (!g_chessnut_bridge) g_chessnut_bridge = std::make_unique<ChessnutBridge>();
+    if (g_chessnut_bridge->running()) {
+        // Already running from a previous toggle — just refresh the
+        // callback so subsequent status updates land here.
+        if (on_status) g_chessnut_status_cb = on_status;
+        return true;
+    }
+    if (on_status) g_chessnut_status_cb = on_status;
+    if (!g_chessnut_bridge->start(g_chessnut_status_cb)) {
+        g_chessnut_bridge.reset();
+        set_status(a, "Chessnut Move: bridge failed to start");
+        queue_redraw(a);
+        return false;
+    }
+    a.chessnut_bridge_running = true;
+    return true;
+}
 
 void app_chessnut_set_enabled(
     AppState& a, bool on,
@@ -2272,27 +2370,72 @@ void app_chessnut_set_enabled(
     if (!on) {
         if (g_chessnut_bridge) g_chessnut_bridge->stop();
         g_chessnut_bridge.reset();
+        g_chessnut_status_cb = nullptr;
         a.chessnut_enabled        = false;
         a.chessnut_bridge_running = false;
         a.chessnut_connected      = false;
+        a.chessnut_picker_open    = false;
+        a.chessnut_picker_scanning = false;
+        a.chessnut_devices.clear();
         set_status(a, "Chessnut Move: off");
         queue_redraw(a);
         return;
     }
 
-    if (!g_chessnut_bridge) g_chessnut_bridge = std::make_unique<ChessnutBridge>();
-    if (!g_chessnut_bridge->start(std::move(on_status))) {
-        g_chessnut_bridge.reset();
-        set_status(a, "Chessnut Move: bridge failed to start");
-        queue_redraw(a);
-        return;
-    }
-    a.chessnut_enabled        = true;
-    a.chessnut_bridge_running = true;
-    a.chessnut_connected      = false;
-    set_status(a, "Chessnut Move: connecting…");
+    if (!ensure_chessnut_bridge(a, std::move(on_status))) return;
+    a.chessnut_enabled   = true;
+    a.chessnut_connected = false;
+
+    // If we already have a cached MAC (from a previous successful
+    // session or CHESS_CHESSNUT_ADDRESS env var), skip the picker
+    // and connect directly. Otherwise open the picker so the user
+    // can choose which board to bind to.
+    set_status(a, "Chessnut Move: scanning…");
     queue_redraw(a);
-    g_chessnut_bridge->request_connect();
+    a.chessnut_devices.clear();
+    a.chessnut_picker_open    = true;
+    a.chessnut_picker_scanning = true;
+    a.chessnut_picker_hover   = -1;
+    g_chessnut_bridge->start_scan();
+}
+
+void app_chessnut_open_picker(AppState& a) {
+    if (!ensure_chessnut_bridge(a, g_chessnut_status_cb)) return;
+    a.chessnut_devices.clear();
+    a.chessnut_picker_open     = true;
+    a.chessnut_picker_scanning = true;
+    a.chessnut_picker_hover    = -1;
+    set_status(a, "Chessnut Move: scanning…");
+    queue_redraw(a);
+    g_chessnut_bridge->start_scan();
+}
+
+void app_chessnut_pick_device(AppState& a, const std::string& address) {
+    if (!ensure_chessnut_bridge(a, g_chessnut_status_cb)) return;
+    a.chessnut_picker_open     = false;
+    a.chessnut_picker_scanning = false;
+    a.chessnut_picker_hover    = -1;
+    a.chessnut_enabled         = true;
+    a.chessnut_connected       = false;
+    set_status(a, ("Chessnut Move: connecting to " + address + "…").c_str());
+    queue_redraw(a);
+    g_chessnut_bridge->connect_to_address(address);
+}
+
+void app_chessnut_close_picker(AppState& a) {
+    a.chessnut_picker_open     = false;
+    a.chessnut_picker_scanning = false;
+    a.chessnut_picker_hover    = -1;
+    a.chessnut_devices.clear();
+    if (!a.chessnut_connected) {
+        a.chessnut_enabled = false;
+        if (g_chessnut_bridge) g_chessnut_bridge->stop();
+        g_chessnut_bridge.reset();
+        g_chessnut_status_cb = nullptr;
+        a.chessnut_bridge_running = false;
+        set_status(a, "Chessnut Move: off");
+    }
+    queue_redraw(a);
 }
 
 void app_chessnut_sync_board(AppState& a, bool force) {

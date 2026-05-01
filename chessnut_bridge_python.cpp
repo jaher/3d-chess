@@ -132,6 +132,10 @@ public:
     }
 
     void request_connect() override { write_line("INIT"); }
+    void start_scan() override      { write_line("SCAN"); }
+    void connect_to_address(const std::string& addr) override {
+        write_line("INIT " + addr);
+    }
 
     void send_fen(const std::string& fen, bool force) override {
         write_line(std::string(force ? "FEN_FORCE " : "FEN ") + fen);

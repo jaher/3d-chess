@@ -34,6 +34,8 @@ public:
     bool start(StatusCallback on_status);
     void stop();
     void request_connect();
+    void start_scan();
+    void connect_to_address(const std::string& address);
     void send_fen(const std::string& fen, bool force);
     void send_led_hex(const std::string& bitmask_hex);
     bool running() const;

@@ -29,6 +29,10 @@ bool ChessnutBridge::start(StatusCallback on_status) {
 
 void ChessnutBridge::stop()             { if (impl_) impl_->stop(); }
 void ChessnutBridge::request_connect()  { if (impl_) impl_->request_connect(); }
+void ChessnutBridge::start_scan()       { if (impl_) impl_->start_scan(); }
+void ChessnutBridge::connect_to_address(const std::string& address) {
+    if (impl_) impl_->connect_to_address(address);
+}
 
 void ChessnutBridge::send_fen(const std::string& fen, bool force) {
     if (impl_) impl_->send_fen(fen, force);

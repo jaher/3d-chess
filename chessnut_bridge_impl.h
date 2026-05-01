@@ -24,6 +24,18 @@ public:
     virtual bool start(StatusCallback on_status) = 0;
     virtual void stop() = 0;
     virtual void request_connect() = 0;
+
+    // Scan all advertising peripherals and emit one
+    // "DEVICE <mac> <name>" status per discovered device, followed
+    // by a single "SCAN_COMPLETE" once scanning finishes. Used by
+    // the in-app picker so the user can choose which board to bind
+    // to.
+    virtual void start_scan() = 0;
+
+    // Connect to a specific MAC, skipping the discovery phase. Used
+    // by the picker after the user clicks a row.
+    virtual void connect_to_address(const std::string& address) = 0;
+
     virtual void send_fen(const std::string& fen, bool force) = 0;
     virtual void send_led_hex(const std::string& bitmask_hex) = 0;
     virtual bool running() const = 0;

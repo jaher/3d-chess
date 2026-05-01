@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -108,9 +109,9 @@ void save_cached_address(const std::string& addr) {
 // GTK main thread unblocked.
 // ---------------------------------------------------------------------------
 struct Command {
-    enum Kind { CONNECT, FEN, FEN_FORCE, LED, QUIT };
+    enum Kind { CONNECT, SCAN, CONNECT_TO, FEN, FEN_FORCE, LED, QUIT };
     Kind        kind;
-    std::string arg;     // FEN string or LED hex; empty for others
+    std::string arg;     // FEN string, LED hex, or MAC for CONNECT_TO
 };
 
 class NativeImpl : public IChessnutBridgeImpl {
@@ -133,7 +134,11 @@ public:
         on_status_ = nullptr;
     }
 
-    void request_connect() override     { enqueue({Command::CONNECT,   ""}); }
+    void request_connect() override     { enqueue({Command::CONNECT,    ""}); }
+    void start_scan() override          { enqueue({Command::SCAN,       ""}); }
+    void connect_to_address(const std::string& addr) override {
+        enqueue({Command::CONNECT_TO, addr});
+    }
     void send_fen(const std::string& fen, bool force) override {
         enqueue({force ? Command::FEN_FORCE : Command::FEN, fen});
     }
@@ -176,7 +181,9 @@ private:
                         try { peripheral_.disconnect(); } catch (...) {}
                     }
                     return;
-                case Command::CONNECT: do_connect(); break;
+                case Command::CONNECT:    do_connect(""); break;
+                case Command::CONNECT_TO: do_connect(c.arg); break;
+                case Command::SCAN:       do_scan(); break;
                 case Command::FEN:
                     do_write(to_byte_array(chessnut::make_set_move_board(c.arg, false)), "FEN");
                     break;
@@ -195,7 +202,46 @@ private:
         }
     }
 
-    void do_connect() {
+    void do_scan() {
+        if (!SimpleBLE::Adapter::bluetooth_enabled()) {
+            emit("ERROR Bluetooth disabled or unavailable");
+            emit("SCAN_COMPLETE");
+            return;
+        }
+        auto adapters = SimpleBLE::Adapter::get_adapters();
+        if (adapters.empty()) {
+            emit("ERROR no BLE adapter");
+            emit("SCAN_COMPLETE");
+            return;
+        }
+        SimpleBLE::Adapter adapter = adapters.front();
+
+        // Track addresses we've already reported so we don't spam
+        // the picker if the same device fires multiple advertising
+        // events during the scan window.
+        std::set<std::string> seen;
+        adapter.set_callback_on_scan_found(
+            [&](SimpleBLE::Peripheral p) {
+                std::string addr, name;
+                try {
+                    addr = p.address();
+                    name = p.identifier();
+                } catch (...) { return; }
+                if (addr.empty()) return;
+                if (!seen.insert(addr).second) return;
+                if (name.empty()) name = "(no name)";
+                emit("DEVICE " + addr + " " + name);
+            });
+        adapter.scan_for(8000);
+        emit("SCAN_COMPLETE");
+    }
+
+    // Connect to the board. If `explicit_addr` is non-empty, we
+    // skip name matching and target that MAC directly (used by the
+    // picker after the user picks a row, and as a fast path when
+    // the cache matches). Empty string means "use cached MAC, then
+    // fall back to name-prefix scan" — the auto-toggle path.
+    void do_connect(const std::string& explicit_addr) {
         if (peripheral_initialised_ && peripheral_.is_connected()) {
             emit("CONNECTED " + connected_name_);
             return;
@@ -208,19 +254,15 @@ private:
         if (adapters.empty()) { emit("ERROR no BLE adapter"); return; }
         SimpleBLE::Adapter adapter = adapters.front();
 
-        // Two-pass discovery. First a short scan that accepts the
-        // cached MAC verbatim — catches the common case of "I just
-        // used the board last session". If that misses (board
-        // moved, never connected before, cache wiped), fall back
-        // to a full 8 s name-prefix scan.
-        std::string cached_addr = load_cached_address();
+        std::string want_addr = explicit_addr.empty()
+            ? load_cached_address() : explicit_addr;
         SimpleBLE::Peripheral target;
         bool found = false;
         auto take = [&](SimpleBLE::Peripheral p, bool by_address) {
             if (found) return;
             try {
                 if (by_address) {
-                    if (p.address() != cached_addr) return;
+                    if (p.address() != want_addr) return;
                 } else {
                     std::string name = p.identifier();
                     if (!(name.rfind("Chessnut", 0) == 0)) return;
@@ -230,12 +272,17 @@ private:
             found  = true;
         };
 
-        if (!cached_addr.empty()) {
+        if (!want_addr.empty()) {
             adapter.set_callback_on_scan_found(
                 [&](SimpleBLE::Peripheral p) { take(p, /*by_address=*/true); });
             adapter.scan_for(2500);
         }
-        if (!found) {
+        // Only fall back to name-prefix when the toggle had no
+        // explicit address to chase. With an explicit address from
+        // the picker we want a clean "no, that exact device wasn't
+        // there" failure rather than a silent wrong-device
+        // connect.
+        if (!found && explicit_addr.empty()) {
             adapter.set_callback_on_scan_found(
                 [&](SimpleBLE::Peripheral p) { take(p, /*by_address=*/false); });
             adapter.scan_for(8000);
