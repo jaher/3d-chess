@@ -57,16 +57,16 @@ EM_JS(void, chessnut_web_start_js, (), {
     // The parent service UUID isn't fixed across firmware revisions
     // — desktop discovers it dynamically via SimpleBLE. Web
     // Bluetooth needs every candidate listed in optionalServices
-    // upfront, so we enumerate a generous family of likely UUIDs
-    // (full hex sweep of "1b7e8X.." in the Chessnut suffix family
-    // plus a couple of common BLE-vendor patterns). Browser
-    // implementations cap optionalServices length so don't go wild.
+    // upfront, so we sweep the 1b7e82XX hex range that contains
+    // every known Chessnut characteristic (8261, 8262, 8271, 8272,
+    // 8273). The parent service is almost certainly in this range
+    // too. 256 entries — well within Web Bluetooth's per-device
+    // limits.
     var CANDIDATE_SVCS = [];
-    for (var i = 0; i < 16; i++) {
-        for (var j = 0; j < 16; j++) {
-            CANDIDATE_SVCS.push(
-                "1b7e8" + i.toString(16) + j.toString(16) + SUFFIX);
-        }
+    for (var v = 0; v < 256; v++) {
+        var h = v.toString(16);
+        if (h.length < 2) h = "0" + h;
+        CANDIDATE_SVCS.push("1b7e82" + h + SUFFIX);
     }
     var INIT_HANDSHAKE_1 = new Uint8Array([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]);
     var INIT_HANDSHAKE_2 = new Uint8Array([0x27, 0x01, 0x00]);
