@@ -6,6 +6,7 @@
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
+#include "chessnut_encode.h"
 #ifndef __EMSCRIPTEN__
 #  include "chessnut_bridge.h"
 #endif
@@ -2287,6 +2288,183 @@ std::string app_current_fen(const AppState& a) {
     return current_fen(a.game, a.game.white_turn);
 }
 
+// ---------------------------------------------------------------------------
+// Inbound sensor-frame mirroring (board → digital).
+// ---------------------------------------------------------------------------
+namespace {
+
+bool parse_hex_byte(char hi, char lo, uint8_t& out) {
+    auto v = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+    int h = v(hi), l = v(lo);
+    if (h < 0 || l < 0) return false;
+    out = static_cast<uint8_t>((h << 4) | l);
+    return true;
+}
+
+// Build a [row][col] grid char snapshot of the digital game's
+// piece placement, matching the convention chessnut_encode.h uses
+// for the inbound decoder.
+std::array<std::array<char, 8>, 8>
+digital_grid_snapshot(const GameState& gs) {
+    std::array<std::array<char, 8>, 8> grid{};
+    for (auto& row : grid) row.fill(' ');
+    for (const auto& p : gs.pieces) {
+        if (!p.alive) continue;
+        if (p.row < 0 || p.row > 7 || p.col < 0 || p.col > 7) continue;
+        grid[p.row][p.col] = piece_to_fen(p.type, p.is_white);
+    }
+    return grid;
+}
+
+// True for everything we should refuse to act on automatically:
+// AI thinking / animating, modal dialogs open, game already over,
+// challenge already solved, etc. The user can still drive the
+// physical board through these states; we just don't promote the
+// physical move into the digital game.
+bool sensor_action_allowed(const AppState& a) {
+    if (a.game.ai_thinking || a.game.ai_animating) return false;
+    if (a.withdraw_confirm_open) return false;
+    if (a.game.game_over) return false;
+    if (a.game.analysis_mode) return false;
+    if (a.mode != MODE_PLAYING && a.mode != MODE_CHALLENGE) return false;
+    if (a.mode == MODE_CHALLENGE &&
+        (a.challenge_solved || a.challenge_mistake)) return false;
+    return true;
+}
+
+}  // namespace
+
+void app_chessnut_apply_sensor_frame(AppState& a,
+                                     const std::string& hex) {
+    if (hex.size() < 64) return;  // need 32 bytes
+    std::array<uint8_t, 32> bytes{};
+    for (int i = 0; i < 32; i++) {
+        if (!parse_hex_byte(hex[i * 2], hex[i * 2 + 1], bytes[i])) return;
+    }
+    auto sensor   = chessnut::board_bytes_to_grid(bytes);
+    auto expected = digital_grid_snapshot(a.game);
+
+    // Collect (row, col, before, after) tuples for every square
+    // that differs between the digital state and the sensor frame.
+    struct Diff { int row, col; char before, after; };
+    std::vector<Diff> diffs;
+    for (int r = 0; r < 8; r++) {
+        for (int c = 0; c < 8; c++) {
+            if (expected[r][c] != sensor[r][c]) {
+                diffs.push_back(Diff{r, c, expected[r][c], sensor[r][c]});
+            }
+        }
+    }
+    if (diffs.empty()) return;  // no change, no action.
+
+    // Mid-pickup intermediate state (a piece is in the user's hand
+    // and the corresponding sensor square is empty). Wait for the
+    // landing.
+    if (diffs.size() == 1) return;
+
+    // Only handle the simple-move pattern automatically: exactly
+    // two squares differ — one piece left, one piece arrived —
+    // and the moved piece type+colour matches between source and
+    // destination. Castling (4 diffs) and en passant (3 diffs)
+    // would also need handling but are rarer; deferring those.
+    if (diffs.size() != 2) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] %zu-square diff — ignoring "
+            "(castling / en-passant / sensor noise)\n",
+            diffs.size());
+        return;
+    }
+
+    // Identify which side moved. The "from" square is the one that
+    // was occupied digitally and is empty on the sensor; the "to"
+    // square is the one whose sensor value matches the piece that
+    // disappeared from the "from" square.
+    Diff* from = nullptr;
+    Diff* to   = nullptr;
+    for (auto& d : diffs) {
+        if (d.before != ' ' && d.after == ' ') from = &d;
+        else                                    to   = &d;
+    }
+    if (!from || !to) return;
+    if (from->before != to->after) {
+        // Not a piece "moved" pattern — could be promotion or a
+        // sensor glitch where two unrelated squares changed.
+        // Punt to a future commit (promotion needs the user to
+        // pick a piece anyway).
+        std::fprintf(stderr,
+            "[chessnut/sensor] non-move diff %c→%c at (%d,%d) -> "
+            "(%d,%d) — ignoring\n",
+            from->before, to->after,
+            from->row, from->col, to->row, to->col);
+        return;
+    }
+
+    if (!sensor_action_allowed(a)) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] move detected but app state blocks "
+            "auto-apply (mode=%d ai_thinking=%d game_over=%d)\n",
+            static_cast<int>(a.mode),
+            a.game.ai_thinking ? 1 : 0,
+            a.game.game_over ? 1 : 0);
+        return;
+    }
+
+    // Validate as a legal move for the side currently to move. If
+    // the user moved a piece for the OTHER side, we'd refuse here
+    // — that's intentional; we don't want the board's accidental
+    // touch of the wrong piece to corrupt the game.
+    GameState& gs = a.game;
+    int side_to_move_white = gs.white_turn ? 1 : 0;
+    int piece_idx = gs.grid[from->row][from->col];
+    if (piece_idx < 0 ||
+        (gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] move (%d,%d)->(%d,%d) ignores: "
+            "wrong-side piece moved\n",
+            from->col, from->row, to->col, to->row);
+        return;
+    }
+    auto legal = generate_legal_moves(gs, from->col, from->row);
+    bool ok = false;
+    for (const auto& [mc, mr] : legal) {
+        if (mc == to->col && mr == to->row) { ok = true; break; }
+    }
+    if (!ok) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] move (%d,%d)->(%d,%d) is not legal\n",
+            from->col, from->row, to->col, to->row);
+        return;
+    }
+
+    // Apply through the same plumbing handle_board_click uses for a
+    // mouse click — execute_move + sfx + status refresh + AI
+    // dispatch — so sensor-driven moves trigger Stockfish's reply
+    // automatically when in normal play.
+    bool capture = gs.grid[to->row][to->col] >= 0;
+    execute_move(gs, from->col, from->row, to->col, to->row);
+    gs.selected_col = gs.selected_row = -1;
+    gs.valid_moves.clear();
+    play_move_sfx(gs, capture);
+    queue_redraw(a);
+    app_refresh_status(a);
+    app_chessnut_highlight_last_move(a);
+    if (a.mode == MODE_PLAYING && !gs.game_over) {
+        trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
+        if (gs.white_turn != a.human_plays_white) trigger_ai(a);
+    }
+    std::fprintf(stderr,
+        "[chessnut/sensor] applied move %c%c%c%c\n",
+        static_cast<char>('a' + (7 - from->col)),
+        static_cast<char>('1' + from->row),
+        static_cast<char>('a' + (7 - to->col)),
+        static_cast<char>('1' + to->row));
+}
+
 void app_chessnut_apply_status(AppState& a, const std::string& status) {
     // The picker is shown even when chessnut_enabled is false —
     // we open the picker BEFORE flipping the toggle on. Don't
@@ -2321,6 +2499,23 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
             ? "Chessnut Move: no devices found"
             : "Chessnut Move: pick a device below");
         queue_redraw(a);
+        return;
+    }
+    if (status.rfind("NOTIFY ", 0) == 0) {
+        // Format: "NOTIFY <uuid> <hex>". The board-state channel
+        // is 1b7e8262-…; other notify UUIDs (8261/8273/8271) are
+        // command-response traces that the digital game doesn't
+        // need to react to.
+        const std::string suffix = "2877-41c3-b46e-cf057c562023";
+        std::string rest = status.substr(7);
+        size_t sp = rest.find(' ');
+        if (sp == std::string::npos) return;
+        std::string uuid = rest.substr(0, sp);
+        std::string hex  = rest.substr(sp + 1);
+        if (uuid.find(suffix) != std::string::npos &&
+            uuid.find("8262") != std::string::npos) {
+            app_chessnut_apply_sensor_frame(a, hex);
+        }
         return;
     }
     if (!a.chessnut_enabled && !a.chessnut_picker_open) return;

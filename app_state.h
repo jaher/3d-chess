@@ -385,6 +385,18 @@ void app_settings_save(const AppState& a);
 // successful sync so the LED pattern always tracks the latest move.
 void app_chessnut_highlight_last_move(AppState& a);
 
+// Inbound sensor-frame handler. The board pushes a 32-byte
+// piece-placement frame on the 8262 notify channel whenever the
+// physical state changes (piece picked up, put down, etc.). This
+// decodes the frame, diffs it against the current digital
+// position, and — if the diff is exactly one legal move — applies
+// it as if the user had clicked it. Closes the loop: pick up a
+// physical piece, the on-screen game follows.
+//
+// Public so chessnut_web.cpp's notification handler can reuse the
+// same logic. `hex` is a string of 64 hex chars (32 bytes).
+void app_chessnut_apply_sensor_frame(AppState& a, const std::string& hex);
+
 // Open the device picker — clears the device list, kicks off a
 // fresh BLE scan, and switches the Options screen into
 // picker-rendering mode. Web build is a no-op (the browser owns
