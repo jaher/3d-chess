@@ -530,10 +530,19 @@ static void handle_board_click(AppState& a, double mx, double my,
                                 record_solution();
                                 int pi = a.current_challenge.current_index;
                                 // Reset to the starting FEN for the
-                                // next candidate.
+                                // next candidate. Force-sync the
+                                // physical board so it follows the
+                                // reset (apply_fen_to_state mutates
+                                // gs without going through
+                                // execute_move, so the per-move
+                                // sync at line 462 wouldn't catch
+                                // this).
                                 ParsedFEN p = parse_fen(
                                     a.current_challenge.fens[pi]);
-                                if (p.valid) apply_fen_to_state(a.game, p);
+                                if (p.valid) {
+                                    apply_fen_to_state(a.game, p);
+                                    app_chessnut_sync_board(a, /*force=*/true);
+                                }
                                 a.challenge_moves_made = 0;
                                 if (tactic_target > 0 &&
                                     found.size() >= tactic_target) {
@@ -2439,8 +2448,22 @@ void app_chessnut_close_picker(AppState& a) {
 }
 
 void app_chessnut_sync_board(AppState& a, bool force) {
-    if (!g_chessnut_bridge || !a.chessnut_connected) return;
-    g_chessnut_bridge->send_fen(app_current_fen(a), force);
+    if (!g_chessnut_bridge) {
+        std::fprintf(stderr,
+            "[chessnut/sync] skip: bridge null\n");
+        return;
+    }
+    if (!a.chessnut_connected) {
+        std::fprintf(stderr,
+            "[chessnut/sync] skip: not connected (enabled=%d)\n",
+            a.chessnut_enabled ? 1 : 0);
+        return;
+    }
+    std::string fen = app_current_fen(a);
+    std::fprintf(stderr,
+        "[chessnut/sync] send force=%d fen=%s\n",
+        force ? 1 : 0, fen.c_str());
+    g_chessnut_bridge->send_fen(fen, force);
 }
 
 void app_chessnut_shutdown(AppState& a) {
