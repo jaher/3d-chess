@@ -2379,10 +2379,19 @@ bool sensor_action_allowed(const AppState& a) {
 
 void app_chessnut_apply_sensor_frame(AppState& a,
                                      const std::string& hex) {
-    if (hex.size() < 64) return;  // need 32 bytes
+    if (hex.size() < 64) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] frame too short (%zu hex chars)\n",
+            hex.size());
+        return;
+    }
     std::array<uint8_t, 32> bytes{};
     for (int i = 0; i < 32; i++) {
-        if (!parse_hex_byte(hex[i * 2], hex[i * 2 + 1], bytes[i])) return;
+        if (!parse_hex_byte(hex[i * 2], hex[i * 2 + 1], bytes[i])) {
+            std::fprintf(stderr,
+                "[chessnut/sensor] non-hex char at offset %d\n", i * 2);
+            return;
+        }
     }
     auto sensor   = chessnut::board_bytes_to_grid(bytes);
     auto expected = digital_grid_snapshot(a.game);
@@ -2398,12 +2407,30 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             }
         }
     }
+    std::fprintf(stderr,
+        "[chessnut/sensor] frame diff=%zu (mode=%d two_player=%d "
+        "white_turn=%d)\n",
+        diffs.size(),
+        static_cast<int>(a.mode),
+        a.two_player_mode ? 1 : 0,
+        a.game.white_turn ? 1 : 0);
+    for (const auto& d : diffs) {
+        std::fprintf(stderr,
+            "  square (%d,%d) digital='%c' sensor='%c'\n",
+            d.col, d.row,
+            d.before ? d.before : '?',
+            d.after  ? d.after  : '?');
+    }
     if (diffs.empty()) return;  // no change, no action.
 
     // Mid-pickup intermediate state (a piece is in the user's hand
     // and the corresponding sensor square is empty). Wait for the
     // landing.
-    if (diffs.size() == 1) return;
+    if (diffs.size() == 1) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] 1-diff (mid-pickup) — waiting for landing\n");
+        return;
+    }
 
     // Settling window after we last pushed a sync — while the
     // motors are mid-motion the sensor frames don't match the
@@ -2415,6 +2442,11 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     int64_t now = now_us(a);
     bool settling = (a.chessnut_last_sync_us != 0) &&
                     (now - a.chessnut_last_sync_us < kSyncSettlingUs);
+    if (settling) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] in settling window (%lld us since last sync)\n",
+            static_cast<long long>(now - a.chessnut_last_sync_us));
+    }
 
     auto reject = [&](const char* reason) {
         std::fprintf(stderr,
@@ -2500,6 +2532,13 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // dispatch — so sensor-driven moves trigger Stockfish's reply
     // automatically when in normal play.
     bool capture = gs.grid[to->row][to->col] >= 0;
+    std::fprintf(stderr,
+        "[chessnut/sensor] applying move %c%c%c%c (capture=%d)\n",
+        static_cast<char>('a' + (7 - from->col)),
+        static_cast<char>('1' + from->row),
+        static_cast<char>('a' + (7 - to->col)),
+        static_cast<char>('1' + to->row),
+        capture ? 1 : 0);
     execute_move(gs, from->col, from->row, to->col, to->row);
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
@@ -2513,12 +2552,6 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             gs.white_turn != a.human_plays_white)
             trigger_ai(a);
     }
-    std::fprintf(stderr,
-        "[chessnut/sensor] applied move %c%c%c%c\n",
-        static_cast<char>('a' + (7 - from->col)),
-        static_cast<char>('1' + from->row),
-        static_cast<char>('a' + (7 - to->col)),
-        static_cast<char>('1' + to->row));
 }
 
 void app_chessnut_apply_status(AppState& a, const std::string& status) {
