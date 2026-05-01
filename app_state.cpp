@@ -2385,17 +2385,40 @@ bool sensor_action_allowed(const AppState& a) {
 
 void app_chessnut_apply_sensor_frame(AppState& a,
                                      const std::string& hex) {
-    if (hex.size() < 64) {
+    // Sensor frame layout (per ChessnutService.java:1011-1015 and
+    // formatFen at :742): [OPCODE_FEN_DATA, FEN_DATA_PAYLOAD_LEN,
+    // <32 board bytes>, <4-byte trailer>] — see chessnut_encode.h
+    // for the constants. Reading the board from offset 0 (as we
+    // did pre-fix) misaligns by 2 bytes and scrambles every
+    // square, surfacing as ~31 bogus diffs on a single-piece move.
+    if (hex.size() < chessnut::FEN_DATA_HEX_CHARS) {
         std::fprintf(stderr,
             "[chessnut/sensor] frame too short (%zu hex chars)\n",
             hex.size());
         return;
     }
+    uint8_t hdr0 = 0, hdr1 = 0;
+    if (!parse_hex_byte(hex[0], hex[1], hdr0) ||
+        !parse_hex_byte(hex[2], hex[3], hdr1)) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] non-hex header bytes\n");
+        return;
+    }
+    if (hdr0 != chessnut::OPCODE_FEN_DATA ||
+        hdr1 != chessnut::FEN_DATA_PAYLOAD_LEN) {
+        // Not a board-state push (probably an OPCODE_INFO_REPLY for
+        // getMovePieceState, an ack, or a power-level frame). Ignore.
+        std::fprintf(stderr,
+            "[chessnut/sensor] non-board frame opcode=0x%02x len=0x%02x — ignoring\n",
+            hdr0, hdr1);
+        return;
+    }
     std::array<uint8_t, 32> bytes{};
+    // Skip the 2-byte header — board nibbles start at hex[4..67].
     for (int i = 0; i < 32; i++) {
-        if (!parse_hex_byte(hex[i * 2], hex[i * 2 + 1], bytes[i])) {
+        if (!parse_hex_byte(hex[4 + i * 2], hex[4 + i * 2 + 1], bytes[i])) {
             std::fprintf(stderr,
-                "[chessnut/sensor] non-hex char at offset %d\n", i * 2);
+                "[chessnut/sensor] non-hex char at byte offset %d\n", i + 2);
             return;
         }
     }
@@ -2420,10 +2443,32 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         static_cast<int>(a.mode),
         a.two_player_mode ? 1 : 0,
         a.game.white_turn ? 1 : 0);
+    // Dump both grids side-by-side for easy visual comparison.
+    // Layout: rank 8 at top, rank 1 at bottom; a-file on the left
+    // of each block (matches FEN reading order). 'X' marks squares
+    // where digital and sensor differ.
+    auto fmt_cell = [](char c) -> char { return c ? c : '.'; };
+    std::fprintf(stderr, "      digital            sensor             diff\n");
+    for (int r = 7; r >= 0; r--) {  // rank 8 → rank 1
+        char dig[9] = "        ";
+        char sen[9] = "        ";
+        char dif[9] = "        ";
+        for (int file = 0; file < 8; file++) {
+            int col = 7 - file;  // file 0 = a = our col 7
+            char dc = fmt_cell(expected[r][col]);
+            char sc = fmt_cell(sensor[r][col]);
+            dig[file] = dc == ' ' ? '.' : dc;
+            sen[file] = sc == ' ' ? '.' : sc;
+            dif[file] = (expected[r][col] == sensor[r][col]) ? '.' : 'X';
+        }
+        std::fprintf(stderr, "  %d   %s     %s     %s\n", r + 1, dig, sen, dif);
+    }
     for (const auto& d : diffs) {
         std::fprintf(stderr,
-            "  square (%d,%d) digital='%c' sensor='%c'\n",
+            "  square col=%d row=%d (%c%c) digital='%c' sensor='%c'\n",
             d.col, d.row,
+            static_cast<char>('a' + (7 - d.col)),
+            static_cast<char>('1' + d.row),
             d.before ? d.before : '?',
             d.after  ? d.after  : '?');
     }
@@ -2440,10 +2485,10 @@ void app_chessnut_apply_sensor_frame(AppState& a,
 
     // Settling window after we last pushed a sync — while the
     // motors are mid-motion the sensor frames don't match the
-    // digital position. Suppress the auto-reject path during this
-    // window so we don't fight our own motors and create a re-sync
-    // loop. Legal moves can still apply (the if branches below
-    // bail through `reject` only when the sensor state is invalid).
+    // digital position. We only use it here to suppress the
+    // status message (and SFX) so we don't spam the user with
+    // "wrong side moved" hints while the firmware is replaying
+    // an animation we just commanded.
     constexpr int64_t kSyncSettlingUs = 2'000'000;  // 2 s
     int64_t now = now_us(a);
     bool settling = (a.chessnut_last_sync_us != 0) &&
@@ -2454,11 +2499,26 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             static_cast<long long>(now - a.chessnut_last_sync_us));
     }
 
+    // Single-player mode: the AI is the opponent and the physical
+    // board exists to mirror the digital game, so an unauthorised
+    // hand-move (e.g. fiddling with the AI's piece during your
+    // turn) gets force-synced back via the motors. Two-player
+    // mode: both players use the same board, so an "illegal-
+    // looking" sensor frame is more often a fumble mid-move than
+    // a true desync — leave the board alone and let the player
+    // restore the position by hand.
     auto reject = [&](const char* reason) {
         std::fprintf(stderr,
             "[chessnut/sensor] reject: %s — diff=%zu\n",
             reason, diffs.size());
-        if (settling) return;  // wait for our own motors to finish
+        if (settling) return;
+        if (a.two_player_mode) {
+            std::string msg = std::string("Chessnut: ") + reason +
+                              " — restore the position to continue";
+            set_status(a, msg.c_str());
+            audio_play(SoundEffect::Mistake);
+            return;
+        }
         std::string msg = std::string("Chessnut: ") + reason +
                           " — re-syncing board";
         set_status(a, msg.c_str());
@@ -2598,19 +2658,20 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
     }
     if (status.rfind("NOTIFY ", 0) == 0) {
         // Format: "NOTIFY <uuid> <hex>". Route any frame that's
-        // long enough to be a 32-byte board-state payload into the
-        // sensor handler. Originally we filtered by UUID containing
+        // long enough to be a board-state payload into the sensor
+        // handler. Originally we filtered by UUID containing
         // "8262", but field firmware revisions push board state on
         // different characteristic UUIDs (the bridge subscribes to
         // every notify-capable char now), so size-based routing is
-        // more robust. Short frames (status pings, command echoes)
-        // fall below the 32-byte threshold and are silently
-        // ignored by apply_sensor_frame.
+        // more robust. apply_sensor_frame validates the 0x01 0x24
+        // header and ignores non-board frames (status pings,
+        // command echoes, getMovePieceState replies). The actual
+        // board frame is FEN_DATA_TOTAL_BYTES (38) = 76 hex chars.
         std::string rest = status.substr(7);
         size_t sp = rest.find(' ');
         if (sp == std::string::npos) return;
         std::string hex = rest.substr(sp + 1);
-        if (hex.size() >= 64) {  // 32 bytes => 64 hex chars
+        if (hex.size() >= chessnut::FEN_DATA_HEX_CHARS) {
             app_chessnut_apply_sensor_frame(a, hex);
         }
         return;
@@ -2773,6 +2834,13 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         "[chessnut/sync] send force=%d fen=%s\n",
         force ? 1 : 0, fen.c_str());
     g_chessnut_bridge->send_fen(fen, force);
+    // After a force-sync (game start / position load), poll the
+    // firmware for its piece-state view. The reply lands as a
+    // NOTIFY frame (see [chessnut/native] NOTIFY <uuid> <hex>) so
+    // we can compare what the firmware sees against the FEN we
+    // just sent — diagnostic for "FEN_FORCE ACKed but motors don't
+    // move" symptoms.
+    if (force) g_chessnut_bridge->probe_piece_state();
     a.chessnut_last_sync_us = now_us(a);
     app_chessnut_highlight_last_move(a);
 }

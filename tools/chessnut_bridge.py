@@ -26,6 +26,10 @@ Stdin commands (one per line):
                            on game start / puzzle load.
   LED <16hex>              16 hex chars = 8 bytes = 64-bit LED bitmask
                            (bit per square; row-major from h1).
+  PROBE                    write 0x41 0x01 0x0B (getMovePieceState).
+                           Diagnostic only — firmware replies on a
+                           notify channel with its current view of
+                           the board.
   PING                     replies PONG (liveness check).
   QUIT                     disconnect and exit.
 
@@ -39,7 +43,7 @@ Stdout responses (one per line):
   ACK <cmd>                successful completion of the named command.
 
 Protocol details from third_party reverse-engineering — see
-PROTOCOL.md in the chessnutapp folder for the full spec.
+PROTOCOL.md at the repo root for the full spec.
 """
 
 from __future__ import annotations  # defer type-annotation evaluation
@@ -107,6 +111,30 @@ WRITE_UUID = UUID_CMD_WRITE_B
 
 
 # ---------------------------------------------------------------------------
+# Wire-format opcodes — keep in sync with chessnut_encode.h.
+# ---------------------------------------------------------------------------
+# Outbound (host → firmware):
+OPCODE_LED              = 0x0A  # 8-byte LED bitmask frame
+OPCODE_AUX_INIT         = 0x0B  # post-subscribe handshake
+OPCODE_STREAM_ENABLE    = 0x21  # enable board-state push (Air "init")
+OPCODE_LEGACY_INIT      = 0x27  # legacy unbranded init — Move SKIPS this
+OPCODE_INFO_QUERY       = 0x41  # 0x41 0x?? sub-commands
+OPCODE_SET_MOVE_BOARD   = 0x42  # motor command (target board)
+
+# Inbound (firmware → host):
+OPCODE_FEN_DATA         = 0x01  # 32-byte board-state push
+OPCODE_POWER_LEVEL      = 0x2A  # battery / power frame
+
+# Sub-codes under OPCODE_INFO_QUERY:
+INFO_GET_PIECE_STATE    = 0x0B  # getMovePieceState
+
+# Frame-length constants:
+SET_MOVE_BOARD_PAYLOAD_LEN = 0x21  # 33 bytes (32 board + 1 force byte)
+LED_PAYLOAD_LEN            = 0x08  # 8-byte bitmask
+FEN_DATA_PAYLOAD_LEN       = 0x24  # 36 bytes (32 board + 4 trailer)
+
+
+# ---------------------------------------------------------------------------
 # Piece encoding — must match ChessnutService.PIECEMAP byte-for-byte.
 # Lowercase = black, uppercase = white. Space = empty.
 # ---------------------------------------------------------------------------
@@ -161,37 +189,47 @@ def fen_to_board_bytes(fen: str) -> bytes:
 
 
 def build_set_move_board(fen: str, force: bool) -> bytes:
-    """Build the full 35-byte 0x42 setMoveBoard frame.
+    """Build the full 35-byte setMoveBoard frame.
 
-    [0]   0x42                  opcode
-    [1]   0x21 (=33)            payload length
-    [2..33] 32 bytes             board state
-    [34]  0 if force else 1     force flag (0 = always replan)
+    [0]   OPCODE_SET_MOVE_BOARD     opcode
+    [1]   SET_MOVE_BOARD_PAYLOAD_LEN payload length (=33)
+    [2..33] 32 bytes                 board state
+    [34]  0 if force else 1          force flag (0 = always replan)
     """
     board = fen_to_board_bytes(fen)
     flag  = 0 if force else 1
-    return bytes([0x42, 0x21]) + board + bytes([flag])
+    return bytes([OPCODE_SET_MOVE_BOARD,
+                  SET_MOVE_BOARD_PAYLOAD_LEN]) + board + bytes([flag])
 
 
 def build_led(bitmask_hex: str) -> bytes:
-    """Build the 0x0A length-8 LED command from a 16-hex-char string."""
+    """Build the LED command from a 16-hex-char bitmask string."""
     if len(bitmask_hex) != 16:
         raise ValueError(f"LED bitmask must be 16 hex chars, got {len(bitmask_hex)}")
     payload = bytes.fromhex(bitmask_hex)
-    return bytes([0x0A, 0x08]) + payload
+    return bytes([OPCODE_LED, LED_PAYLOAD_LEN]) + payload
+
+
+# Pre-built command frames — same byte sequences as chessnut_encode.h's
+# CMD_STREAM_ENABLE / CMD_AUX_INIT / CMD_GET_PIECE_STATE.
+CMD_STREAM_ENABLE   = bytes([OPCODE_STREAM_ENABLE, 0x01, 0x00])
+CMD_AUX_INIT        = bytes([OPCODE_AUX_INIT, 0x04, 0x03, 0xE8, 0x00, 0xC8])
+CMD_GET_PIECE_STATE = bytes([OPCODE_INFO_QUERY, 0x01, INFO_GET_PIECE_STATE])
 
 
 def build_init_handshake() -> list[bytes]:
     """The post-subscribe handshake the Android app sends after
-    connect (ChessnutBLEDevice.java:339, 342, 350). 0x21 0x01 0x00
-    is the streaming-enable command — the firmware doesn't push
-    board-state frames on 8262 until it lands. The other two are
-    auxiliary init / Air-only init (harmless on Move)."""
-    return [
-        bytes([0x21, 0x01, 0x00]),
-        bytes([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]),
-        bytes([0x27, 0x01, 0x00]),
-    ]
+    connect (ChessnutBLEDevice.java:339, 342). CMD_STREAM_ENABLE
+    is required — the firmware doesn't push board-state frames on
+    the 8262 channel until it lands. CMD_AUX_INIT is auxiliary
+    (constants from the firmware; semantics unknown but required).
+
+    The Android app *also* writes OPCODE_LEGACY_INIT (0x27 0x01
+    0x00) — but only when the device name does NOT contain
+    "Chessnut" (i.e. legacy unbranded firmware). Real Move boards
+    advertise as "Chessnut Move" and skip that third write, so we
+    do too."""
+    return [CMD_STREAM_ENABLE, CMD_AUX_INIT]
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +448,11 @@ async def main() -> None:
             elif cmd == "LED":
                 frame = build_led(arg.strip())
                 await bridge.write_frame(frame, "LED")
+            elif cmd == "PROBE":
+                # getMovePieceState — diagnostic only; reply lands
+                # on a notify channel.
+                await bridge.write_frame(CMD_GET_PIECE_STATE,
+                                         "PROBE_PIECE_STATE")
             elif cmd == "QUIT":
                 await bridge.quit()
                 return

@@ -68,13 +68,22 @@ EM_JS(void, chessnut_web_start_js, (), {
         if (h.length < 2) h = "0" + h;
         CANDIDATE_SVCS.push("1b7e82" + h + SUFFIX);
     }
-    // Three-frame post-subscribe handshake — see
-    // chessnut_bridge_native.cpp do_connect for the rationale.
-    // 0x21 0x01 0x00 is the streaming-enable command without which
-    // the firmware never pushes board-state notifications.
-    var INIT_HANDSHAKE_0 = new Uint8Array([0x21, 0x01, 0x00]);
-    var INIT_HANDSHAKE_1 = new Uint8Array([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]);
-    var INIT_HANDSHAKE_2 = new Uint8Array([0x27, 0x01, 0x00]);
+    // Post-subscribe handshake + diagnostic probe — these byte
+    // sequences must match chessnut_encode.h's CMD_STREAM_ENABLE,
+    // CMD_AUX_INIT and CMD_GET_PIECE_STATE byte-for-byte. See
+    // chessnut_bridge_native.cpp do_connect for the full rationale.
+    // The Android app also conditionally writes OPCODE_LEGACY_INIT
+    // (0x27 0x01 0x00), but ONLY for non-"Chessnut"-named devices,
+    // so we skip it.
+    var OPCODE_STREAM_ENABLE  = 0x21;
+    var OPCODE_AUX_INIT       = 0x0B;
+    var OPCODE_INFO_QUERY     = 0x41;
+    var INFO_GET_PIECE_STATE  = 0x0B;
+    var CMD_STREAM_ENABLE  = new Uint8Array([OPCODE_STREAM_ENABLE, 0x01, 0x00]);
+    var CMD_AUX_INIT       = new Uint8Array([OPCODE_AUX_INIT,
+                                             0x04, 0x03, 0xE8, 0x00, 0xC8]);
+    var CMD_GET_PIECE_STATE = new Uint8Array([OPCODE_INFO_QUERY, 0x01,
+                                              INFO_GET_PIECE_STATE]);
 
     function emit(s) {
         Module.ccall("on_chessnut_status_from_js", null, ["string"], [s]);
@@ -154,10 +163,18 @@ EM_JS(void, chessnut_web_start_js, (), {
                             })
                             .catch(function() { return null; });
                     });
+                    var sleep = function(ms) {
+                        return new Promise(function(r) { setTimeout(r, ms); });
+                    };
                     return Promise.all(subs).then(function() {
-                        return write.writeValueWithoutResponse(INIT_HANDSHAKE_0)
-                            .then(function() { return write.writeValueWithoutResponse(INIT_HANDSHAKE_1); })
-                            .then(function() { return write.writeValueWithoutResponse(INIT_HANDSHAKE_2); })
+                        return write.writeValueWithoutResponse(CMD_STREAM_ENABLE)
+                            .then(function() { return sleep(200); })
+                            .then(function() { return write.writeValueWithoutResponse(CMD_AUX_INIT); })
+                            .then(function() { return sleep(200); })
+                            .then(function() {
+                                return write.writeValueWithoutResponse(CMD_GET_PIECE_STATE)
+                                    .catch(function() {});
+                            })
                             .then(function() { emit("CONNECTED " + (device.name || "Chessnut Move")); });
                     });
                 });

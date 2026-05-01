@@ -38,6 +38,7 @@ public:
     void connect_to_address(const std::string& address);
     void send_fen(const std::string& fen, bool force);
     void send_led_hex(const std::string& bitmask_hex);
+    void probe_piece_state();
     bool running() const;
 
 private:

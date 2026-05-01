@@ -38,6 +38,11 @@ public:
 
     virtual void send_fen(const std::string& fen, bool force) = 0;
     virtual void send_led_hex(const std::string& bitmask_hex) = 0;
+    // Diagnostic probe — ask the firmware to report its current
+    // board-state view (via the usual NOTIFY channel). Used after
+    // FEN_FORCE writes to compare app vs firmware understanding
+    // of the layout when motors aren't actuating as expected.
+    virtual void probe_piece_state() = 0;
     virtual bool running() const = 0;
 };
 

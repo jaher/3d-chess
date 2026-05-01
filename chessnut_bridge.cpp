@@ -40,6 +40,9 @@ void ChessnutBridge::send_fen(const std::string& fen, bool force) {
 void ChessnutBridge::send_led_hex(const std::string& hex) {
     if (impl_) impl_->send_led_hex(hex);
 }
+void ChessnutBridge::probe_piece_state() {
+    if (impl_) impl_->probe_piece_state();
+}
 bool ChessnutBridge::running() const {
     return impl_ && impl_->running();
 }

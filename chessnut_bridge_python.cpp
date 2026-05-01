@@ -145,6 +145,10 @@ public:
         write_line("LED " + hex);
     }
 
+    void probe_piece_state() override {
+        write_line("PROBE");
+    }
+
     bool running() const override { return pid_ > 0; }
 
 private:

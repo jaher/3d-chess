@@ -35,7 +35,7 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// GATT — see PROTOCOL.md (notes/chessnutapp). Same characteristic
+// GATT — see PROTOCOL.md in the repo root. Same characteristic
 // UUID family as the Chessnut Air community-RE'd protocol; Move
 // adds the 8261/8271 pair.
 //
@@ -62,9 +62,11 @@ SimpleBLE::ByteArray to_byte_array(const std::vector<uint8_t>& bytes) {
     return out;
 }
 
-SimpleBLE::ByteArray frame_from_bytes(std::initializer_list<uint8_t> bs) {
+template <size_t N>
+SimpleBLE::ByteArray to_byte_array(const std::array<uint8_t, N>& bytes) {
     SimpleBLE::ByteArray out;
-    for (uint8_t b : bs) out.push_back(static_cast<uint8_t>(b));
+    out.reserve(N);
+    for (uint8_t b : bytes) out.push_back(static_cast<uint8_t>(b));
     return out;
 }
 
@@ -117,7 +119,8 @@ void save_cached_address(const std::string& addr) {
 // GTK main thread unblocked.
 // ---------------------------------------------------------------------------
 struct Command {
-    enum Kind { CONNECT, SCAN, CONNECT_TO, FEN, FEN_FORCE, LED, QUIT };
+    enum Kind { CONNECT, SCAN, CONNECT_TO, FEN, FEN_FORCE, LED,
+                PROBE_PIECE_STATE, QUIT };
     Kind        kind;
     std::string arg;     // FEN string, LED hex, or MAC for CONNECT_TO
 };
@@ -152,6 +155,9 @@ public:
     }
     void send_led_hex(const std::string& hex) override {
         enqueue({Command::LED, hex});
+    }
+    void probe_piece_state() override {
+        enqueue({Command::PROBE_PIECE_STATE, ""});
     }
     bool running() const override { return running_.load(); }
 
@@ -200,6 +206,13 @@ private:
                     break;
                 case Command::LED:
                     do_write(to_byte_array(chessnut::make_led_frame(c.arg)), "LED");
+                    break;
+                case Command::PROBE_PIECE_STATE:
+                    // getMovePieceState — the firmware replies on a
+                    // notify channel with what it thinks the current
+                    // piece layout is. Diagnostic only.
+                    do_write(to_byte_array(chessnut::CMD_GET_PIECE_STATE),
+                             "PROBE_PIECE_STATE");
                     break;
                 }
             } catch (const std::exception& e) {
@@ -255,16 +268,40 @@ private:
         emit("SCAN_COMPLETE");
     }
 
+    // Disconnect (best-effort) and clear all peripheral-side state
+    // so the next connect attempt starts from a clean slate.
+    // Anything that left us "half-connected" (services() threw,
+    // WRITE_UUID missing, handshake failed) routes through here.
+    void teardown_peripheral() {
+        if (peripheral_initialised_) {
+            try {
+                if (peripheral_.is_connected()) peripheral_.disconnect();
+            } catch (...) { /* best-effort */ }
+        }
+        peripheral_initialised_ = false;
+        char_to_service_.clear();
+    }
+
     // Connect to the board. If `explicit_addr` is non-empty, we
     // skip name matching and target that MAC directly (used by the
     // picker after the user picks a row, and as a fast path when
     // the cache matches). Empty string means "use cached MAC, then
     // fall back to name-prefix scan" — the auto-toggle path.
     void do_connect(const std::string& explicit_addr) {
-        if (peripheral_initialised_ && peripheral_.is_connected()) {
+        // Healthy reuse: peripheral is connected AND we know how to
+        // route writes (i.e. discovery completed). The empty-map
+        // check is load-bearing — without it a previous discovery
+        // failure leaves us re-emitting CONNECTED on every retry
+        // while every subsequent write fails with "write
+        // characteristic not discovered".
+        if (peripheral_initialised_ && peripheral_.is_connected() &&
+            !char_to_service_.empty()) {
             emit("CONNECTED " + connected_name_);
             return;
         }
+        // Stale / half-connected from a prior failure. Tear down so
+        // the scan + connect path below runs fresh.
+        if (peripheral_initialised_) teardown_peripheral();
         if (!SimpleBLE::Adapter::bluetooth_enabled()) {
             emit("ERROR Bluetooth disabled or unavailable");
             return;
@@ -323,31 +360,54 @@ private:
         // tested firmware; the real service UUID can vary, so we
         // map by characteristic and route writes/notifies via the
         // matching parent.
+        //
+        // BlueZ sometimes reports `connect()` as complete before its
+        // GATT object tree is fully resolved, surfacing as either
+        // "D-Bus call timed out" or "Path /…/serviceXXXX does not
+        // contain interface org.bluez.GattService1". Retry a few
+        // times with a short sleep — the second attempt almost
+        // always succeeds once BlueZ catches up.
         char_to_service_.clear();
         std::vector<std::pair<std::string, std::string>> notify_chars;
-        try {
-            auto services = peripheral_.services();
-            std::fprintf(stderr,
-                "[chessnut/native] services discovered: %zu\n",
-                services.size());
-            for (auto& s : services) {
-                for (auto& c : s.characteristics()) {
-                    char_to_service_[c.uuid()] = s.uuid();
-                    bool n = false;
-                    try { n = c.can_notify() || c.can_indicate(); }
-                    catch (...) { n = false; }
-                    std::fprintf(stderr,
-                        "[chessnut/native]     char %s%s\n",
-                        c.uuid().c_str(), n ? " [NOTIFY]" : "");
-                    if (n) notify_chars.emplace_back(s.uuid(), c.uuid());
-                }
-                std::fprintf(stderr,
-                    "[chessnut/native]   service %s (%zu chars)\n",
-                    s.uuid().c_str(), s.characteristics().size());
+        std::vector<SimpleBLE::Service> services;
+        std::string last_error;
+        constexpr int kDiscoveryAttempts = 4;
+        for (int attempt = 0; attempt < kDiscoveryAttempts; attempt++) {
+            try {
+                services = peripheral_.services();
+                last_error.clear();
+                if (!services.empty()) break;
+                last_error = "no services returned";
+            } catch (const std::exception& e) {
+                last_error = e.what();
             }
-        } catch (const std::exception& e) {
-            emit(std::string("ERROR service discovery: ") + e.what());
+            std::fprintf(stderr,
+                "[chessnut/native] services() attempt %d/%d failed: %s\n",
+                attempt + 1, kDiscoveryAttempts, last_error.c_str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        if (!last_error.empty()) {
+            emit(std::string("ERROR service discovery: ") + last_error);
+            teardown_peripheral();
             return;
+        }
+        std::fprintf(stderr,
+            "[chessnut/native] services discovered: %zu\n",
+            services.size());
+        for (auto& s : services) {
+            for (auto& c : s.characteristics()) {
+                char_to_service_[c.uuid()] = s.uuid();
+                bool n = false;
+                try { n = c.can_notify() || c.can_indicate(); }
+                catch (...) { n = false; }
+                std::fprintf(stderr,
+                    "[chessnut/native]     char %s%s\n",
+                    c.uuid().c_str(), n ? " [NOTIFY]" : "");
+                if (n) notify_chars.emplace_back(s.uuid(), c.uuid());
+            }
+            std::fprintf(stderr,
+                "[chessnut/native]   service %s (%zu chars)\n",
+                s.uuid().c_str(), s.characteristics().size());
         }
 
         auto svc_for = [this](const std::string& char_uuid)
@@ -359,6 +419,7 @@ private:
         if (!svc_for(WRITE_UUID)) {
             emit(std::string("ERROR write characteristic ") + WRITE_UUID +
                  " not exposed by this peripheral");
+            teardown_peripheral();
             return;
         }
 
@@ -389,36 +450,59 @@ private:
             }
         }
 
-        // Three-frame post-subscribe handshake. From the Android
-        // app's onConnect sequence (ChessnutBLEDevice.java:339,
-        // 342, 350):
-        //   1. 0x21 0x01 0x00 — enable board-state streaming on
-        //      8262. WITHOUT this, the Move firmware doesn't push
-        //      sensor frames when pieces move and the
-        //      two-way mirror silently breaks.
-        //   2. 0x0B 0x04 0x03 0xE8 0x00 0xC8 — auxiliary init
-        //      (constants from the firmware).
-        //   3. 0x27 0x01 0x00 — Air-firmware-only init in the
-        //      Android app (gated on the device name not
-        //      containing "Chessnut"). Harmless on Move firmware
-        //      (which echoes a "0x28 …" ack on 8273), so we send
-        //      it unconditionally for compatibility with both
-        //      Air and Move boards.
+        // Log the negotiated MTU. Android explicitly requests 500;
+        // SimpleBLE has no setter (BlueZ negotiates implicitly), so
+        // we just observe and log. Default ATT_MTU is 23 (max 20-
+        // byte payload per write); our 0x42 setMoveBoard frame is
+        // 35 bytes and would need long-write fragmentation if MTU
+        // hasn't grown past ~37. If the value here is small, the
+        // motors-don't-move bug is almost certainly an MTU problem.
+        try {
+            uint16_t mtu = peripheral_.mtu();
+            std::fprintf(stderr,
+                "[chessnut/native] negotiated MTU = %u\n",
+                static_cast<unsigned>(mtu));
+        } catch (...) { /* MTU getter is best-effort */ }
+
+        // Two-frame post-subscribe handshake. From the Android app's
+        // onConnect sequence (ChessnutBLEDevice.java:339, 342). The
+        // Android app then conditionally sends OPCODE_LEGACY_INIT —
+        // but ONLY when the device name does NOT contain "Chessnut"
+        // (i.e. for legacy unbranded firmware). Our target advertises
+        // as "Chessnut Move", so the Java code skips the third write
+        // and so do we.
+        //   1. CMD_STREAM_ENABLE — without this, the firmware doesn't
+        //      push sensor frames when pieces move.
+        //   2. CMD_AUX_INIT — auxiliary init (constants from the
+        //      firmware; semantics unknown but required).
+        //
+        // We add ~200 ms gaps between writes to mirror the Android
+        // app's `bleWriteCondition.await(500ms)` pacing — back-to-
+        // back writes appear to land but the firmware may need
+        // settling time before the next opcode is interpreted.
         const std::string& write_svc = *svc_for(WRITE_UUID);
         try {
-            peripheral_.write_request(
-                write_svc, WRITE_UUID,
-                frame_from_bytes({0x21, 0x01, 0x00}));
-            peripheral_.write_request(
-                write_svc, WRITE_UUID,
-                frame_from_bytes({0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8}));
-            peripheral_.write_request(
-                write_svc, WRITE_UUID,
-                frame_from_bytes({0x27, 0x01, 0x00}));
+            peripheral_.write_request(write_svc, WRITE_UUID,
+                to_byte_array(chessnut::CMD_STREAM_ENABLE));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            peripheral_.write_request(write_svc, WRITE_UUID,
+                to_byte_array(chessnut::CMD_AUX_INIT));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         } catch (const std::exception& e) {
             emit(std::string("ERROR handshake failed: ") + e.what());
+            teardown_peripheral();
             return;
         }
+
+        // Diagnostic probe — ask the firmware what pieces it sees.
+        // Reply lands as a NOTIFY which we log raw. Lets us tell
+        // "firmware ignores motor commands entirely" apart from
+        // "firmware thinks board is already at target".
+        try {
+            peripheral_.write_request(write_svc, WRITE_UUID,
+                to_byte_array(chessnut::CMD_GET_PIECE_STATE));
+        } catch (...) { /* probe is best-effort */ }
+
         // Cache the MAC so the next CONNECT skips the slow scan.
         try { save_cached_address(target.address()); } catch (...) {}
         emit("CONNECTED " + connected_name_);
