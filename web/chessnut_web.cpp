@@ -49,12 +49,25 @@ EM_JS(void, chessnut_web_start_js, (), {
         return;
     }
     var SUFFIX = "-2877-41c3-b46e-cf057c562023";
-    var SVC    = "1b7e8260" + SUFFIX;
     var WRITE  = "1b7e8272" + SUFFIX;
     var NOTIFY = ["1b7e8261" + SUFFIX,
                   "1b7e8262" + SUFFIX,
                   "1b7e8271" + SUFFIX,
                   "1b7e8273" + SUFFIX];
+    // The parent service UUID isn't fixed across firmware revisions
+    // — desktop discovers it dynamically via SimpleBLE. Web
+    // Bluetooth needs every candidate listed in optionalServices
+    // upfront, so we enumerate a generous family of likely UUIDs
+    // (full hex sweep of "1b7e8X.." in the Chessnut suffix family
+    // plus a couple of common BLE-vendor patterns). Browser
+    // implementations cap optionalServices length so don't go wild.
+    var CANDIDATE_SVCS = [];
+    for (var i = 0; i < 16; i++) {
+        for (var j = 0; j < 16; j++) {
+            CANDIDATE_SVCS.push(
+                "1b7e8" + i.toString(16) + j.toString(16) + SUFFIX);
+        }
+    }
     var INIT_HANDSHAKE_1 = new Uint8Array([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]);
     var INIT_HANDSHAKE_2 = new Uint8Array([0x27, 0x01, 0x00]);
 
@@ -64,23 +77,48 @@ EM_JS(void, chessnut_web_start_js, (), {
 
     navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: "Chessnut" }],
-        optionalServices: [SVC]
+        optionalServices: CANDIDATE_SVCS
     }).then(function(device) {
         device.addEventListener("gattserverdisconnected", function() {
             window.__chessnutBoard = null;
             emit("DISCONNECTED");
         });
         return device.gatt.connect().then(function(server) {
-            return server.getPrimaryService(SVC).then(function(service) {
-                return service.getCharacteristic(WRITE).then(function(write) {
+            // Enumerate every primary service the browser exposes
+            // (limited to the optionalServices declared above), then
+            // find the one carrying the WRITE characteristic. That's
+            // the parent service for all our notify channels too.
+            return server.getPrimaryServices().then(function(services) {
+                console.log("[chessnut/web] services:", services.map(function(s){return s.uuid;}));
+                return Promise.all(services.map(function(s) {
+                    return s.getCharacteristic(WRITE)
+                        .then(function(c) { return { service: s, write: c }; })
+                        .catch(function() { return null; });
+                })).then(function(results) {
+                    var found = null;
+                    for (var i = 0; i < results.length; ++i) {
+                        if (results[i]) { found = results[i]; break; }
+                    }
+                    if (!found) {
+                        emit("ERROR write characteristic " + WRITE +
+                             " not found on any primary service " +
+                             "(saw " + services.length + " services)");
+                        return null;
+                    }
+                    var service = found.service;
+                    var write   = found.write;
+                    console.log("[chessnut/web] using service:", service.uuid);
+
                     window.__chessnutBoard = {
-                        device: device,
-                        write:  write,
-                        name:   device.name || "Chessnut Move"
+                        device:  device,
+                        service: service,
+                        write:   write,
+                        name:    device.name || "Chessnut Move"
                     };
-                    // Subscribe to every notify channel for protocol
-                    // tracing; failures are non-fatal (Air firmware
-                    // doesn't expose 8261/8271).
+                    // Subscribe to every notify channel that's
+                    // present under the same parent service. Air
+                    // firmware doesn't expose 8261/8271; missing
+                    // characteristics are non-fatal.
                     var subs = NOTIFY.map(function(uuid) {
                         return service.getCharacteristic(uuid)
                             .then(function(c) { return c.startNotifications().then(function(){
