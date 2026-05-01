@@ -85,8 +85,13 @@ SIMPLEBLE_BUILD  := $(SIMPLEBLE_DIR)/build
 SIMPLEBLE_LIB    := $(SIMPLEBLE_BUILD)/lib/libsimpleble.a
 SIMPLEBLE_INC    := $(SIMPLEBLE_DIR)/simpleble/include
 SIMPLEBLE_EXP    := $(SIMPLEBLE_BUILD)/export
-SIMPLEBLE_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-                        -DSIMPLEBLE_PLAIN=ON
+# NOTE: do NOT set -DSIMPLEBLE_PLAIN=ON. That flag swaps in the
+# library's mock backend (Plain Adapter / Plain Peripheral) used
+# for unit tests, and the standalone tools/simpleble_scan
+# diagnostic confirmed it had been masquerading as the real BLE
+# stack since the original submodule landing — the chess app's
+# scan only ever saw a fake "Plain Peripheral".
+SIMPLEBLE_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
 CXXFLAGS += -I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
             -I$(SIMPLEBLE_DIR)/dependencies/external
 LDFLAGS  += $(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1)
@@ -164,4 +169,14 @@ distclean: clean
 test:
 	$(MAKE) -C tests test
 
-.PHONY: all clean distclean test fetch-whisper-model
+# Standalone SimpleBLE scan diagnostic — links libsimpleble.a but
+# nothing else, so any "scan finds nothing" issue is isolated to
+# the BLE stack rather than chess-app integration glue.
+simpleble_scan: tools/simpleble_scan.cpp $(SIMPLEBLE_LIB)
+	$(CXX) -std=c++17 -O2 -Wall -Wextra \
+		-I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
+		-I$(SIMPLEBLE_DIR)/dependencies/external \
+		-o tools/simpleble_scan tools/simpleble_scan.cpp \
+		$(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1) -lpthread
+
+.PHONY: all clean distclean test fetch-whisper-model simpleble_scan
