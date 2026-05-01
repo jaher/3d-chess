@@ -1964,7 +1964,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float bcw = 0.028f, bch = 0.042f;
     int multi_end = subtitle_end;
     if (chessnut_connected) {
-        std::string mp_text = "Multiplayer (board)";
+        std::string mp_text = "Multiplayer";
         float mtw = mp_text.size() * bcw * 0.7f;
         add_screen_string(ui_verts, -mtw*0.5f,
                           BTN_MULTIPLAYER_Y - 0.018f,
