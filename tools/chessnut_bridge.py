@@ -183,26 +183,38 @@ class Bridge:
             matches, timeout=8.0)
 
     async def scan_dump(self) -> None:
-        """List every nearby BLE peripheral with a name. Useful when
-        the user doesn't know the exact name the board advertises."""
+        """List every nearby BLE peripheral with a name. Tags each
+        device with its advertised service UUIDs so the user can
+        spot the Chessnut family (1b7e82..-2877-...) regardless of
+        what local name the firmware happens to advertise."""
         await self.stdout("scanning 5 s for advertising peripherals…")
-        seen = {}
+        seen = {}  # addr -> (name, [service-uuids])
 
         def cb(dev, adv):
             n = (dev.name or
                  (adv.local_name if adv is not None else None) or "")
-            if n:
-                seen[dev.address] = n
+            uuids = list(adv.service_uuids) if adv is not None else []
+            if n or uuids:
+                seen[dev.address] = (n, uuids)
 
         scanner = BleakScanner(detection_callback=cb)
         await scanner.start()
         await asyncio.sleep(5.0)
         await scanner.stop()
         if not seen:
-            await self.stdout("(no named devices visible)")
+            await self.stdout("(no devices visible)")
             return
-        for addr, name in seen.items():
-            await self.stdout(f"DEVICE {addr} {name}")
+
+        chessnut_marker = "2877-41c3-b46e-cf057c562023"
+        for addr, (name, uuids) in seen.items():
+            tag = ""
+            for u in uuids:
+                if chessnut_marker in u.lower():
+                    tag = " [CHESSNUT]"
+                    break
+            uuid_str = ",".join(uuids) if uuids else "-"
+            await self.stdout(
+                f"DEVICE {addr} {name or '(no name)'}{tag} svc={uuid_str}")
 
     def on_disconnect(self, _client) -> None:
         # Schedule the report on the running loop — bleak fires this
