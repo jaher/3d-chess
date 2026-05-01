@@ -1025,6 +1025,8 @@ static void release_options(AppState& a, double mx, double my,
         app_chessnut_toggle_request(a);
     } else if (btn == 5 && a.chessnut_picker_open) {
         app_chessnut_close_picker(a);
+    } else if (btn == 6 && a.chessnut_picker_open) {
+        app_chessnut_forget_cached_device(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -2714,6 +2716,30 @@ void app_chessnut_shutdown(AppState& a) {
     a.chessnut_connected      = false;
     if (g_chessnut_bridge) g_chessnut_bridge->stop();
     g_chessnut_bridge.reset();
+}
+
+void app_chessnut_forget_cached_device(AppState& a) {
+    // Match the cache path used by chessnut_bridge_native.cpp's
+    // load_cached_address (and the Python helper's identical
+    // ADDRESS_CACHE in tools/chessnut_bridge.py).
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        std::string path =
+            std::string(home) + "/.cache/chessnut_bridge_address";
+        std::remove(path.c_str());
+    }
+    set_status(a, "Chessnut Move: forgot cached device — rescanning…");
+    queue_redraw(a);
+    // If the picker is open, refresh the device list with a new
+    // scan. If it isn't, that's fine — the next toggle-on will
+    // pick up the missing cache and pop the picker as usual.
+    if (a.chessnut_picker_open && g_chessnut_bridge &&
+        g_chessnut_bridge->running()) {
+        a.chessnut_devices.clear();
+        a.chessnut_picker_scanning = true;
+        a.chessnut_picker_hover    = -1;
+        g_chessnut_bridge->start_scan();
+    }
 }
 
 static void chessnut_tick_reconnect(AppState& a, int64_t now) {

@@ -36,11 +36,18 @@ constexpr float OPT_TOG3_Y  = -0.16f;
 
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
-// each device is its own clickable row underneath.
-constexpr float PICK_HDR_W  =  0.60f;
+// each device is its own clickable row underneath. The
+// "Forget cached device" button sits to the right of the header
+// — clears ~/.cache/chessnut_bridge_address so the next connect
+// goes through the picker fresh.
+constexpr float PICK_HDR_W  =  0.42f;
 constexpr float PICK_HDR_H  =  0.07f;
-constexpr float PICK_HDR_X  = -PICK_HDR_W * 0.5f;
+constexpr float PICK_HDR_X  = -0.30f;
 constexpr float PICK_HDR_Y  = -0.30f;
+constexpr float PICK_FORGET_W = 0.18f;
+constexpr float PICK_FORGET_H = 0.07f;
+constexpr float PICK_FORGET_X = 0.13f;
+constexpr float PICK_FORGET_Y = -0.30f;
 constexpr float PICK_ROW_W  =  0.80f;
 constexpr float PICK_ROW_H  =  0.08f;
 constexpr float PICK_ROW_X  = -PICK_ROW_W * 0.5f;
@@ -75,6 +82,12 @@ int options_hit_test(double mx, double my, int width, int height,
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
             ndc_y >= PICK_HDR_Y - PICK_HDR_H && ndc_y <= PICK_HDR_Y)
             return 5;
+        // Forget cached device button.
+        if (ndc_x >= PICK_FORGET_X &&
+            ndc_x <= PICK_FORGET_X + PICK_FORGET_W &&
+            ndc_y >= PICK_FORGET_Y - PICK_FORGET_H &&
+            ndc_y <= PICK_FORGET_Y)
+            return 6;
         // Device rows.
         int n = picker_device_count;
         if (n > PICK_MAX_ROWS) n = PICK_MAX_ROWS;
@@ -124,6 +137,7 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     int picker_visible = 0;
     if (picker_open) {
         add_quad(PICK_HDR_X, PICK_HDR_Y, PICK_HDR_W, PICK_HDR_H);
+        add_quad(PICK_FORGET_X, PICK_FORGET_Y, PICK_FORGET_W, PICK_FORGET_H);
         picker_visible = picker_device_count;
         if (picker_visible > PICK_MAX_ROWS) picker_visible = PICK_MAX_ROWS;
         for (int i = 0; i < picker_visible; ++i) {
@@ -177,6 +191,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         // Header (cancel/rescan) — neutral grey, brighter on hover.
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
                     0.30f, 0.30f, 0.36f, hover == 5 ? 0.75f : 0.55f);
+        glDrawArrays(GL_TRIANGLES, next_offset, 6);
+        next_offset += 6;
+        // "Forget cached device" — warm tint to set it apart from
+        // the cancel/rescan header next to it.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.50f, 0.32f, 0.20f, hover == 6 ? 0.80f : 0.60f);
         glDrawArrays(GL_TRIANGLES, next_offset, 6);
         next_offset += 6;
         // Each device row — slightly cooler shade so they're
@@ -241,15 +261,24 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
         std::string hdr = picker_scanning
-            ? "Scanning for Bluetooth devices…"
+            ? "Scanning…"
             : (picker_device_count == 0
-                 ? "No devices found — click to rescan / cancel"
+                 ? "No devices — click to rescan / cancel"
                  : "Pick a device — click to cancel");
-        float hdr_cw = 0.020f, hdr_ch = 0.030f;
+        float hdr_cw = 0.018f, hdr_ch = 0.026f;
         float hdr_w  = hdr.size() * hdr_cw * 0.7f;
-        add_screen_string(text_verts, -hdr_w * 0.5f,
+        add_screen_string(text_verts,
+                          PICK_HDR_X + (PICK_HDR_W - hdr_w) * 0.5f,
                           PICK_HDR_Y - (PICK_HDR_H - hdr_ch) * 0.5f - 0.005f,
                           hdr_cw, hdr_ch, hdr);
+
+        // Forget-cached-device label.
+        std::string forget = "Forget";
+        float fw = forget.size() * hdr_cw * 0.7f;
+        add_screen_string(text_verts,
+                          PICK_FORGET_X + (PICK_FORGET_W - fw) * 0.5f,
+                          PICK_FORGET_Y - (PICK_FORGET_H - hdr_ch) * 0.5f - 0.005f,
+                          hdr_cw, hdr_ch, forget);
 
         // Each row — "AA:BB:CC:DD:EE:FF  Display name".
         int rows = picker_device_count;

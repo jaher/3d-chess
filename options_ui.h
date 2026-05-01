@@ -14,6 +14,7 @@ struct OptionsScannedDevice {
 // hover semantics:
 //   0 = none, 1 = back, 2 = outline, 3 = continuous-voice,
 //   4 = chessnut toggle, 5 = picker cancel/refresh button,
+//   6 = picker "forget cached device" button,
 //   100+i = picker row #i.
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label

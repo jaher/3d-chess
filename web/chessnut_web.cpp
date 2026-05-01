@@ -222,6 +222,9 @@ void app_chessnut_highlight_last_move(AppState& /*a*/) {}
 // shared header signature is satisfied.
 void app_chessnut_open_picker(AppState& /*a*/)  {}
 void app_chessnut_close_picker(AppState& /*a*/) {}
+// The browser caches its own pairing permission. There's no
+// equivalent of our ~/.cache MAC file, so this is a no-op on web.
+void app_chessnut_forget_cached_device(AppState& /*a*/) {}
 void app_chessnut_pick_device(AppState& a, const std::string& /*addr*/) {
     // No-op: the browser already picked a device when set_enabled fired.
     // If callers ever route here on web, just turn the toggle on.

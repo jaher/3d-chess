@@ -411,6 +411,12 @@ void app_chessnut_pick_device(AppState& a, const std::string& address);
 // cancel button).
 void app_chessnut_close_picker(AppState& a);
 
+// Delete the cached MAC address (~/.cache/chessnut_bridge_address)
+// so the next connect goes through the picker fresh. Wired to
+// the "Forget" button in the picker header. Web no-op (the
+// browser owns its own permission cache).
+void app_chessnut_forget_cached_device(AppState& a);
+
 // Continuous-mode driver bridge. Defined per-platform: main.cpp on
 // desktop, web/voice_web.cpp on web. Wired to the Continuous voice
 // row in the Options screen. Hides the start/stop plumbing
