@@ -1731,6 +1731,18 @@ void app_tick(AppState& a) {
 static void render_menu(AppState& a, int width, int height, int64_t now) {
     float t = static_cast<float>(
         static_cast<double>(now - a.menu_start_time_us) / 1e6);
+    static bool s_last_logged_connected = false;
+    static bool s_logged_once = false;
+    if (!s_logged_once || s_last_logged_connected != a.chessnut_connected) {
+        std::fprintf(stderr,
+            "[chessnut/menu] render: chessnut_connected=%d "
+            "enabled=%d picker_open=%d\n",
+            a.chessnut_connected ? 1 : 0,
+            a.chessnut_enabled   ? 1 : 0,
+            a.chessnut_picker_open ? 1 : 0);
+        s_logged_once = true;
+        s_last_logged_connected = a.chessnut_connected;
+    }
     renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
                        /*cartoon_outline=*/a.cartoon_outline,
                        /*chessnut_connected=*/a.chessnut_connected);

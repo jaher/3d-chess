@@ -1,5 +1,35 @@
 # Claude instructions for this repo
 
+## Always update desktop AND web together
+
+Every user-visible feature must work in both the GTK desktop build
+(`make`) and the Emscripten web build (`make -C web`). When you
+add or change a feature, before pushing:
+
+- Build **both** targets in the same change. The desktop build is
+  `make -j20 chess`. The web build is
+  `EM_CONFIG=$HOME/.emscripten make -C web`. Both must finish
+  cleanly.
+- If a feature genuinely cannot work on one platform (e.g. SDL2
+  microphone capture on the web), gate it cleanly with
+  `#ifdef __EMSCRIPTEN__` / `#ifndef __EMSCRIPTEN__` and provide a
+  matching no-op stub in `web/<feature>_web.cpp` (or the desktop
+  equivalent) so the shared layer compiles in both builds. Spell
+  out the limitation in the response *and* in the README's
+  "Limitations vs the desktop build" section.
+- Don't leave a feature wired only on desktop with the web side
+  silently broken. The `app_chessnut_*`, voice-toggle, and options-
+  picker plumbing all follow this pattern — when adding a new
+  toggle or screen, mirror it on both sides.
+- Run `make -C tests test` after both target builds — pure-logic
+  tests catch shared-layer regressions either platform might
+  surface.
+
+If a change is purely platform-specific by nature (e.g. a
+desktop-only bridge implementation detail that doesn't touch the
+shared layer), say so explicitly in the response so the omission
+is visible.
+
 ## README sync
 
 Whenever a change lands that could make `README.md` stale, update
