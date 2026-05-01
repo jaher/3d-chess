@@ -68,6 +68,11 @@ EM_JS(void, chessnut_web_start_js, (), {
         if (h.length < 2) h = "0" + h;
         CANDIDATE_SVCS.push("1b7e82" + h + SUFFIX);
     }
+    // Three-frame post-subscribe handshake — see
+    // chessnut_bridge_native.cpp do_connect for the rationale.
+    // 0x21 0x01 0x00 is the streaming-enable command without which
+    // the firmware never pushes board-state notifications.
+    var INIT_HANDSHAKE_0 = new Uint8Array([0x21, 0x01, 0x00]);
     var INIT_HANDSHAKE_1 = new Uint8Array([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]);
     var INIT_HANDSHAKE_2 = new Uint8Array([0x27, 0x01, 0x00]);
 
@@ -150,8 +155,8 @@ EM_JS(void, chessnut_web_start_js, (), {
                             .catch(function() { return null; });
                     });
                     return Promise.all(subs).then(function() {
-                        // Two-frame Move handshake (see PROTOCOL.md).
-                        return write.writeValueWithoutResponse(INIT_HANDSHAKE_1)
+                        return write.writeValueWithoutResponse(INIT_HANDSHAKE_0)
+                            .then(function() { return write.writeValueWithoutResponse(INIT_HANDSHAKE_1); })
                             .then(function() { return write.writeValueWithoutResponse(INIT_HANDSHAKE_2); })
                             .then(function() { emit("CONNECTED " + (device.name || "Chessnut Move")); });
                     });

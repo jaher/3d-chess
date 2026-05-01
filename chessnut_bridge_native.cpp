@@ -389,9 +389,26 @@ private:
             }
         }
 
-        // Two-frame Move handshake — see ChessnutBLEDevice.java:342, 350.
+        // Three-frame post-subscribe handshake. From the Android
+        // app's onConnect sequence (ChessnutBLEDevice.java:339,
+        // 342, 350):
+        //   1. 0x21 0x01 0x00 — enable board-state streaming on
+        //      8262. WITHOUT this, the Move firmware doesn't push
+        //      sensor frames when pieces move and the
+        //      two-way mirror silently breaks.
+        //   2. 0x0B 0x04 0x03 0xE8 0x00 0xC8 — auxiliary init
+        //      (constants from the firmware).
+        //   3. 0x27 0x01 0x00 — Air-firmware-only init in the
+        //      Android app (gated on the device name not
+        //      containing "Chessnut"). Harmless on Move firmware
+        //      (which echoes a "0x28 …" ack on 8273), so we send
+        //      it unconditionally for compatibility with both
+        //      Air and Move boards.
         const std::string& write_svc = *svc_for(WRITE_UUID);
         try {
+            peripheral_.write_request(
+                write_svc, WRITE_UUID,
+                frame_from_bytes({0x21, 0x01, 0x00}));
             peripheral_.write_request(
                 write_svc, WRITE_UUID,
                 frame_from_bytes({0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8}));

@@ -182,9 +182,13 @@ def build_led(bitmask_hex: str) -> bytes:
 
 
 def build_init_handshake() -> list[bytes]:
-    """The two opening writes the Android app sends after connect.
-    See ChessnutBLEDevice.java:342, 350."""
+    """The post-subscribe handshake the Android app sends after
+    connect (ChessnutBLEDevice.java:339, 342, 350). 0x21 0x01 0x00
+    is the streaming-enable command — the firmware doesn't push
+    board-state frames on 8262 until it lands. The other two are
+    auxiliary init / Air-only init (harmless on Move)."""
     return [
+        bytes([0x21, 0x01, 0x00]),
         bytes([0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8]),
         bytes([0x27, 0x01, 0x00]),
     ]
