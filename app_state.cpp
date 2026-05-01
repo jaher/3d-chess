@@ -1665,6 +1665,15 @@ static void tick_clock(AppState& a, int64_t now) {
     queue_redraw(a);
 }
 
+// Auto-reconnect tick — desktop body defined in the chessnut block
+// below. Web is single-process / single-call (the browser handles
+// reconnection inside navigator.bluetooth), so it stubs out here.
+#ifndef __EMSCRIPTEN__
+static void chessnut_tick_reconnect(AppState& a, int64_t now);
+#else
+static inline void chessnut_tick_reconnect(AppState&, int64_t) {}
+#endif
+
 void app_tick(AppState& a) {
     int64_t now = now_us(a);
     // Safe in every mode; no-op when no track is playing.
@@ -1682,6 +1691,11 @@ void app_tick(AppState& a) {
     tick_mistake_shake(a, now);
     tick_withdraw_flag(a, now);
     tick_clock(a, now);
+
+    // Auto-reconnect to the Chessnut Move while the toggle is on.
+    // Helper is declared in the desktop section so it can see the
+    // file-static g_chessnut_bridge handle.
+    chessnut_tick_reconnect(a, now);
 }
 
 // ===========================================================================
@@ -2502,6 +2516,31 @@ void app_chessnut_shutdown(AppState& a) {
     a.chessnut_connected      = false;
     if (g_chessnut_bridge) g_chessnut_bridge->stop();
     g_chessnut_bridge.reset();
+}
+
+static void chessnut_tick_reconnect(AppState& a, int64_t now) {
+    // Auto-reconnect to the Chessnut Move while the toggle is on.
+    // The board may sleep / drop the BLE link while the user is
+    // away from the desk; without this the toggle stays "on" but
+    // every write silently fails. Retry every kChessnutReconnectUs
+    // with the cached MAC (the bridge falls back to it first,
+    // so it's a fast 2.5 s scan rather than the 8 s name scan).
+    constexpr int64_t kChessnutReconnectUs = 30LL * 1000LL * 1000LL;  // 30 s
+    if (a.chessnut_enabled && !a.chessnut_connected &&
+        !a.chessnut_picker_open &&
+        g_chessnut_bridge && g_chessnut_bridge->running()) {
+        if (a.chessnut_last_reconnect_us == 0 ||
+            now - a.chessnut_last_reconnect_us > kChessnutReconnectUs) {
+            std::fprintf(stderr,
+                "[chessnut/reconnect] retrying after disconnect\n");
+            a.chessnut_last_reconnect_us = now;
+            g_chessnut_bridge->request_connect();
+        }
+    } else if (a.chessnut_connected && a.chessnut_last_reconnect_us != 0) {
+        // Reset the throttle once a reconnect has succeeded so the
+        // next disconnect doesn't have to wait the full window.
+        a.chessnut_last_reconnect_us = 0;
+    }
 }
 #endif  // !__EMSCRIPTEN__
 

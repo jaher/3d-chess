@@ -236,6 +236,10 @@ struct AppState {
     bool chessnut_enabled        = false;
     bool chessnut_bridge_running = false;
     bool chessnut_connected      = false;
+    // Monotonic timestamp (us) of the most recent reconnect attempt
+    // while in the "enabled but disconnected" state. Used by
+    // app_tick to throttle retries to one per kChessnutReconnectMs.
+    int64_t chessnut_last_reconnect_us = 0;
 
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask
