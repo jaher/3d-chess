@@ -1016,6 +1016,7 @@ static void release_options(AppState& a, double mx, double my,
         app_enter_menu(a);
     } else if (btn == 2) {
         a.cartoon_outline = !a.cartoon_outline;
+        app_settings_save(a);
         queue_redraw(a);
     } else if (btn == 3 && voice_supported) {
         app_voice_toggle_continuous_request(a);
@@ -2401,6 +2402,7 @@ void app_chessnut_set_enabled(
         a.chessnut_picker_scanning = false;
         a.chessnut_devices.clear();
         set_status(a, "Chessnut Move: off");
+        app_settings_save(a);
         queue_redraw(a);
         return;
     }
@@ -2408,6 +2410,7 @@ void app_chessnut_set_enabled(
     if (!ensure_chessnut_bridge(a, std::move(on_status))) return;
     a.chessnut_enabled   = true;
     a.chessnut_connected = false;
+    app_settings_save(a);
 
     // If we already have a cached MAC (from a previous successful
     // session or CHESS_CHESSNUT_ADDRESS env var), skip the picker
@@ -2550,4 +2553,91 @@ static void chessnut_tick_reconnect(AppState& a, int64_t now) {
 void app_init(AppState& a, const AppPlatform* platform) {
     a.platform = platform;
     game_reset(a.game);
+    app_settings_load(a);
 }
+
+// ===========================================================================
+// Settings persistence — minimal key=value INI at
+// $XDG_CONFIG_HOME/3d_chess/settings.ini (or ~/.config/3d_chess/...).
+// Web stubs both calls in chessnut_web.cpp / voice_web.cpp area.
+// ===========================================================================
+#ifndef __EMSCRIPTEN__
+namespace {
+std::string settings_path() {
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    std::string base;
+    if (xdg && *xdg) {
+        base = xdg;
+    } else if (const char* home = std::getenv("HOME")) {
+        base = std::string(home) + "/.config";
+    } else {
+        return std::string();
+    }
+    return base + "/3d_chess/settings.ini";
+}
+
+bool parse_bool(const std::string& v) {
+    return v == "1" || v == "true" || v == "TRUE" ||
+           v == "yes" || v == "on";
+}
+}  // namespace
+
+void app_settings_load(AppState& a) {
+    std::string path = settings_path();
+    if (path.empty()) return;
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return;
+    char line[256];
+    while (std::fgets(line, sizeof(line), f)) {
+        std::string s = line;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+            s.pop_back();
+        if (s.empty() || s[0] == '#') continue;
+        size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = s.substr(0, eq);
+        std::string val = s.substr(eq + 1);
+        if (key == "cartoon_outline") {
+            a.cartoon_outline = parse_bool(val);
+        } else if (key == "chessnut_enabled") {
+            // Don't immediately turn the bridge on here — app_init
+            // runs before the platform's IO is fully primed. Instead
+            // record the desire; the UI driver flips the toggle
+            // through app_chessnut_toggle_request once we're up.
+            a.chessnut_enabled = parse_bool(val);
+        }
+    }
+    std::fclose(f);
+    // chessnut_enabled persisted as true means "the user wants the
+    // toggle on at startup". The bridge subprocess hasn't started
+    // yet (no platform callback wired), so reset the flag to false
+    // for now — main.cpp will call app_chessnut_toggle_request once
+    // the GTK loop is alive if it sees that the prior session had
+    // it enabled. To pass that signal forward, stash it in a
+    // separate field that app_init doesn't clear.
+    // (Simpler approach implemented here: we leave a.chessnut_enabled
+    //  pre-set to true, and main.cpp reads it on startup to decide
+    //  whether to fire the toggle. This avoids a "ghost" state where
+    //  the flag is on but the bridge isn't.)
+}
+
+void app_settings_save(const AppState& a) {
+    std::string path = settings_path();
+    if (path.empty()) return;
+    // mkdir -p on the parent dir.
+    std::string dir = path.substr(0, path.find_last_of('/'));
+    if (!dir.empty()) {
+        std::string cmd = "mkdir -p " + dir + " 2>/dev/null";
+        int unused = std::system(cmd.c_str()); (void)unused;
+    }
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return;
+    std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
+    std::fprintf(f, "cartoon_outline=%d\n", a.cartoon_outline ? 1 : 0);
+    std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
+    std::fclose(f);
+}
+#else
+void app_settings_load(AppState& /*a*/) {}
+void app_settings_save(const AppState& /*a*/) {}
+#endif

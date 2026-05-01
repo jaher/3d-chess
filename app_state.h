@@ -369,6 +369,16 @@ bool app_chessnut_supported();
 // can drive the bridge without re-implementing FEN serialisation.
 std::string app_current_fen(const AppState& a);
 
+// Persistence for user-visible toggles (cartoon outline, Chessnut
+// Move enabled). Continuous voice is intentionally NOT persisted
+// — it triggers a mic-permission prompt and is meant to be
+// per-session-opt-in. Settings live in
+// $XDG_CONFIG_HOME/3d_chess/settings.ini (or ~/.config/...).
+// Web build no-ops both — localStorage would work but isn't
+// wired here yet.
+void app_settings_load(AppState& a);
+void app_settings_save(const AppState& a);
+
 // Light up the source + destination squares of the most-recently-
 // played move on the physical board. No-op when the bridge isn't
 // connected or no move has been played yet. Called after every
