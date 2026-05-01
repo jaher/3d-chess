@@ -17,6 +17,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <map>
+#include <simpleble/Service.h>
+#include <simpleble/Characteristic.h>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -32,14 +35,18 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// GATT — see PROTOCOL.md (notes/chessnutapp). Same UUID family as the
-// Chessnut Air community-RE'd protocol; Move adds the 8261/8271 pair.
+// GATT — see PROTOCOL.md (notes/chessnutapp). Same characteristic
+// UUID family as the Chessnut Air community-RE'd protocol; Move
+// adds the 8261/8271 pair.
+//
+// Only the characteristic UUIDs are stable. The parent service
+// UUID isn't — it was originally guessed as 1b7e8260-… and the
+// firmware (at least the unit tested in the field) uses something
+// else. On every connect we enumerate the peripheral's actual
+// services + characteristics and route writes/notifies via the
+// parent service we discover, so we never hardcode it again.
 // ---------------------------------------------------------------------------
 constexpr const char* SUFFIX = "-2877-41c3-b46e-cf057c562023";
-const std::string SVC_UUID         = std::string("1b7e8260") + SUFFIX;
-// Listen on every notify channel — Air-compatible (8262, 8273) and
-// Move-only (8261, 8271). Subscribing to channels the firmware
-// doesn't expose just throws on attach; we tolerate that.
 const std::string NOTIFY_UUIDS[] = {
     std::string("1b7e8261") + SUFFIX,
     std::string("1b7e8262") + SUFFIX,
@@ -311,12 +318,50 @@ private:
         peripheral_ = target;
         peripheral_initialised_ = true;
 
+        // Discover the actual parent service for each
+        // characteristic. Hardcoding "1b7e8260-…" was wrong on the
+        // tested firmware; the real service UUID can vary, so we
+        // map by characteristic and route writes/notifies via the
+        // matching parent.
+        char_to_service_.clear();
+        try {
+            auto services = peripheral_.services();
+            std::fprintf(stderr,
+                "[chessnut/native] services discovered: %zu\n",
+                services.size());
+            for (auto& s : services) {
+                for (auto& c : s.characteristics()) {
+                    char_to_service_[c.uuid()] = s.uuid();
+                }
+                std::fprintf(stderr,
+                    "[chessnut/native]   service %s (%zu chars)\n",
+                    s.uuid().c_str(), s.characteristics().size());
+            }
+        } catch (const std::exception& e) {
+            emit(std::string("ERROR service discovery: ") + e.what());
+            return;
+        }
+
+        auto svc_for = [this](const std::string& char_uuid)
+                              -> const std::string* {
+            auto it = char_to_service_.find(char_uuid);
+            return it == char_to_service_.end() ? nullptr : &it->second;
+        };
+
+        if (!svc_for(WRITE_UUID)) {
+            emit(std::string("ERROR write characteristic ") + WRITE_UUID +
+                 " not exposed by this peripheral");
+            return;
+        }
+
         // Subscribe to every notify UUID — Air firmware won't have
-        // 8261/8271, Move firmware exposes all four. Failures on a
-        // missing characteristic are non-fatal.
+        // 8261/8271, Move firmware exposes all four. Skip any that
+        // service discovery didn't find.
         for (const auto& uuid : NOTIFY_UUIDS) {
+            const std::string* svc = svc_for(uuid);
+            if (!svc) continue;
             try {
-                peripheral_.notify(SVC_UUID, uuid,
+                peripheral_.notify(*svc, uuid,
                     [this, uuid](SimpleBLE::ByteArray data) {
                         std::ostringstream oss;
                         oss << "NOTIFY " << uuid << ' ';
@@ -328,17 +373,19 @@ private:
                         emit(oss.str());
                     });
             } catch (...) {
-                // not present on this firmware — silent skip
+                // characteristic exists but notify subscribe
+                // refused — non-fatal.
             }
         }
 
         // Two-frame Move handshake — see ChessnutBLEDevice.java:342, 350.
+        const std::string& write_svc = *svc_for(WRITE_UUID);
         try {
-            peripheral_.write_command(
-                SVC_UUID, WRITE_UUID,
+            peripheral_.write_request(
+                write_svc, WRITE_UUID,
                 frame_from_bytes({0x0B, 0x04, 0x03, 0xE8, 0x00, 0xC8}));
-            peripheral_.write_command(
-                SVC_UUID, WRITE_UUID,
+            peripheral_.write_request(
+                write_svc, WRITE_UUID,
                 frame_from_bytes({0x27, 0x01, 0x00}));
         } catch (const std::exception& e) {
             emit(std::string("ERROR handshake failed: ") + e.what());
@@ -354,18 +401,17 @@ private:
             emit("ERROR not connected");
             return;
         }
-        // The official Android app uses write-WITH-response (FastBle
-        // default WRITE_TYPE_DEFAULT). bleak via Python tolerates
-        // write-without-response, but SimpleBLE on Linux/BlueZ has
-        // historically dropped longer write_command frames silently
-        // — observed in the field: handshake (6/3 bytes) succeeded
-        // via write_command but the 35-byte 0x42 setMoveBoard frame
-        // never reached the firmware. write_request matches the
-        // Android app and is reliable for both sizes.
+        auto it = char_to_service_.find(WRITE_UUID);
+        if (it == char_to_service_.end()) {
+            emit("ERROR write characteristic not discovered");
+            return;
+        }
+        // write_request (with response) — see do_connect for the
+        // rationale vs write_command.
         std::fprintf(stderr, "[chessnut/native] write %s len=%zu\n",
                      tag, frame.size());
         try {
-            peripheral_.write_request(SVC_UUID, WRITE_UUID, frame);
+            peripheral_.write_request(it->second, WRITE_UUID, frame);
         } catch (const std::exception& e) {
             emit(std::string("ERROR write failed: ") + e.what());
             return;
@@ -382,6 +428,10 @@ private:
     SimpleBLE::Peripheral       peripheral_;
     bool                        peripheral_initialised_ = false;
     std::string                 connected_name_;
+    // Discovered on connect: characteristic UUID → parent service
+    // UUID. Looked up before every write / notify subscription so
+    // we don't need to hardcode the parent service.
+    std::map<std::string, std::string> char_to_service_;
 };
 
 }  // namespace
