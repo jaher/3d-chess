@@ -220,18 +220,22 @@ class Bridge:
             matches, timeout=8.0)
 
     async def scan_dump(self) -> None:
-        """List every nearby BLE peripheral with a name. Tags each
-        device with its advertised service UUIDs so the user can
-        spot the Chessnut family (1b7e82..-2877-...) regardless of
-        what local name the firmware happens to advertise."""
+        """List nearby BLE peripherals whose advertising name
+        contains 'chessnut' (case insensitive) or that advertise
+        a Chessnut service UUID. The C++ in-app picker applies
+        the same filter — unfiltered diagnostic listing lives in
+        tools/simpleble_scan."""
         await self.stdout("scanning 5 s for advertising peripherals…")
         seen = {}  # addr -> (name, [service-uuids])
+        chessnut_marker = "2877-41c3-b46e-cf057c562023"
 
         def cb(dev, adv):
             n = (dev.name or
                  (adv.local_name if adv is not None else None) or "")
             uuids = list(adv.service_uuids) if adv is not None else []
-            if n or uuids:
+            name_match = "chessnut" in n.lower()
+            uuid_match = any(chessnut_marker in u.lower() for u in uuids)
+            if name_match or uuid_match:
                 seen[dev.address] = (n, uuids)
 
         scanner = BleakScanner(detection_callback=cb)

@@ -10,6 +10,7 @@
 #include "chessnut_encode.h"  // shared with web/chessnut_web.cpp
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -218,7 +219,11 @@ private:
 
         // Track addresses we've already reported so we don't spam
         // the picker if the same device fires multiple advertising
-        // events during the scan window.
+        // events during the scan window. Filter to peripherals
+        // whose name contains "chessnut" (case-insensitive) — the
+        // picker has finite vertical space and a typical office
+        // BLE scan turns up 20+ irrelevant devices. For an
+        // unfiltered view, use tools/simpleble_scan.
         std::set<std::string> seen;
         adapter.set_callback_on_scan_found(
             [&](SimpleBLE::Peripheral p) {
@@ -228,6 +233,13 @@ private:
                     name = p.identifier();
                 } catch (...) { return; }
                 if (addr.empty()) return;
+                std::string lname;
+                lname.reserve(name.size());
+                for (char c : name) {
+                    lname.push_back(static_cast<char>(
+                        std::tolower(static_cast<unsigned char>(c))));
+                }
+                if (lname.find("chessnut") == std::string::npos) return;
                 if (!seen.insert(addr).second) return;
                 if (name.empty()) name = "(no name)";
                 emit("DEVICE " + addr + " " + name);
