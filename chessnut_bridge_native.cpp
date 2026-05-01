@@ -160,6 +160,9 @@ private:
     }
 
     void emit(const std::string& s) {
+        // Mirror to stderr so we can see what the bridge is doing
+        // even when the GUI status bar is hidden behind menus.
+        std::fprintf(stderr, "[chessnut/native] %s\n", s.c_str());
         if (on_status_) on_status_(s);
     }
 
@@ -292,8 +295,18 @@ private:
             emit("ERROR not connected");
             return;
         }
+        // The official Android app uses write-WITH-response (FastBle
+        // default WRITE_TYPE_DEFAULT). bleak via Python tolerates
+        // write-without-response, but SimpleBLE on Linux/BlueZ has
+        // historically dropped longer write_command frames silently
+        // — observed in the field: handshake (6/3 bytes) succeeded
+        // via write_command but the 35-byte 0x42 setMoveBoard frame
+        // never reached the firmware. write_request matches the
+        // Android app and is reliable for both sizes.
+        std::fprintf(stderr, "[chessnut/native] write %s len=%zu\n",
+                     tag, frame.size());
         try {
-            peripheral_.write_command(SVC_UUID, WRITE_UUID, frame);
+            peripheral_.write_request(SVC_UUID, WRITE_UUID, frame);
         } catch (const std::exception& e) {
             emit(std::string("ERROR write failed: ") + e.what());
             return;
