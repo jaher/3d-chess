@@ -115,24 +115,39 @@ EM_JS(void, chessnut_web_start_js, (), {
                         write:   write,
                         name:    device.name || "Chessnut Move"
                     };
-                    // Subscribe to every notify channel that's
-                    // present under the same parent service. Air
-                    // firmware doesn't expose 8261/8271; missing
-                    // characteristics are non-fatal.
-                    var subs = NOTIFY.map(function(uuid) {
-                        return service.getCharacteristic(uuid)
-                            .then(function(c) { return c.startNotifications().then(function(){
-                                c.addEventListener("characteristicvaluechanged", function(ev) {
-                                    var v = ev.target.value;
-                                    var hex = "";
-                                    for (var i = 0; i < v.byteLength; ++i) {
-                                        var b = v.getUint8(i).toString(16);
-                                        hex += (b.length < 2 ? "0" : "") + b;
+                    // Sweep every primary service we discovered
+                    // for notify-capable characteristics and
+                    // subscribe to all of them. Field firmware
+                    // exposes board-state pushes on different
+                    // UUIDs across revisions; the size-based
+                    // filter in app_chessnut_apply_sensor_frame
+                    // ignores everything that isn't a 32-byte
+                    // board frame, so over-subscribing is safe.
+                    var subs = services.map(function(svc) {
+                        return svc.getCharacteristics()
+                            .then(function(chars) {
+                                return Promise.all(chars.map(function(c) {
+                                    if (!c.properties || !c.properties.notify) {
+                                        return null;
                                     }
-                                    emit("NOTIFY " + uuid + " " + hex);
-                                });
-                            }); })
-                            .catch(function(){});
+                                    return c.startNotifications()
+                                        .then(function() {
+                                            c.addEventListener(
+                                                "characteristicvaluechanged",
+                                                function(ev) {
+                                                    var v = ev.target.value;
+                                                    var hex = "";
+                                                    for (var i = 0; i < v.byteLength; ++i) {
+                                                        var b = v.getUint8(i).toString(16);
+                                                        hex += (b.length < 2 ? "0" : "") + b;
+                                                    }
+                                                    emit("NOTIFY " + c.uuid + " " + hex);
+                                                });
+                                        })
+                                        .catch(function() {});
+                                }));
+                            })
+                            .catch(function() { return null; });
                     });
                     return Promise.all(subs).then(function() {
                         // Two-frame Move handshake (see PROTOCOL.md).

@@ -2597,18 +2597,20 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
         return;
     }
     if (status.rfind("NOTIFY ", 0) == 0) {
-        // Format: "NOTIFY <uuid> <hex>". The board-state channel
-        // is 1b7e8262-…; other notify UUIDs (8261/8273/8271) are
-        // command-response traces that the digital game doesn't
-        // need to react to.
-        const std::string suffix = "2877-41c3-b46e-cf057c562023";
+        // Format: "NOTIFY <uuid> <hex>". Route any frame that's
+        // long enough to be a 32-byte board-state payload into the
+        // sensor handler. Originally we filtered by UUID containing
+        // "8262", but field firmware revisions push board state on
+        // different characteristic UUIDs (the bridge subscribes to
+        // every notify-capable char now), so size-based routing is
+        // more robust. Short frames (status pings, command echoes)
+        // fall below the 32-byte threshold and are silently
+        // ignored by apply_sensor_frame.
         std::string rest = status.substr(7);
         size_t sp = rest.find(' ');
         if (sp == std::string::npos) return;
-        std::string uuid = rest.substr(0, sp);
-        std::string hex  = rest.substr(sp + 1);
-        if (uuid.find(suffix) != std::string::npos &&
-            uuid.find("8262") != std::string::npos) {
+        std::string hex = rest.substr(sp + 1);
+        if (hex.size() >= 64) {  // 32 bytes => 64 hex chars
             app_chessnut_apply_sensor_frame(a, hex);
         }
         return;

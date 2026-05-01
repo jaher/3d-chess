@@ -324,6 +324,7 @@ private:
         // map by characteristic and route writes/notifies via the
         // matching parent.
         char_to_service_.clear();
+        std::vector<std::pair<std::string, std::string>> notify_chars;
         try {
             auto services = peripheral_.services();
             std::fprintf(stderr,
@@ -332,6 +333,13 @@ private:
             for (auto& s : services) {
                 for (auto& c : s.characteristics()) {
                     char_to_service_[c.uuid()] = s.uuid();
+                    bool n = false;
+                    try { n = c.can_notify() || c.can_indicate(); }
+                    catch (...) { n = false; }
+                    std::fprintf(stderr,
+                        "[chessnut/native]     char %s%s\n",
+                        c.uuid().c_str(), n ? " [NOTIFY]" : "");
+                    if (n) notify_chars.emplace_back(s.uuid(), c.uuid());
                 }
                 std::fprintf(stderr,
                     "[chessnut/native]   service %s (%zu chars)\n",
@@ -354,17 +362,21 @@ private:
             return;
         }
 
-        // Subscribe to every notify UUID — Air firmware won't have
-        // 8261/8271, Move firmware exposes all four. Skip any that
-        // service discovery didn't find.
-        for (const auto& uuid : NOTIFY_UUIDS) {
-            const std::string* svc = svc_for(uuid);
-            if (!svc) continue;
+        // Subscribe to every notify-capable characteristic the
+        // peripheral exposes — the Chessnut Move firmware revision
+        // varies which characteristic carries board-state pushes
+        // (we've seen 8262 on Air-class firmware and a different
+        // UUID on Move). The size-based filter in
+        // app_chessnut_apply_sensor_frame ignores anything that
+        // isn't a 32-byte board frame, so over-subscribing is
+        // harmless and our diagnostic trace logs every NOTIFY
+        // payload by UUID anyway.
+        for (const auto& [svc_uuid, char_uuid] : notify_chars) {
             try {
-                peripheral_.notify(*svc, uuid,
-                    [this, uuid](SimpleBLE::ByteArray data) {
+                peripheral_.notify(svc_uuid, char_uuid,
+                    [this, char_uuid](SimpleBLE::ByteArray data) {
                         std::ostringstream oss;
-                        oss << "NOTIFY " << uuid << ' ';
+                        oss << "NOTIFY " << char_uuid << ' ';
                         for (unsigned char b : data) {
                             char buf[3];
                             std::snprintf(buf, sizeof(buf), "%02x", b);
@@ -373,8 +385,7 @@ private:
                         emit(oss.str());
                     });
             } catch (...) {
-                // characteristic exists but notify subscribe
-                // refused — non-fatal.
+                // notify subscribe refused — non-fatal.
             }
         }
 
