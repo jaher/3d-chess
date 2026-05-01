@@ -2464,6 +2464,36 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         "[chessnut/sync] send force=%d fen=%s\n",
         force ? 1 : 0, fen.c_str());
     g_chessnut_bridge->send_fen(fen, force);
+    app_chessnut_highlight_last_move(a);
+}
+
+// LED bitmask layout (per PROTOCOL.md): "row-major from h1".
+// 8 bytes = 64 bits, byte index = rank-1 (row), bit-within-byte =
+// h..a (col 0=h, col 7=a in this project's internal grid). bit_for_square
+// returns the (byte, mask) tuple to OR into the bitmask buffer.
+namespace {
+void or_square_bit(uint8_t bytes[8], int col, int row) {
+    if (col < 0 || col > 7 || row < 0 || row > 7) return;
+    bytes[row] |= static_cast<uint8_t>(1u << col);
+}
+}  // namespace
+
+void app_chessnut_highlight_last_move(AppState& a) {
+    if (!g_chessnut_bridge || !a.chessnut_connected) return;
+    uint8_t bytes[8] = {0};
+    if (!a.game.move_history.empty()) {
+        const std::string& uci = a.game.move_history.back();
+        int fc = -1, fr = -1, tc = -1, tr = -1;
+        if (parse_uci_move(uci, fc, fr, tc, tr)) {
+            or_square_bit(bytes, fc, fr);
+            or_square_bit(bytes, tc, tr);
+        }
+    }
+    char hex[17];
+    for (int i = 0; i < 8; i++) {
+        std::snprintf(hex + i * 2, 3, "%02x", bytes[i]);
+    }
+    g_chessnut_bridge->send_led_hex(hex);
 }
 
 void app_chessnut_shutdown(AppState& a) {

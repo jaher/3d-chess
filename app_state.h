@@ -365,6 +365,12 @@ bool app_chessnut_supported();
 // can drive the bridge without re-implementing FEN serialisation.
 std::string app_current_fen(const AppState& a);
 
+// Light up the source + destination squares of the most-recently-
+// played move on the physical board. No-op when the bridge isn't
+// connected or no move has been played yet. Called after every
+// successful sync so the LED pattern always tracks the latest move.
+void app_chessnut_highlight_last_move(AppState& a);
+
 // Open the device picker — clears the device list, kicks off a
 // fresh BLE scan, and switches the Options screen into
 // picker-rendering mode. Web build is a no-op (the browser owns

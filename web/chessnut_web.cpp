@@ -211,6 +211,12 @@ void app_chessnut_shutdown(AppState& a) {
     chessnut_web_stop_js();
 }
 
+// LED hints — defined as a no-op on web for now. Wiring it up is
+// straightforward (same EM_JS shim pattern as send_fen, just a
+// different opcode), kept out of scope while we get the move-by-
+// move sync verified on physical hardware.
+void app_chessnut_highlight_last_move(AppState& /*a*/) {}
+
 // Web doesn't need the in-app picker — navigator.bluetooth.requestDevice
 // already pops a browser-native chooser dialog. These exist so the
 // shared header signature is satisfied.
