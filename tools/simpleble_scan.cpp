@@ -11,6 +11,7 @@
 #include <simpleble/Peripheral.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <set>
@@ -44,6 +45,15 @@ int main() {
             std::string addr = p.address();
             if (addr.empty() || !seen.insert(addr).second) return;
             std::string name = p.identifier();
+            // Filter to peripherals whose name contains "chessnut"
+            // (case-insensitive), matching the in-app picker.
+            std::string lname;
+            lname.reserve(name.size());
+            for (char c : name) {
+                lname.push_back(static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c))));
+            }
+            if (lname.find("chessnut") == std::string::npos) return;
             std::printf("DEVICE %s  %s\n",
                 addr.c_str(),
                 name.empty() ? "(no name)" : name.c_str());
