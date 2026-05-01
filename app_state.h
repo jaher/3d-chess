@@ -160,6 +160,14 @@ struct AppState {
     bool slider_dragging   = false;
     int  pregame_hover     = 0;
 
+    // Two-player (hot-seat) mode. Set by clicking the menu's
+    // "Multiplayer" button (only visible when chessnut_connected),
+    // cleared by the regular "Start Game" path. The pregame UI
+    // hides the Elo slider when this is on; the in-game click
+    // handler accepts moves for whichever side's turn it is and
+    // skips Stockfish dispatch.
+    bool two_player_mode = false;
+
     // Pregame time-control dropdown state. Default = Classical
     // (30+30) so the first game out of the box has a clock without
     // forcing the user to interact with the dropdown.

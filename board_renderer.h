@@ -89,8 +89,9 @@ bool withdraw_confirm_hit_test(double mx, double my,
 // grab gesture to highlight which piece the cursor is holding.
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
-                        int hover_button, // 0=none, 1=start, 2=quit
-                        bool cartoon_outline = false);
+                        int hover_button,  // 0=none, 1..5 (see menu_input.h)
+                        bool cartoon_outline,
+                        bool chessnut_connected);
 
 // menu_hit_test / menu_piece_hit_test / menu_throw_piece live in
 // menu_input.h, transitively included above.

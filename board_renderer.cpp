@@ -1861,7 +1861,8 @@ void renderer_draw(GameState& gs, int width, int height,
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
                         int hover_button,
-                        bool cartoon_outline) {
+                        bool cartoon_outline,
+                        bool chessnut_connected) {
     // Button layout (BTN_*) defined in menu_input.h so it stays in
     // sync with menu_hit_test's click regions.
     using namespace menu_ui;
@@ -1948,13 +1949,28 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     add_screen_string(ui_verts, -tw*0.5f, 0.35f, tcw, tch, title);
     int title_count = static_cast<int>(ui_verts.size() / 5);
 
+    // Subtitle is replaced by the Multiplayer button when a
+    // Chessnut Move board is paired — keeps the layout below
+    // unchanged whether or not the new button is present.
     float scw = 0.018f, sch = 0.028f;
-    std::string subtitle = "Play against stockfish";
-    float sw = subtitle.size() * scw * 0.7f;
-    add_screen_string(ui_verts, -sw*0.5f, 0.22f, scw, sch, subtitle);
     int subtitle_end = static_cast<int>(ui_verts.size() / 5);
+    if (!chessnut_connected) {
+        std::string subtitle = "Play against stockfish";
+        float sw = subtitle.size() * scw * 0.7f;
+        add_screen_string(ui_verts, -sw*0.5f, 0.22f, scw, sch, subtitle);
+        subtitle_end = static_cast<int>(ui_verts.size() / 5);
+    }
 
     float bcw = 0.028f, bch = 0.042f;
+    int multi_end = subtitle_end;
+    if (chessnut_connected) {
+        std::string mp_text = "Multiplayer (board)";
+        float mtw = mp_text.size() * bcw * 0.7f;
+        add_screen_string(ui_verts, -mtw*0.5f,
+                          BTN_MULTIPLAYER_Y - 0.018f,
+                          bcw, bch, mp_text);
+        multi_end = static_cast<int>(ui_verts.size() / 5);
+    }
     std::string start_text = "Start Game";
     float stw = start_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -stw*0.5f, BTN_START_Y - 0.018f, bcw, bch, start_text);
@@ -1992,20 +2008,27 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
     glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
     {
-        float bg[] = {
-            BTN_X,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y,0,
-            BTN_X,BTN_START_Y-BTN_H,0, BTN_X+BTN_W,BTN_START_Y,0, BTN_X,BTN_START_Y,0,
-            BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0,
-            BTN_X,BTN_CHALLENGE_Y-BTN_H,0, BTN_X+BTN_W,BTN_CHALLENGE_Y,0, BTN_X,BTN_CHALLENGE_Y,0,
-            BTN_X,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y,0,
-            BTN_X,BTN_OPTIONS_Y-BTN_H,0, BTN_X+BTN_W,BTN_OPTIONS_Y,0, BTN_X,BTN_OPTIONS_Y,0,
-            BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0,
-            BTN_X,BTN_QUIT_Y-BTN_H,0, BTN_X+BTN_W,BTN_QUIT_Y,0, BTN_X,BTN_QUIT_Y,0
+        std::vector<float> bg;
+        auto push_quad = [&](float top) {
+            float v[18] = {
+                BTN_X, top - BTN_H, 0, BTN_X + BTN_W, top - BTN_H, 0,
+                BTN_X + BTN_W, top, 0,
+                BTN_X, top - BTN_H, 0, BTN_X + BTN_W, top, 0,
+                BTN_X, top, 0
+            };
+            bg.insert(bg.end(), v, v + 18);
         };
+        push_quad(BTN_START_Y);
+        push_quad(BTN_CHALLENGE_Y);
+        push_quad(BTN_OPTIONS_Y);
+        push_quad(BTN_QUIT_Y);
+        if (chessnut_connected) push_quad(BTN_MULTIPLAYER_Y);
         GLuint bvao, bvbo;
         glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
         glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(bg), bg, GL_STREAM_DRAW);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(bg.size() * sizeof(float)),
+                     bg.data(), GL_STREAM_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.4f,0.8f, hover_button==1?0.5f:0.3f);
@@ -2018,6 +2041,13 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
         glDrawArrays(GL_TRIANGLES, 18, 6);
 #endif
+        if (chessnut_connected) {
+            // Multiplayer button — warm amber so it stands out
+            // visually as the "physical board involved" option.
+            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                        0.85f, 0.55f, 0.20f, hover_button == 5 ? 0.55f : 0.35f);
+            glDrawArrays(GL_TRIANGLES, 24, 6);
+        }
         glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
     }
 
@@ -2029,11 +2059,18 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1,0.9f,0.6f,1);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f,0.7f,0.7f,0.8f);
-    glDrawArrays(GL_TRIANGLES, title_count, subtitle_end - title_count);
+    if (subtitle_end > title_count) {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f,0.7f,0.7f,0.8f);
+        glDrawArrays(GL_TRIANGLES, title_count, subtitle_end - title_count);
+    }
+    if (multi_end > subtitle_end) {
+        float mi = hover_button == 5 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), mi, mi, mi, 1);
+        glDrawArrays(GL_TRIANGLES, subtitle_end, multi_end - subtitle_end);
+    }
     float si = hover_button==1 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), si,si,si,1);
-    glDrawArrays(GL_TRIANGLES, subtitle_end, start_end - subtitle_end);
+    glDrawArrays(GL_TRIANGLES, multi_end, start_end - multi_end);
     float ci = hover_button==3 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), ci,ci,ci,1);
     glDrawArrays(GL_TRIANGLES, start_end, ch_end - start_end);

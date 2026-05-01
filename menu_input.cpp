@@ -153,11 +153,15 @@ void menu_throw_piece(PhysicsPiece& p,
     p.spin_z += d(rng) * spin_mag * 0.6f;
 }
 
-int menu_hit_test(double mx, double my, int width, int height) {
+int menu_hit_test(double mx, double my, int width, int height,
+                  bool chessnut_connected) {
     using namespace menu_ui;
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x < BTN_X || ndc_x > BTN_X + BTN_W) return 0;
+    if (chessnut_connected &&
+        ndc_y >= BTN_MULTIPLAYER_Y - BTN_H &&
+        ndc_y <= BTN_MULTIPLAYER_Y)                              return 5;
     if (ndc_y >= BTN_START_Y     - BTN_H && ndc_y <= BTN_START_Y)     return 1;
     if (ndc_y >= BTN_CHALLENGE_Y - BTN_H && ndc_y <= BTN_CHALLENGE_Y) return 3;
     if (ndc_y >= BTN_OPTIONS_Y   - BTN_H && ndc_y <= BTN_OPTIONS_Y)   return 4;

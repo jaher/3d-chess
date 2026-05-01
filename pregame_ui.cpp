@@ -57,7 +57,8 @@ constexpr float PG_START_Y = -0.63f;
 }  // namespace
 
 int pregame_hit_test(double mx, double my, int width, int height,
-                     bool dropdown_open, int* out_tc_index) {
+                     bool dropdown_open, bool hide_elo_slider,
+                     int* out_tc_index) {
     if (out_tc_index) *out_tc_index = -1;
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
@@ -106,12 +107,15 @@ int pregame_hit_test(double mx, double my, int width, int height,
 
     // Slider — padded by 0.02 NDC vertically and 0.03 horizontally so
     // clicks near the edges still register. Visible bar spans y
-    // from PG_SLIDER_Y to PG_SLIDER_Y - PG_SLIDER_H.
-    float slider_hit_top    = PG_SLIDER_Y + 0.02f;
-    float slider_hit_bottom = PG_SLIDER_Y - PG_SLIDER_H - 0.02f;
-    if (ndc_x >= PG_SLIDER_X_LEFT - 0.03f && ndc_x <= PG_SLIDER_X_RIGHT + 0.03f &&
-        ndc_y <= slider_hit_top && ndc_y >= slider_hit_bottom)
-        return 4;
+    // from PG_SLIDER_Y to PG_SLIDER_Y - PG_SLIDER_H. Skipped in
+    // two-player mode where the slider isn't drawn.
+    if (!hide_elo_slider) {
+        float slider_hit_top    = PG_SLIDER_Y + 0.02f;
+        float slider_hit_bottom = PG_SLIDER_Y - PG_SLIDER_H - 0.02f;
+        if (ndc_x >= PG_SLIDER_X_LEFT - 0.03f && ndc_x <= PG_SLIDER_X_RIGHT + 0.03f &&
+            ndc_y <= slider_hit_top && ndc_y >= slider_hit_bottom)
+            return 4;
+    }
 
     return 0;
 }
@@ -121,6 +125,7 @@ void renderer_draw_pregame(bool human_plays_white,
                            TimeControl time_control,
                            bool dropdown_open,
                            int tc_hover,
+                           bool hide_elo_slider,
                            int width, int height, int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -197,7 +202,8 @@ void renderer_draw_pregame(bool human_plays_white,
     // dark fill, and the green→red gradient that follows the capsule
     // boundary up to fill_x. See the detailed comment below
     // emit_pill_slices for why caps get their own slice count.
-    {
+    // Hidden entirely in two-player mode (no AI to set strength for).
+    if (!hide_elo_slider) {
         auto emit_pill_slices = [](std::vector<float>& out,
                                    float x_from, float x_to,
                                    float y_mid,
@@ -384,13 +390,17 @@ void renderer_draw_pregame(bool human_plays_white,
                       ccw, cch, chev);
     int tc_chev_end = static_cast<int>(ui_verts.size() / 5);
 
-    float scw = 0.025f, sch = 0.038f;
-    char elo_buf[64];
-    std::snprintf(elo_buf, sizeof(elo_buf), "Stockfish strength  %d", elo);
-    std::string elo_label = elo_buf;
-    float ew = elo_label.size() * scw * 0.7f;
-    add_screen_string(ui_verts, -ew * 0.5f, -0.12f, scw, sch, elo_label);
-    int elo_end = static_cast<int>(ui_verts.size() / 5);
+    int elo_end = tc_chev_end;
+    if (!hide_elo_slider) {
+        float scw = 0.025f, sch = 0.038f;
+        char elo_buf[64];
+        std::snprintf(elo_buf, sizeof(elo_buf),
+                      "Stockfish strength  %d", elo);
+        std::string elo_label = elo_buf;
+        float ew = elo_label.size() * scw * 0.7f;
+        add_screen_string(ui_verts, -ew * 0.5f, -0.12f, scw, sch, elo_label);
+        elo_end = static_cast<int>(ui_verts.size() / 5);
+    }
 
     std::string start_text = "Start";
     float stw = start_text.size() * bcw * 0.7f;
@@ -454,9 +464,11 @@ void renderer_draw_pregame(bool human_plays_white,
     glDrawArrays(GL_TRIANGLES, tc_head_text_end,
                  tc_chev_end - tc_head_text_end);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                0.85f, 0.85f, 0.85f, 1.0f);
-    glDrawArrays(GL_TRIANGLES, tc_chev_end, elo_end - tc_chev_end);
+    if (elo_end > tc_chev_end) {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.85f, 0.85f, 0.85f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, tc_chev_end, elo_end - tc_chev_end);
+    }
 
     {
         float b = hover == 1 ? 1.0f : 0.92f;

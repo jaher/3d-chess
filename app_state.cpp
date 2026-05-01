@@ -404,7 +404,13 @@ static void handle_board_click(AppState& a, double mx, double my,
 
     if (is_normal_game) {
         if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode ||
-            gs.white_turn != a.human_plays_white || gs.game_over)
+            gs.game_over)
+            return;
+        // In two-player (Chessnut hot-seat) mode, the user clicks
+        // for whichever side's turn it is. In single-player mode,
+        // clicks for the AI side are ignored.
+        if (!a.two_player_mode &&
+            gs.white_turn != a.human_plays_white)
             return;
     } else if (is_challenge) {
         if (gs.game_over || a.challenge_solved || a.challenge_mistake) return;
@@ -609,7 +615,12 @@ static void handle_board_click(AppState& a, double mx, double my,
                     app_refresh_status(a);
                     trigger_eval(
                         a, static_cast<int>(gs.score_history.size()) - 1);
-                    if (gs.white_turn != a.human_plays_white && !gs.game_over)
+                    // Two-player mode: no AI replies — both sides
+                    // are humans (one on the physical board, one on
+                    // screen, or both via clicks).
+                    if (!a.two_player_mode &&
+                        gs.white_turn != a.human_plays_white &&
+                        !gs.game_over)
                         trigger_ai(a);
                 }
                 return;
@@ -750,8 +761,10 @@ void app_enter_game(AppState& a) {
     // always replans from current sensor state — handles boards
     // that were left in arbitrary positions after the last session.
     app_chessnut_sync_board(a, /*force=*/true);
-    // If the human plays black, Stockfish makes the first move as white.
-    if (!a.human_plays_white) trigger_ai(a);
+    // If the human plays black, Stockfish makes the first move as
+    // white. In two-player (Chessnut hot-seat) mode there's no
+    // Stockfish — both sides are humans.
+    if (!a.two_player_mode && !a.human_plays_white) trigger_ai(a);
 }
 
 void app_enter_challenge_select(AppState& a) {
@@ -909,13 +922,16 @@ static void release_menu(AppState& a, double mx, double my,
     // SAME button at press and at release — so dragging off a
     // button cancels its click, and flicking a piece that starts
     // under a button doesn't accidentally press it.
-    int press_btn   = menu_hit_test(a.press_x, a.press_y, width, height);
-    int release_btn = menu_hit_test(mx, my, width, height);
+    int press_btn   = menu_hit_test(a.press_x, a.press_y,
+                                    width, height, a.chessnut_connected);
+    int release_btn = menu_hit_test(mx, my, width, height,
+                                    a.chessnut_connected);
     if (press_btn != 0 && press_btn == release_btn) {
         a.menu_grabbed_piece = -1;
-        if (press_btn == 1)      app_enter_pregame(a);
+        if (press_btn == 1)      { a.two_player_mode = false; app_enter_pregame(a); }
         else if (press_btn == 3) app_enter_challenge_select(a);
         else if (press_btn == 4) app_enter_options(a);
+        else if (press_btn == 5) { a.two_player_mode = true;  app_enter_pregame(a); }
 #ifndef __EMSCRIPTEN__
         else if (press_btn == 2) std::exit(0);
 #endif
@@ -968,7 +984,9 @@ static void release_pregame(AppState& a, double mx, double my,
     }
     int tc_index = -1;
     int btn = pregame_hit_test(mx, my, width, height,
-                               a.pregame_tc_open, &tc_index);
+                               a.pregame_tc_open,
+                               /*hide_elo_slider=*/a.two_player_mode,
+                               &tc_index);
     if (a.pregame_tc_open) {
         // Dropdown is modal while open. Row click → select and
         // collapse; any other click → collapse without change.
@@ -1169,7 +1187,7 @@ static void apply_camera_drag(AppState& a, double mx, double my) {
 }
 
 static void motion_menu(AppState& a, double mx, double my, int width, int height) {
-    int h = menu_hit_test(mx, my, width, height);
+    int h = menu_hit_test(mx, my, width, height, a.chessnut_connected);
     if (h != a.menu_hover) {
         a.menu_hover = h;
         queue_redraw(a);
@@ -1201,7 +1219,8 @@ static void motion_menu(AppState& a, double mx, double my, int width, int height
 static void motion_pregame(AppState& a, double mx, double my, int width, int height) {
     int tc_idx = -1;
     int h = pregame_hit_test(mx, my, width, height,
-                             a.pregame_tc_open, &tc_idx);
+                             a.pregame_tc_open,
+                             /*hide_elo_slider=*/a.two_player_mode, &tc_idx);
     if (h != a.pregame_hover) {
         a.pregame_hover = h;
         queue_redraw(a);
@@ -1224,7 +1243,8 @@ static void motion_pregame(AppState& a, double mx, double my, int width, int hei
     if (a.dragging && !a.pregame_tc_open) {
         if (!a.slider_dragging) {
             int start = pregame_hit_test(a.press_x, a.press_y,
-                                         width, height, false, nullptr);
+                                         width, height,
+                                         false, a.two_player_mode, nullptr);
             if (start == 4) a.slider_dragging = true;
         }
         if (a.slider_dragging) {
@@ -1711,7 +1731,9 @@ void app_tick(AppState& a) {
 static void render_menu(AppState& a, int width, int height, int64_t now) {
     float t = static_cast<float>(
         static_cast<double>(now - a.menu_start_time_us) / 1e6);
-    renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover);
+    renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
+                       /*cartoon_outline=*/a.cartoon_outline,
+                       /*chessnut_connected=*/a.chessnut_connected);
 }
 
 static void render_pregame(AppState& a, int width, int height) {
@@ -1720,6 +1742,7 @@ static void render_pregame(AppState& a, int width, int height) {
                           a.time_control,
                           a.pregame_tc_open,
                           a.pregame_tc_hover,
+                          /*hide_elo_slider=*/a.two_player_mode,
                           width, height, a.pregame_hover);
 }
 
@@ -2116,7 +2139,8 @@ void apply_voice_utterance(AppState& a,
     // refresh status, kick the eval, and dispatch the AI's reply.
     app_refresh_status(a);
     trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
-    if (gs.white_turn != a.human_plays_white && !gs.game_over)
+    if (!a.two_player_mode &&
+        gs.white_turn != a.human_plays_white && !gs.game_over)
         trigger_ai(a);
 }
 
@@ -2457,7 +2481,9 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     app_chessnut_highlight_last_move(a);
     if (a.mode == MODE_PLAYING && !gs.game_over) {
         trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
-        if (gs.white_turn != a.human_plays_white) trigger_ai(a);
+        if (!a.two_player_mode &&
+            gs.white_turn != a.human_plays_white)
+            trigger_ai(a);
     }
     std::fprintf(stderr,
         "[chessnut/sensor] applied move %c%c%c%c\n",
