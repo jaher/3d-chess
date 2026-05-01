@@ -7,8 +7,16 @@ protocol over stdin/stdout (mirrors the Stockfish subprocess
 pattern in ai_player.cpp).
 
 Stdin commands (one per line):
-  INIT [name]              connect to a "Chessnut Move" device. Optional
-                           name overrides the default match string.
+  INIT [name]              connect to a Chessnut device. The optional
+                           argument is matched as a CASE-INSENSITIVE
+                           SUBSTRING against advertising names —
+                           default 'chessnut' picks up "Chessnut
+                           Move", "Chessnut Move 1234", "Chessnut
+                           Air", etc. Pass a more specific string to
+                           lock onto one board.
+  SCAN                     list every nearby BLE peripheral that
+                           advertises a name (for diagnosing the
+                           exact name your board uses).
   FEN <fen>                send the current target position. Soft mode
                            (board only re-plans if state changed).
   FEN_FORCE <fen>          send target position. Hard mode (always
@@ -157,13 +165,44 @@ class Bridge:
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
 
-    async def find_device(self, name_match: str = "Chessnut Move"):
-        """Scan for a Chessnut Move device. Returns the BLEDevice or
-        None on timeout."""
+    async def find_device(self, name_match: str = "chessnut"):
+        """Scan for a Chessnut device. `name_match` is matched as a
+        case-insensitive substring of the advertising name — picks
+        up "Chessnut Move", "Chessnut Move 1234", "Chessnut Air",
+        etc. Returns the BLEDevice or None on timeout."""
+        needle = name_match.lower()
+
+        def matches(dev, adv):
+            n = (dev.name or
+                 (adv.local_name if adv is not None else None) or "")
+            return needle in n.lower()
+
         # 8 s window — long enough to wake a sleeping board, short
         # enough that a cold-start with no board nearby doesn't hang.
-        return await BleakScanner.find_device_by_name(
-            name_match, timeout=8.0)
+        return await BleakScanner.find_device_by_filter(
+            matches, timeout=8.0)
+
+    async def scan_dump(self) -> None:
+        """List every nearby BLE peripheral with a name. Useful when
+        the user doesn't know the exact name the board advertises."""
+        await self.stdout("scanning 5 s for advertising peripherals…")
+        seen = {}
+
+        def cb(dev, adv):
+            n = (dev.name or
+                 (adv.local_name if adv is not None else None) or "")
+            if n:
+                seen[dev.address] = n
+
+        scanner = BleakScanner(detection_callback=cb)
+        await scanner.start()
+        await asyncio.sleep(5.0)
+        await scanner.stop()
+        if not seen:
+            await self.stdout("(no named devices visible)")
+            return
+        for addr, name in seen.items():
+            await self.stdout(f"DEVICE {addr} {name}")
 
     def on_disconnect(self, _client) -> None:
         # Schedule the report on the running loop — bleak fires this
@@ -185,7 +224,10 @@ class Bridge:
             return
         device = await self.find_device(name_match)
         if device is None:
-            await self.stdout(f"ERROR no Chessnut Move device named {name_match!r}")
+            await self.stdout(
+                f"ERROR no advertising device matched {name_match!r} "
+                f"— try the SCAN command to list nearby devices, then "
+                f"INIT <substring> with a more specific match")
             return
         self.connected_name = device.name or name_match
         try:
@@ -268,7 +310,9 @@ async def main() -> None:
             if cmd == "PING":
                 await bridge.stdout("PONG")
             elif cmd == "INIT":
-                await bridge.init(arg.strip() or "Chessnut Move")
+                await bridge.init(arg.strip() or "chessnut")
+            elif cmd == "SCAN":
+                await bridge.scan_dump()
             elif cmd == "FEN":
                 frame = build_set_move_board(arg.strip(), force=False)
                 await bridge.write_frame(frame, "FEN")
