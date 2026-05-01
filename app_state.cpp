@@ -722,6 +722,12 @@ static int slider_px_to_elo(double mx, int width) {
 }
 
 void app_enter_game(AppState& a) {
+    std::fprintf(stderr,
+        "[app] enter_game: two_player=%d human_plays_white=%d "
+        "chessnut_connected=%d\n",
+        a.two_player_mode ? 1 : 0,
+        a.human_plays_white ? 1 : 0,
+        a.chessnut_connected ? 1 : 0);
     a.mode = MODE_PLAYING;
     audio_music_stop();
     game_reset(a.game);
