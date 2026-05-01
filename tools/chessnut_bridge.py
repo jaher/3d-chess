@@ -7,13 +7,15 @@ protocol over stdin/stdout (mirrors the Stockfish subprocess
 pattern in ai_player.cpp).
 
 Stdin commands (one per line):
-  INIT [name]              connect to a Chessnut device. The optional
-                           argument is matched as a CASE-INSENSITIVE
-                           SUBSTRING against advertising names —
-                           default 'chessnut' picks up "Chessnut
-                           Move", "Chessnut Move 1234", "Chessnut
-                           Air", etc. Pass a more specific string to
-                           lock onto one board.
+  INIT [target]            connect to a Chessnut device. Without an
+                           argument, the helper first tries the
+                           cached MAC address from
+                           ~/.cache/chessnut_bridge_address (or the
+                           CHESS_CHESSNUT_ADDRESS env var) and only
+                           falls back to a name scan when neither is
+                           set. Explicit forms:
+                             INIT 00:1B:10:51:9D:63  → by MAC
+                             INIT chessnut          → by name (substring)
   SCAN                     list every nearby BLE peripheral that
                            advertises a name (for diagnosing the
                            exact name your board uses).
@@ -44,8 +46,43 @@ from __future__ import annotations  # defer type-annotation evaluation
 
 import asyncio
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Optional
+
+
+# Last-connected MAC is cached here so subsequent INITs go straight
+# to the right peripheral instead of doing an 8 s discovery scan.
+# Plain text, one line. Removed when QUIT fires after a clean
+# connect so the cache stays accurate across reboots.
+ADDRESS_CACHE = Path(os.path.expanduser(
+    "~/.cache/chessnut_bridge_address"))
+
+
+def is_mac_address(s: str) -> bool:
+    return bool(re.fullmatch(
+        r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", s))
+
+
+def load_cached_address() -> Optional[str]:
+    if env := os.environ.get("CHESS_CHESSNUT_ADDRESS"):
+        return env.strip() or None
+    try:
+        s = ADDRESS_CACHE.read_text().strip()
+        return s if is_mac_address(s) else None
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def save_cached_address(addr: str) -> None:
+    try:
+        ADDRESS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        ADDRESS_CACHE.write_text(addr + "\n")
+    except OSError:
+        pass  # cache failure shouldn't break the connection
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +267,40 @@ class Bridge:
         await self.stdout(
             f"NOTIFY {sender_uuid} {bytes(data).hex()}")
 
-    async def init(self, name_match: str) -> None:
+    async def init(self, target: str) -> None:
         if self.client is not None and self.client.is_connected:
             await self.stdout(f"CONNECTED {self.connected_name}")
             return
-        device = await self.find_device(name_match)
+
+        # Resolve the target, in order:
+        #  1) explicit MAC arg → fast by-address scan (1 s).
+        #  2) explicit name substring arg → name-substring scan (8 s).
+        #  3) no arg + cached MAC / env override → by-address (1 s).
+        #     If that fails, fall back to a default substring scan
+        #     so a board that moved or rebooted still gets found.
+        device = None
+        if target:
+            if is_mac_address(target):
+                device = await BleakScanner.find_device_by_address(
+                    target, timeout=4.0)
+            else:
+                device = await self.find_device(target)
+        else:
+            cached = load_cached_address()
+            if cached:
+                device = await BleakScanner.find_device_by_address(
+                    cached, timeout=4.0)
+            if device is None:
+                device = await self.find_device("chessnut")
+
         if device is None:
             await self.stdout(
-                f"ERROR no advertising device matched {name_match!r} "
-                f"— try the SCAN command to list nearby devices, then "
-                f"INIT <substring> with a more specific match")
+                f"ERROR no Chessnut device found"
+                f"{(' for target ' + repr(target)) if target else ''}"
+                f" — try SCAN to list nearby peripherals, or INIT "
+                f"<MAC|name-substring> with a specific target")
             return
-        self.connected_name = device.name or name_match
+        self.connected_name = device.name or "Chessnut Move"
         try:
             client = BleakClient(device, disconnected_callback=self.on_disconnect)
             await client.connect()
@@ -265,6 +324,9 @@ class Bridge:
             except Exception as e:  # noqa: BLE001
                 await self.stdout(f"ERROR handshake write failed: {e}")
                 return
+
+        # Cache the MAC for next time so subsequent INITs skip the scan.
+        save_cached_address(device.address)
         await self.stdout(f"CONNECTED {self.connected_name}")
 
     async def write_frame(self, frame: bytes, ack_label: str) -> None:
@@ -322,7 +384,9 @@ async def main() -> None:
             if cmd == "PING":
                 await bridge.stdout("PONG")
             elif cmd == "INIT":
-                await bridge.init(arg.strip() or "chessnut")
+                # Empty arg → init() consults the cache + falls
+                # back to a substring scan. Don't override here.
+                await bridge.init(arg.strip())
             elif cmd == "SCAN":
                 await bridge.scan_dump()
             elif cmd == "FEN":

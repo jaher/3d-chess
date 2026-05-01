@@ -59,6 +59,48 @@ SimpleBLE::ByteArray frame_from_bytes(std::initializer_list<uint8_t> bs) {
     return out;
 }
 
+// Last-connected MAC is cached so subsequent toggles go straight
+// to the right peripheral instead of doing a fresh 8 s scan. Path
+// matches the Python helper's so they share the cache: flipping
+// the toggle in the desktop app and then running the standalone
+// helper for protocol experiments both Just Work.
+std::string address_cache_path() {
+    const char* home = std::getenv("HOME");
+    if (!home || !*home) return std::string();
+    return std::string(home) + "/.cache/chessnut_bridge_address";
+}
+
+std::string load_cached_address() {
+    if (const char* env = std::getenv("CHESS_CHESSNUT_ADDRESS"))
+        if (*env) return env;
+    std::string path = address_cache_path();
+    if (path.empty()) return "";
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return "";
+    char buf[64];
+    std::string out;
+    if (std::fgets(buf, sizeof(buf), f)) out = buf;
+    std::fclose(f);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    return out;
+}
+
+void save_cached_address(const std::string& addr) {
+    std::string path = address_cache_path();
+    if (path.empty() || addr.empty()) return;
+    // Best-effort mkdir of the cache dir.
+    std::string dir = path.substr(0, path.find_last_of('/'));
+    if (!dir.empty()) {
+        std::string cmd = "mkdir -p " + dir + " 2>/dev/null";
+        int unused = std::system(cmd.c_str()); (void)unused;
+    }
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) return;
+    std::fputs((addr + "\n").c_str(), f);
+    std::fclose(f);
+}
+
 // ---------------------------------------------------------------------------
 // Bridge — runs all SimpleBLE work on a dedicated worker thread.
 // SimpleBLE's API is mostly synchronous (scan_for blocks, connect
@@ -163,23 +205,40 @@ private:
         if (adapters.empty()) { emit("ERROR no BLE adapter"); return; }
         SimpleBLE::Adapter adapter = adapters.front();
 
-        // Scan for "Chessnut Move" with an 8-second window.
+        // Two-pass discovery. First a short scan that accepts the
+        // cached MAC verbatim — catches the common case of "I just
+        // used the board last session". If that misses (board
+        // moved, never connected before, cache wiped), fall back
+        // to a full 8 s name-prefix scan.
+        std::string cached_addr = load_cached_address();
         SimpleBLE::Peripheral target;
         bool found = false;
-        adapter.set_callback_on_scan_found(
-            [&](SimpleBLE::Peripheral p) {
-                if (found) return;
-                std::string name;
-                try { name = p.identifier(); } catch (...) { return; }
-                if (name.rfind("Chessnut Move", 0) == 0 ||
-                    name == "Chessnut Move") {
-                    target = p;
-                    found  = true;
+        auto take = [&](SimpleBLE::Peripheral p, bool by_address) {
+            if (found) return;
+            try {
+                if (by_address) {
+                    if (p.address() != cached_addr) return;
+                } else {
+                    std::string name = p.identifier();
+                    if (!(name.rfind("Chessnut", 0) == 0)) return;
                 }
-            });
-        adapter.scan_for(8000);
+            } catch (...) { return; }
+            target = p;
+            found  = true;
+        };
+
+        if (!cached_addr.empty()) {
+            adapter.set_callback_on_scan_found(
+                [&](SimpleBLE::Peripheral p) { take(p, /*by_address=*/true); });
+            adapter.scan_for(2500);
+        }
         if (!found) {
-            emit("ERROR no Chessnut Move device found");
+            adapter.set_callback_on_scan_found(
+                [&](SimpleBLE::Peripheral p) { take(p, /*by_address=*/false); });
+            adapter.scan_for(8000);
+        }
+        if (!found) {
+            emit("ERROR no Chessnut device found");
             return;
         }
         connected_name_ = target.identifier();
@@ -223,6 +282,8 @@ private:
             emit(std::string("ERROR handshake failed: ") + e.what());
             return;
         }
+        // Cache the MAC so the next CONNECT skips the slow scan.
+        try { save_cached_address(target.address()); } catch (...) {}
         emit("CONNECTED " + connected_name_);
     }
 
