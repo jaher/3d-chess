@@ -71,6 +71,15 @@ struct GameState {
     float ai_anim_duration = 0.5f;
     int ai_from_col = 0, ai_from_row = 0, ai_to_col = 0, ai_to_row = 0;
     unsigned int ai_anim_tick = 0;
+    // The animation pipeline (ai_animating + tick_ai_animation) is
+    // also reused for sensor-driven moves in two-player mode so the
+    // user sees the same arrow + piece-flying visual when their
+    // opponent plays on the physical board. In that case the piece
+    // is *already* at its destination on the board, so the post-
+    // animation app_chessnut_sync_board would needlessly re-drive
+    // the firmware. This flag is set by the sensor handler to
+    // suppress that final sync; tick_ai_animation clears it.
+    bool ai_anim_skip_chessnut_sync = false;
 
     bool analysis_mode = false;
     int analysis_index = 0;

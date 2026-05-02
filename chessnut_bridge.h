@@ -32,6 +32,12 @@ public:
     void connect_to_address(const std::string& address);
     void send_fen(const std::string& fen, bool force);
     void send_led_hex(const std::string& bitmask_hex);
+    // Pulse the LED at (col, row) a few times with short on/off
+    // gaps to draw the user's attention to that square. Used right
+    // before a setMoveBoard so they can see where the motors are
+    // about to push a piece. col 0 = h-file, col 7 = a-file (matches
+    // the project's internal coords); row 0 = rank 1, row 7 = rank 8.
+    void blink_square(int col, int row);
     // Diagnostic — write 0x41 0x01 0x0B (getMovePieceState). Reply
     // arrives on a notify channel and is logged raw.
     void probe_piece_state();

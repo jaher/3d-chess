@@ -112,9 +112,11 @@ void save_cached_address(const std::string& addr) {
 
 struct Command {
     enum Kind { CONNECT, SCAN, CONNECT_TO, FEN, FEN_FORCE, LED,
-                PROBE_PIECE_STATE, QUIT };
+                BLINK_SQUARE, PROBE_PIECE_STATE, QUIT };
     Kind        kind;
     std::string arg;     // FEN string, LED hex, or MAC for CONNECT_TO
+    int         col = 0; // BLINK_SQUARE: target column (0 = h-file)
+    int         row = 0; // BLINK_SQUARE: target row    (0 = rank 1)
 };
 
 }  // namespace
@@ -153,6 +155,13 @@ struct ChessnutBridge::Impl {
     }
     void send_led_hex(const std::string& hex) {
         enqueue({Command::LED, hex});
+    }
+    void blink_square(int col, int row) {
+        Command c;
+        c.kind = Command::BLINK_SQUARE;
+        c.col  = col;
+        c.row  = row;
+        enqueue(std::move(c));
     }
     void probe_piece_state() {
         enqueue({Command::PROBE_PIECE_STATE, ""});
@@ -207,6 +216,9 @@ private:
                 case Command::LED:
                     do_write(to_byte_array(chessnut::make_led_frame(c.arg)),
                              "LED");
+                    break;
+                case Command::BLINK_SQUARE:
+                    do_blink_square(c.col, c.row);
                     break;
                 case Command::PROBE_PIECE_STATE:
                     // getMovePieceState — the firmware replies on a
@@ -554,6 +566,40 @@ private:
         emit(std::string("ACK ") + tag);
     }
 
+    // Three on/off pulses on a single square, then leave LEDs off.
+    // Total runtime ≈ 3 * (160 + 160) ≈ 960 ms — long enough to
+    // catch the eye, short enough not to feel sluggish before the
+    // motors start moving. Runs serially on the worker thread, so
+    // the next queued command (typically a setMoveBoard) only
+    // dispatches after the blink finishes — by design.
+    void do_blink_square(int col, int row) {
+        if (col < 0 || col > 7 || row < 0 || row > 7) return;
+        // LED bitmask layout per CHESSNUT.md: byte index = row,
+        // bit-within-byte = col (col 0 = h-file → bit 0).
+        uint8_t bytes_on[8]  = {0};
+        uint8_t bytes_off[8] = {0};
+        bytes_on[row] = static_cast<uint8_t>(1u << col);
+
+        auto to_hex = [](const uint8_t (&b)[8]) {
+            char buf[17];
+            for (int i = 0; i < 8; i++)
+                std::snprintf(buf + i * 2, 3, "%02x", b[i]);
+            buf[16] = '\0';
+            return std::string(buf);
+        };
+        std::string hex_on  = to_hex(bytes_on);
+        std::string hex_off = to_hex(bytes_off);
+
+        for (int blink = 0; blink < 3; blink++) {
+            do_write(to_byte_array(chessnut::make_led_frame(hex_on)),
+                     "BLINK_ON");
+            std::this_thread::sleep_for(std::chrono::milliseconds(160));
+            do_write(to_byte_array(chessnut::make_led_frame(hex_off)),
+                     "BLINK_OFF");
+            std::this_thread::sleep_for(std::chrono::milliseconds(160));
+        }
+    }
+
     StatusCallback              on_status_;
     std::atomic<bool>           running_{false};
     std::thread                 worker_;
@@ -589,6 +635,9 @@ void ChessnutBridge::send_fen(const std::string& fen, bool force) {
 }
 void ChessnutBridge::send_led_hex(const std::string& hex) {
     impl_->send_led_hex(hex);
+}
+void ChessnutBridge::blink_square(int col, int row) {
+    impl_->blink_square(col, row);
 }
 void ChessnutBridge::probe_piece_state()            { impl_->probe_piece_state(); }
 bool ChessnutBridge::running() const                { return impl_->running(); }

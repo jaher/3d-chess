@@ -1592,8 +1592,12 @@ static void tick_menu_physics(AppState& a, int64_t now) {
     queue_redraw(a);
 }
 
-// Commit an AI animation when its duration has elapsed: run the
-// move, play SFX, kick the eval refresh in live play.
+// Commit an AI / sensor-driven animation when its duration has
+// elapsed: run the move, play SFX, kick the eval refresh in live
+// play. ai_anim_skip_chessnut_sync is set by the sensor handler in
+// two-player mode (the piece is already at its destination
+// physically, so we shouldn't drive the firmware again — but the
+// LED last-move highlight still fires).
 static void tick_ai_animation(AppState& a, int64_t now) {
     GameState& gs = a.game;
     if (!gs.ai_animating) return;
@@ -1607,7 +1611,12 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         play_move_sfx(gs, sfx_capture);
         gs.ai_thinking = false;
         app_refresh_status(a);
-        app_chessnut_sync_board(a, /*force=*/false);
+        if (gs.ai_anim_skip_chessnut_sync) {
+            gs.ai_anim_skip_chessnut_sync = false;
+            app_chessnut_highlight_last_move(a);
+        } else {
+            app_chessnut_sync_board(a, /*force=*/false);
+        }
         if (a.mode == MODE_PLAYING) {
             trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
         }
@@ -2744,10 +2753,6 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         return;
     }
 
-    // Apply through the same plumbing handle_board_click uses for a
-    // mouse click — execute_move + sfx + status refresh + AI
-    // dispatch — so sensor-driven moves trigger Stockfish's reply
-    // automatically when in normal play.
     bool capture = gs.grid[to->row][to->col] >= 0;
     std::fprintf(stderr,
         "[chessnut/sensor] applying move %c%c%c%c (capture=%d)\n",
@@ -2756,6 +2761,26 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         static_cast<char>('a' + (7 - to->col)),
         static_cast<char>('1' + to->row),
         capture ? 1 : 0);
+
+    if (a.two_player_mode) {
+        // Two-player hot-seat: the off-board player is watching the
+        // screen, so animate the move the same way an AI move is
+        // animated (arrow + piece flying across the board). The
+        // ai_anim_skip_chessnut_sync flag tells tick_ai_animation
+        // to skip the post-animation sync_board — the piece is
+        // already at its destination on the physical board. SFX,
+        // status refresh, and trigger_eval all run inside
+        // tick_ai_animation when execute_move is called there.
+        gs.selected_col = gs.selected_row = -1;
+        gs.valid_moves.clear();
+        gs.ai_anim_skip_chessnut_sync = true;
+        start_ai_animation(a, from->col, from->row, to->col, to->row);
+        (void)capture;
+        return;
+    }
+
+    // Single-player: execute immediately so Stockfish's reply
+    // doesn't have to wait an extra 0.5 s animation we don't need.
     execute_move(gs, from->col, from->row, to->col, to->row);
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
@@ -2765,8 +2790,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     app_chessnut_highlight_last_move(a);
     if (a.mode == MODE_PLAYING && !gs.game_over) {
         trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
-        if (!a.two_player_mode &&
-            gs.white_turn != a.human_plays_white)
+        if (gs.white_turn != a.human_plays_white)
             trigger_ai(a);
     }
 }
@@ -2984,6 +3008,20 @@ void app_chessnut_sync_board(AppState& a, bool force) {
     std::fprintf(stderr,
         "[chessnut/sync] send force=%d fen=%s\n",
         force ? 1 : 0, fen.c_str());
+
+    // Soft-sync = a single move just landed in the digital game
+    // (after handle_board_click / voice / AI). Blink the
+    // destination square first so the user can see where the
+    // motors are about to drive a piece. Skipped for force-sync
+    // (game start / reset) — multiple pieces are about to move,
+    // pointing at one square would be misleading.
+    if (!force && !a.game.move_history.empty()) {
+        int fc, fr, tc, tr;
+        if (parse_uci_move(a.game.move_history.back(), fc, fr, tc, tr)) {
+            g_chessnut_bridge->blink_square(tc, tr);
+        }
+    }
+
     g_chessnut_bridge->send_fen(fen, force);
     // After a force-sync (game start / position load), poll the
     // firmware for its piece-state view. The reply lands as a
