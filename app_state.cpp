@@ -2809,13 +2809,15 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         return;
     }
 
-    // An invalid hand-move (wrong side, illegal piece, multi-piece
-    // junk) gets the same feedback in both single- and two-player
-    // modes: a damped board shake on screen (matches the
-    // mate_in_N challenge feedback), the mistake SFX + status,
-    // and a force-sync that drives the motors to push the piece
-    // back to its digital-state position.
-    auto reject = [&](const char* reason) {
+    // Reject a sensor frame: status + SFX + force-sync (motors push
+    // the piece back to its digital-state square) in both single-
+    // and two-player modes. The damped board shake fires only for
+    // genuine chess-rule violations — moving the wrong colour or
+    // making an illegal move. Sensor-noise rejections (multi-
+    // piece junk, no clear from/to, off-turn timing) skip the
+    // shake because the user often hasn't actually attempted any
+    // move at all.
+    auto reject = [&](const char* reason, bool invalid_chess_move) {
         std::fprintf(stderr,
             "[chessnut/sensor] reject: %s — delta=%zu\n",
             reason, deltas.size());
@@ -2823,7 +2825,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
                           " — re-syncing board";
         set_status(a, msg.c_str());
         audio_play(SoundEffect::Mistake);
-        a.board_shake_start_us = now_us(a);
+        if (invalid_chess_move) a.board_shake_start_us = now_us(a);
         // Force-sync drives pieces back to the digital state. The
         // next ~2 s of NOTIFY frames land in the settling window
         // above and are ignored.
@@ -2836,7 +2838,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // destination. Castling (4 deltas) and en passant (3 deltas)
     // would also need handling but are rarer; deferring those.
     if (deltas.size() != 2) {
-        reject("unrecognised state (multi-piece change)");
+        reject("unrecognised state (multi-piece change)", /*invalid_chess_move=*/false);
         return;
     }
 
@@ -2851,13 +2853,13 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         else                                    to   = &d;
     }
     if (!from || !to) {
-        reject("unrecognised state (no clear from/to)");
+        reject("unrecognised state (no clear from/to)", /*invalid_chess_move=*/false);
         return;
     }
     if (from->before != to->after) {
         // Not a piece "moved" pattern — could be promotion or a
         // sensor glitch where two unrelated squares changed.
-        reject("piece type mismatch (promotion or sensor glitch)");
+        reject("piece type mismatch (promotion or sensor glitch)", /*invalid_chess_move=*/false);
         return;
     }
 
@@ -2868,7 +2870,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             static_cast<int>(a.mode),
             a.game.ai_thinking ? 1 : 0,
             a.game.game_over ? 1 : 0);
-        reject("not your turn / game not active");
+        reject("not your turn / game not active", /*invalid_chess_move=*/false);
         return;
     }
 
@@ -2881,7 +2883,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     int piece_idx = gs.grid[from->row][from->col];
     if (piece_idx < 0 ||
         (gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
-        reject("wrong side moved");
+        reject("wrong side moved", /*invalid_chess_move=*/true);
         return;
     }
     auto legal = generate_legal_moves(gs, from->col, from->row);
@@ -2890,7 +2892,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         if (mc == to->col && mr == to->row) { ok = true; break; }
     }
     if (!ok) {
-        reject("illegal move");
+        reject("illegal move", /*invalid_chess_move=*/true);
         return;
     }
 
