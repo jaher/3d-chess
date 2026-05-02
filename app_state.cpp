@@ -2913,8 +2913,18 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     GameState& gs = a.game;
     int side_to_move_white = gs.white_turn ? 1 : 0;
     int piece_idx = gs.grid[from->row][from->col];
-    if (piece_idx < 0 ||
-        (gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
+    if (piece_idx < 0) {
+        // No piece at the "from" square in the digital state.
+        // Almost always a sensor-noise / motor-in-transit artefact
+        // (e.g. a pawn glided through e3 on its way from e2 to e4
+        // and the previous frame caught it mid-glide, so now we
+        // see "e3 lost piece" but digitally e3 has been empty all
+        // along). Force-sync the board back, but don't shake —
+        // the user didn't actually attempt anything wrong.
+        reject("no piece at source square", /*invalid_chess_move=*/false);
+        return;
+    }
+    if ((gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
         reject("wrong side moved", /*invalid_chess_move=*/true);
         return;
     }
