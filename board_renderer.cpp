@@ -1787,18 +1787,34 @@ void renderer_draw(GameState& gs, int width, int height,
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
-    // The 3D pass always renders into a multisampled FBO so we get
-    // free MSAA on every silhouette and curved surface. After the
-    // 3D draws we resolve:
+    // The 3D pass renders into a multisampled FBO so we get free
+    // MSAA on every silhouette and curved surface. After the 3D
+    // draws we resolve:
     //   * cartoon outline on  → resolve into the single-sample
     //     g_scene_fbo so the post-process can sample it as textures;
     //     the post-process then writes to the default FB.
     //   * cartoon outline off → resolve straight to the default FB.
     // NDC UI overlays always draw to the default FB after the
     // resolve / post-process so they aren't affected.
+    //
+    // Web (Emscripten/WebGL 2) skips this path: the browser canvas
+    // already provides MSAA for free (antialias=true is the default
+    // emscripten attribute), and a custom MS FBO has format-
+    // compatibility constraints with the WebGL canvas's default FB
+    // that aren't always met (RGBA8/DEPTH_COMPONENT24 vs the
+    // canvas's RGBA8/DEPTH24_STENCIL8). Falling back to the original
+    // direct-render path on web — which is what existed before
+    // these MSAA changes.
+#ifdef __EMSCRIPTEN__
+    if (cartoon_outline) ensure_scene_fbo(width, height);
+    const GLuint main_pass_fbo = cartoon_outline
+        ? g_scene_fbo
+        : static_cast<GLuint>(default_fbo);
+#else
     ensure_scene_ms_fbo(width, height);
     if (cartoon_outline) ensure_scene_fbo(width, height);
     const GLuint main_pass_fbo = g_scene_ms_fbo;
+#endif
 
     float aspect = static_cast<float>(width) / static_cast<float>(height);
     float deg2rad = static_cast<float>(M_PI) / 180.0f;
@@ -2056,9 +2072,15 @@ void renderer_draw(GameState& gs, int width, int height,
     }
 
     // --- MSAA resolve + (optional) cartoon-outline post-process ---
-    // The 3D pass above wrote into the multisample FBO. Resolve it
-    // either into the single-sample scene FBO (so the outline shader
-    // can sample colour + depth) or directly to the default FB.
+    // Desktop: 3D wrote into the MS FBO; resolve to either the
+    // single-sample scene FBO (outline) or default FB (no outline).
+    // Web: 3D wrote directly to scene_fbo / default FB, just run
+    // the post-process if needed (no resolve).
+#ifdef __EMSCRIPTEN__
+    if (cartoon_outline) {
+        run_outline_post_process(default_fbo, width, height);
+    }
+#else
     if (cartoon_outline) {
         resolve_scene_ms_to(g_scene_fbo, width, height,
                             /*include_depth=*/true);
@@ -2067,6 +2089,7 @@ void renderer_draw(GameState& gs, int width, int height,
         resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
                             width, height, /*include_depth=*/false);
     }
+#endif
 
     draw_score_graph(gs, human_plays_white);
     draw_move_list(gs);
@@ -2106,14 +2129,22 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
-    // 3D pass renders into the multisample scene FBO so menu pieces
-    // tumbling against the dark backdrop get free MSAA. After the
-    // 3D draws we resolve into either the single-sample scene FBO
-    // (cartoon outline on) or the default FB (off). NDC UI overlays
-    // always draw to the default FB after the resolve.
+    // 3D pass renders into the multisample scene FBO on desktop so
+    // menu pieces tumbling against the dark backdrop get free MSAA;
+    // resolve before the UI overlay. On web the browser canvas
+    // already does MSAA for free and the MS FBO has format-
+    // compatibility issues with the WebGL default FB, so fall back
+    // to the original direct-render path.
+#ifdef __EMSCRIPTEN__
+    if (cartoon_outline) {
+        ensure_scene_fbo(width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
+    }
+#else
     ensure_scene_ms_fbo(width, height);
     if (cartoon_outline) ensure_scene_fbo(width, height);
     glBindFramebuffer(GL_FRAMEBUFFER, g_scene_ms_fbo);
+#endif
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -2163,6 +2194,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glBindVertexArray(0);
     }
 
+#ifdef __EMSCRIPTEN__
+    if (cartoon_outline) {
+        run_outline_post_process(default_fbo, width, height);
+    }
+#else
     if (cartoon_outline) {
         resolve_scene_ms_to(g_scene_fbo, width, height,
                             /*include_depth=*/true);
@@ -2171,6 +2207,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
                             width, height, /*include_depth=*/false);
     }
+#endif
 
     // --- UI overlay ---
     glDisable(GL_DEPTH_TEST);
