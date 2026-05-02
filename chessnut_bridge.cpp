@@ -4,7 +4,7 @@
 // write_request blocks); driving it from a worker keeps the GTK
 // main thread unblocked.
 //
-// See PROTOCOL.md (project root) for the wire format and
+// See CHESSNUT.md (project root) for the wire format and
 // chessnut_encode.h for the named opcodes / pre-built command frames.
 
 #ifndef __EMSCRIPTEN__
@@ -39,7 +39,7 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// GATT — see PROTOCOL.md in the repo root. Same characteristic
+// GATT — see CHESSNUT.md in the repo root. Same characteristic
 // UUID family as the Chessnut Air community-RE'd protocol; Move
 // adds the 8261/8271 pair.
 //
@@ -240,11 +240,19 @@ private:
 
         // Track addresses we've already reported so we don't spam
         // the picker if the same device fires multiple advertising
-        // events during the scan window. Filter to peripherals
-        // whose name contains "chessnut" (case-insensitive) — the
-        // picker has finite vertical space and a typical office
+        // events during the scan window. Filter by name keyword —
+        // the picker has finite vertical space and a typical office
         // BLE scan turns up 20+ irrelevant devices. For an
         // unfiltered view, use tools/simpleble_scan.
+        //
+        // Surfaced keywords: "chessnut" (Move + Air firmware) and
+        // "phantom" / "gochess" (Particula GoChess Phantom family —
+        // motorised boards similar to the Move). Phantom boards
+        // currently fail at the post-connect handshake because we
+        // only ship the Chessnut wire format, but listing them in
+        // the picker still helps users see the board is in range
+        // and gives us somewhere to dispatch a board-specific
+        // driver from once the Phantom protocol is wired up.
         std::set<std::string> seen;
         adapter.set_callback_on_scan_found(
             [&](SimpleBLE::Peripheral p) {
@@ -260,7 +268,11 @@ private:
                     lname.push_back(static_cast<char>(
                         std::tolower(static_cast<unsigned char>(c))));
                 }
-                if (lname.find("chessnut") == std::string::npos) return;
+                bool is_known_board =
+                    lname.find("chessnut") != std::string::npos ||
+                    lname.find("phantom")  != std::string::npos ||
+                    lname.find("gochess")  != std::string::npos;
+                if (!is_known_board) return;
                 if (!seen.insert(addr).second) return;
                 if (name.empty()) name = "(no name)";
                 emit("DEVICE " + addr + " " + name);
@@ -315,14 +327,27 @@ private:
             ? load_cached_address() : explicit_addr;
         SimpleBLE::Peripheral target;
         bool found = false;
+        // Same name keywords as the picker scan — kept in sync so a
+        // device the user can see in the picker is also reachable
+        // via the no-cached-MAC auto-connect fallback.
+        auto name_matches = [](const std::string& name) {
+            std::string l;
+            l.reserve(name.size());
+            for (char c : name) {
+                l.push_back(static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c))));
+            }
+            return l.find("chessnut") != std::string::npos ||
+                   l.find("phantom")  != std::string::npos ||
+                   l.find("gochess")  != std::string::npos;
+        };
         auto take = [&](SimpleBLE::Peripheral p, bool by_address) {
             if (found) return;
             try {
                 if (by_address) {
                     if (p.address() != want_addr) return;
                 } else {
-                    std::string name = p.identifier();
-                    if (!(name.rfind("Chessnut", 0) == 0)) return;
+                    if (!name_matches(p.identifier())) return;
                 }
             } catch (...) { return; }
             target = p;
@@ -345,7 +370,7 @@ private:
             adapter.scan_for(8000);
         }
         if (!found) {
-            emit("ERROR no Chessnut device found");
+            emit("ERROR no Chessnut / Phantom device found");
             return;
         }
         connected_name_ = target.identifier();

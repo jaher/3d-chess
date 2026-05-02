@@ -2996,7 +2996,7 @@ void app_chessnut_sync_board(AppState& a, bool force) {
     app_chessnut_highlight_last_move(a);
 }
 
-// LED bitmask layout (per PROTOCOL.md): "row-major from h1".
+// LED bitmask layout (per CHESSNUT.md): "row-major from h1".
 // 8 bytes = 64 bits, byte index = rank-1 (row), bit-within-byte =
 // h..a (col 0=h, col 7=a in this project's internal grid). bit_for_square
 // returns the (byte, mask) tuple to OR into the bitmask buffer.

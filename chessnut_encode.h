@@ -5,7 +5,7 @@
 // Bluetooth impl (web/chessnut_web.cpp) share one source of truth.
 // Mirrors the Python helper in tools/chessnut_bridge.py byte-for-byte.
 //
-// See PROTOCOL.md (project root) for the full reverse-engineering
+// See CHESSNUT.md (project root) for the full reverse-engineering
 // notes — UUIDs, opcodes, and the firmware's piece-encoding map.
 
 #include <array>

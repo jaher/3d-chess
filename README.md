@@ -312,7 +312,7 @@ browser can't open a second BLE connection — disconnect the phone
 first.
 
 The protocol details (GATT UUIDs, opcodes, piece encoding) live in
-the reverse-engineering notes at [`PROTOCOL.md`](PROTOCOL.md) in
+the reverse-engineering notes at [`CHESSNUT.md`](CHESSNUT.md) in
 this repo — extracted from the official Android app and cross-
 verified against the documented Chessnut Air community protocol. Move's wire format
 is a strict superset of Air's, with one extra opcode (`0x42`) for

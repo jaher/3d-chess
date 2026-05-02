@@ -43,7 +43,7 @@ Stdout responses (one per line):
   ACK <cmd>                successful completion of the named command.
 
 Protocol details from third_party reverse-engineering — see
-PROTOCOL.md at the repo root for the full spec.
+CHESSNUT.md at the repo root for the full spec.
 """
 
 from __future__ import annotations  # defer type-annotation evaluation
@@ -90,7 +90,7 @@ def save_cached_address(addr: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# GATT UUIDs — see PROTOCOL.md
+# GATT UUIDs — see CHESSNUT.md
 # ---------------------------------------------------------------------------
 SUFFIX = "-2877-41c3-b46e-cf057c562023"
 
