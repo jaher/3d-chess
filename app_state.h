@@ -264,14 +264,20 @@ struct AppState {
     // attempt with a permanent extra diff.
     std::array<std::array<char, 8>, 8> chessnut_last_sensor_grid{};
     bool chessnut_sensor_baseline_set = false;
-    // "Pieces missing" modal — opens automatically on game start /
-    // mid-game whenever the firmware reports a square that should
-    // hold a piece is empty (commonly: a piece with a dead ID-chip
-    // battery, or pieces left off the board). Blocks game input
-    // until either every piece is detected or the user clicks
-    // "Exit to Menu". Auto-closes when the board agrees with the
-    // digital state again.
+    // Modal popup that blocks game input when the physical board
+    // disagrees with the digital state at game start. Two flavours
+    // depending on what's wrong:
+    //   * Missing — pieces are unaccounted for (typically a Chessnut
+    //     Move piece with a dead ID-chip battery, or pieces left
+    //     off the board). chessnut_missing_squares_msg lists the
+    //     squares.
+    //   * WrongLayout — every piece is detected but they're not in
+    //     the correct starting position. The user just needs to
+    //     reset the layout.
+    // Auto-closes when the disagreement resolves.
+    enum class ChessnutModalType { Missing, WrongLayout };
     bool chessnut_missing_modal_open = false;
+    ChessnutModalType chessnut_missing_modal_type = ChessnutModalType::Missing;
     std::string chessnut_missing_squares_msg;
     bool chessnut_missing_exit_hover = false;
 

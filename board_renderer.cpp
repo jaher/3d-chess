@@ -1402,6 +1402,7 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
 // instead of Yes/No, and an extra body line listing the squares
 // the firmware reports as empty.
 void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
+                                          bool missing,
                                           bool exit_hover) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1467,33 +1468,39 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
 
     std::vector<float> tv;
 
-    // Title.
+    // Title + body strings depend on what's wrong.
+    std::string title, body1, body2;
+    if (missing) {
+        title = "Place all pieces on the board";
+        body1 = squares_msg.empty()
+            ? std::string("No pieces detected on the board")
+            : (std::string("Missing: ") + squares_msg);
+        body2 = "(or check the piece battery)";
+    } else {
+        title = "Place pieces in the starting position";
+        body1 = "All pieces detected, but the layout is wrong";
+        body2 = "rnbqkbnr / pppppppp on ranks 8 and 7";
+    }
+
     {
-        std::string title = "Place all pieces on the board";
-        float cw = 0.030f, ch = 0.046f;
+        float cw = 0.028f, ch = 0.044f;
         float tw = title.size() * cw * 0.7f;
         add_screen_string(tv, -tw * 0.5f, 0.16f, cw, ch, title);
     }
     int title_count = static_cast<int>(tv.size() / 5);
 
-    // Body line 1: list of missing squares (or a fallback).
     {
-        std::string body = squares_msg.empty()
-            ? std::string("No pieces detected on the board")
-            : (std::string("Missing: ") + squares_msg);
         float cw = 0.022f, ch = 0.034f;
-        float bw = body.size() * cw * 0.7f;
-        add_screen_string(tv, -bw * 0.5f, 0.06f, cw, ch, body);
+        float bw = body1.size() * cw * 0.7f;
+        add_screen_string(tv, -bw * 0.5f, 0.06f, cw, ch, body1);
     }
     int body1_end = static_cast<int>(tv.size() / 5);
     int body1_count = body1_end - title_count;
 
-    // Body line 2: hint about piece batteries.
     {
-        std::string hint = "(or check the piece battery)";
         float cw = 0.020f, ch = 0.030f;
-        float hw = hint.size() * cw * 0.7f;
-        add_screen_string(tv, -hw * 0.5f, 0.005f, cw, ch, hint);
+        float hw = body2.size() * cw * 0.7f;
+        add_screen_string(tv, -hw * 0.5f, 0.005f, cw, ch, body2);
     }
     int body2_end = static_cast<int>(tv.size() / 5);
     int body2_count = body2_end - body1_end;

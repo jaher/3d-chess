@@ -1905,6 +1905,8 @@ static void render_board(AppState& a, int width, int height) {
     if (a.chessnut_missing_modal_open) {
         renderer_draw_chessnut_missing_modal(
             a.chessnut_missing_squares_msg,
+            a.chessnut_missing_modal_type ==
+                AppState::ChessnutModalType::Missing,
             a.chessnut_missing_exit_hover);
     }
 
@@ -2560,38 +2562,100 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             d.after  ? d.after  : '?');
     }
 
-    // Maintain the "pieces missing" modal based on the current
-    // sensor vs digital disagreement. Lambda so we can call it
-    // both at baseline establishment and on every later stable
-    // frame — the modal must auto-close as soon as the board
-    // re-agrees with the digital state.
-    auto refresh_missing_modal = [&] {
-        std::string list;
-        int n_missing = 0;
-        for (const auto& d : digital_diffs) {
-            // Only count squares where digital has a piece and
-            // sensor sees nothing. Extra/wrong-piece squares
-            // don't get listed here (rarer, and we don't want
-            // to crowd the dialog).
-            if (d.before == ' ' || d.after != ' ') continue;
-            if (n_missing > 0) list += ", ";
-            list += static_cast<char>('a' + (7 - d.col));
-            list += static_cast<char>('1' + d.row);
-            n_missing++;
-            if (n_missing >= 8) { list += "…"; break; }
+    // Categorise digital_diffs into a "missing" list (digital has
+    // piece, sensor empty), an "extra" list (digital empty, sensor
+    // has piece), and pair them by piece type. A paired
+    // missing+extra of the same type is a piece that has *moved*
+    // (e.g. mid-pickup-then-drop, or a settled move whose pickup
+    // and drop landed on separate sensor frames). Unpaired pieces
+    // are the actual board-vs-digital desync.
+    struct PairedMove { int from_idx; int to_idx; };  // indices into digital_diffs
+    std::vector<int>        unpaired_missing_idx;
+    std::vector<int>        unpaired_extra_idx;
+    std::vector<PairedMove> paired_moves;
+    {
+        std::vector<int> miss_idx, extra_idx;
+        for (size_t i = 0; i < digital_diffs.size(); i++) {
+            const auto& d = digital_diffs[i];
+            if (d.before != ' ' && d.after == ' ')
+                miss_idx.push_back(static_cast<int>(i));
+            else if (d.before == ' ' && d.after != ' ')
+                extra_idx.push_back(static_cast<int>(i));
+            // d.before != ' ' && d.after != ' ' && before != after
+            // is a "wrong piece" (promotion / sensor glitch); we
+            // leave it as-is and don't count it as missing/extra.
         }
+        std::vector<bool> extra_used(extra_idx.size(), false);
+        for (int mi : miss_idx) {
+            char piece = digital_diffs[mi].before;
+            int matched_extra = -1;
+            for (size_t ei = 0; ei < extra_idx.size(); ei++) {
+                if (extra_used[ei]) continue;
+                if (digital_diffs[extra_idx[ei]].after == piece) {
+                    matched_extra = static_cast<int>(ei);
+                    break;
+                }
+            }
+            if (matched_extra >= 0) {
+                extra_used[matched_extra] = true;
+                paired_moves.push_back({mi, extra_idx[matched_extra]});
+            } else {
+                unpaired_missing_idx.push_back(mi);
+            }
+        }
+        for (size_t ei = 0; ei < extra_idx.size(); ei++) {
+            if (!extra_used[ei]) unpaired_extra_idx.push_back(extra_idx[ei]);
+        }
+    }
+
+    // Maintain the board-disagreement modal. `can_open` distinguishes
+    // "first stable frame after game start" (allowed to open the
+    // modal) from "every later stable frame mid-game" (only allowed
+    // to close it — opening mid-game would flash spuriously during
+    // pickup-vs-drop sensor transients).
+    auto refresh_missing_modal = [&](bool can_open) {
+        std::string missing_list;
+        int n_missing = static_cast<int>(unpaired_missing_idx.size());
+        for (int i = 0; i < n_missing && i < 8; i++) {
+            const auto& d = digital_diffs[unpaired_missing_idx[i]];
+            if (i > 0) missing_list += ", ";
+            missing_list += static_cast<char>('a' + (7 - d.col));
+            missing_list += static_cast<char>('1' + d.row);
+        }
+        if (n_missing > 8) missing_list += "…";
+
+        // Decide what state the modal *should* be in.
+        bool want_open = false;
+        AppState::ChessnutModalType want_type = AppState::ChessnutModalType::Missing;
+        std::string want_status;
         if (n_missing > 0) {
-            bool was_open = a.chessnut_missing_modal_open;
+            want_open = true;
+            want_type = AppState::ChessnutModalType::Missing;
+            want_status = "Chessnut: pieces missing on " + missing_list +
+                          " — place them or check the piece battery";
+        } else if (!paired_moves.empty() || !unpaired_extra_idx.empty()) {
+            // Every piece is detected somewhere on the board, but
+            // the layout doesn't match the digital starting
+            // position. Mid-game this gets handled by the move-
+            // detection paths below (paired_moves get applied as
+            // moves), so we only open the WrongLayout modal at
+            // game start.
+            want_open = true;
+            want_type = AppState::ChessnutModalType::WrongLayout;
+            want_status = "Chessnut: place pieces in the starting position";
+        }
+
+        const bool was_open = a.chessnut_missing_modal_open;
+        if (want_open && (was_open || can_open)) {
             a.chessnut_missing_modal_open  = true;
-            a.chessnut_missing_squares_msg = list;
+            a.chessnut_missing_modal_type  = want_type;
+            a.chessnut_missing_squares_msg = missing_list;
             if (!was_open) {
-                std::string status = "Chessnut: pieces missing on " + list +
-                                     " — place them or check the piece battery";
-                set_status(a, status.c_str());
+                set_status(a, want_status.c_str());
                 audio_play(SoundEffect::Mistake);
             }
             queue_redraw(a);
-        } else if (a.chessnut_missing_modal_open) {
+        } else if (!want_open && was_open) {
             a.chessnut_missing_modal_open  = false;
             a.chessnut_missing_squares_msg.clear();
             a.chessnut_missing_exit_hover  = false;
@@ -2616,17 +2680,44 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         std::fprintf(stderr,
             "[chessnut/sensor] baseline established (%zu disagreements with digital)\n",
             digital_diffs.size());
-        refresh_missing_modal();
+        refresh_missing_modal(/*can_open=*/true);
         return;
     }
 
     if (deltas.empty()) {
-        // Stable frame: re-evaluate whether pieces are missing.
-        // Closes the modal as soon as every square agrees with the
-        // digital state, opens it if a piece disappears mid-game
-        // (e.g. user knocks one off the board).
-        if (!settling) refresh_missing_modal();
-        return;
+        // Stable frame. Two things to check.
+        //
+        // 1) A "settled move" — pickup and drop landed in different
+        //    sensor frames so the per-frame delta was 1 each time
+        //    (filtered as mid-pickup). The completed move shows up
+        //    here as exactly one paired missing+extra in
+        //    digital_diffs. Promote that pair to a synthesised
+        //    delta and fall through to the normal apply path so
+        //    the move actually registers.
+        //
+        // 2) Modal refresh — close it if conditions resolved.
+        //    can_open=false so we don't flash the modal during
+        //    transient pickup states; the modal can only be opened
+        //    via the establish-baseline path above.
+        if (!settling && paired_moves.size() == 1 &&
+            unpaired_missing_idx.empty() && unpaired_extra_idx.empty() &&
+            !a.game.ai_animating) {
+            const auto& md = digital_diffs[paired_moves[0].from_idx];
+            const auto& ed = digital_diffs[paired_moves[0].to_idx];
+            std::fprintf(stderr,
+                "[chessnut/sensor] settled move detected via digital_diff: %c%c%c%c\n",
+                static_cast<char>('a' + (7 - md.col)),
+                static_cast<char>('1' + md.row),
+                static_cast<char>('a' + (7 - ed.col)),
+                static_cast<char>('1' + ed.row));
+            deltas.push_back(Diff{md.row, md.col, md.before, ' '});
+            deltas.push_back(Diff{ed.row, ed.col, ' ',       ed.after});
+        }
+        if (deltas.empty()) {
+            if (!settling) refresh_missing_modal(/*can_open=*/false);
+            return;
+        }
+        // Fall through with synthesised deltas to the apply path.
     }
 
     if (deltas.size() == 1) {
@@ -2647,16 +2738,13 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         return;
     }
 
-    // Pieces-missing modal is up — game is paused. Don't promote
-    // any sensor delta into a digital move; we also re-check the
-    // missing-piece state in case the user just placed a piece
-    // back (which would have shown up as a delta, not a stable
-    // frame, so we wouldn't have caught it in the deltas.empty()
-    // branch above).
+    // Modal currently up — re-check whether it should still be
+    // there given the latest sensor state, then ignore the delta
+    // as a move attempt (game is paused while modal is up).
     if (a.chessnut_missing_modal_open) {
         std::fprintf(stderr,
             "[chessnut/sensor] missing-pieces modal open — ignoring delta\n");
-        refresh_missing_modal();
+        refresh_missing_modal(/*can_open=*/false);
         return;
     }
 

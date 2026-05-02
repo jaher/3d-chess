@@ -76,13 +76,21 @@ bool analysis_continue_button_hit_test(double mx, double my,
 bool flag_hit_test(const ClothFlag& flag,
                    double mx, double my, int width, int height);
 
-// "Pieces missing" modal — drawn on top of MODE_PLAYING when the
-// physical Chessnut Move board reports squares that should hold
-// pieces are empty. Single "Exit to Menu" button; auto-closes
-// from the app side when the board re-agrees with the digital
-// state. squares_msg is a comma-separated list (e.g. "e8, a7")
-// or empty if all pieces are missing.
+// Board-doesn't-match-digital-state modal — drawn on top of
+// MODE_PLAYING when the physical Chessnut Move board disagrees
+// with the digital state at game start. Single "Exit to Menu"
+// button; auto-closes from the app side when the disagreement
+// resolves.
+//
+// missing=true   → pieces are unaccounted for; squares_msg is a
+//                  comma-separated list (e.g. "e8, a7"). Empty
+//                  string means "no pieces at all".
+// missing=false  → every piece is on the board but in the wrong
+//                  position; squares_msg is ignored. The user
+//                  needs to reset the layout to the starting
+//                  position.
 void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
+                                          bool missing,
                                           bool exit_hover);
 bool chessnut_missing_exit_button_hit_test(double mx, double my,
                                            int width, int height);
