@@ -1,5 +1,5 @@
 // Web Bluetooth driver for the Chessnut Move physical board. Mirrors
-// the desktop SimpleBLE implementation in chessnut_bridge_native.cpp,
+// the desktop SimpleBLE implementation in chessnut_bridge.cpp,
 // but uses the browser's navigator.bluetooth API instead. Encoder
 // shared via chessnut_encode.h so the wire format can't drift.
 //
@@ -71,7 +71,7 @@ EM_JS(void, chessnut_web_start_js, (), {
     // Post-subscribe handshake + diagnostic probe — these byte
     // sequences must match chessnut_encode.h's CMD_STREAM_ENABLE,
     // CMD_AUX_INIT and CMD_GET_PIECE_STATE byte-for-byte. See
-    // chessnut_bridge_native.cpp do_connect for the full rationale.
+    // chessnut_bridge.cpp do_connect for the full rationale.
     // The Android app also conditionally writes OPCODE_LEGACY_INIT
     // (0x27 0x01 0x00), but ONLY for non-"Chessnut"-named devices,
     // so we skip it.

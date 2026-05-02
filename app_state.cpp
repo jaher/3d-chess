@@ -2883,7 +2883,7 @@ void app_chessnut_shutdown(AppState& a) {
 }
 
 void app_chessnut_forget_cached_device(AppState& a) {
-    // Match the cache path used by chessnut_bridge_native.cpp's
+    // Match the cache path used by chessnut_bridge.cpp's
     // load_cached_address (and the Python helper's identical
     // ADDRESS_CACHE in tools/chessnut_bridge.py).
     const char* home = std::getenv("HOME");

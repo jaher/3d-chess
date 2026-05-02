@@ -1,7 +1,7 @@
 #pragma once
 
 // Pure-logic Chessnut Move wire-format encoder. Header-only so the
-// desktop native impl (chessnut_bridge_native.cpp) and the web Web-
+// desktop native impl (chessnut_bridge.cpp) and the web Web-
 // Bluetooth impl (web/chessnut_web.cpp) share one source of truth.
 // Mirrors the Python helper in tools/chessnut_bridge.py byte-for-byte.
 //
@@ -51,7 +51,7 @@ constexpr uint8_t LED_PAYLOAD_LEN       = 0x08;
 
 // ---------------------------------------------------------------------------
 // Pre-built command frames used by the post-subscribe handshake and the
-// diagnostic probe. All three drivers (chessnut_bridge_native.cpp,
+// diagnostic probe. All three drivers (chessnut_bridge.cpp,
 // web/chessnut_web.cpp, tools/chessnut_bridge.py) send the same bytes —
 // the C++ side reuses these constants directly; the JS / Python sides
 // mirror them as their own literals, kept in sync by hand.

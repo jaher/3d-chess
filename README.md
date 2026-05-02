@@ -266,15 +266,14 @@ SimpleBLE static library builds automatically on first
 `make` invocation, the same way whisper.cpp does. No Python
 runtime dependency in the default path.
 
-#### Debugging fallback: Python bridge
+#### Standalone Python helper
 
-For protocol experimentation or debugging, set
-`CHESS_CHESSNUT_USE_PYTHON=1` to swap the in-process implementation
-for the `tools/chessnut_bridge.py` helper subprocess (uses
-[`bleak`](https://github.com/hbldh/bleak); install with
-`pip install --user bleak`). The Python helper logs every BLE
-notification to stdout and is easy to drive by hand for one-off
-captures:
+The `tools/chessnut_bridge.py` script speaks the same wire format
+as the in-app driver and is useful for protocol experimentation
+without launching the full game. It uses
+[`bleak`](https://github.com/hbldh/bleak) (`pip install --user
+bleak`) and logs every BLE notification to stdout, so it's easy
+to drive by hand for one-off captures:
 
 ```bash
 python3 tools/chessnut_bridge.py
@@ -283,8 +282,8 @@ FEN_FORCE rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
 QUIT
 ```
 
-Override the script path with `CHESS_CHESSNUT_BRIDGE` and the
-interpreter with `CHESS_PYTHON` if your environment differs.
+The chess binary itself does *not* shell out to this script — it
+talks to the board directly via SimpleBLE.
 
 #### Web build (Web Bluetooth)
 
@@ -571,24 +570,19 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               as the desktop path.
 
   # Chessnut Move physical-board mirroring
-  chessnut_encode.h        -- Header-only FEN → 32-byte board
-                              encoder + 0x42 setMoveBoard frame
-                              builder. Shared by every impl below
+  chessnut_encode.h        -- Header-only wire-format header.
+                              Named opcodes (OPCODE_*, CMD_*),
+                              FEN → 32-byte board encoder, and the
+                              setMoveBoard / LED frame builders.
+                              Shared by the desktop and web drivers
                               so the wire format can't drift.
   chessnut_bridge.h        -- Desktop-only public PIMPL interface.
-                              Selects a concrete impl at
-                              construction time based on
-                              CHESS_CHESSNUT_USE_PYTHON.
-  chessnut_bridge.cpp      -- Desktop dispatcher.
-  chessnut_bridge_impl.h   -- Internal Impl interface + factories.
-  chessnut_bridge_native.cpp
-                           -- Default desktop impl: SimpleBLE
-                              in-process. Worker thread + queue.
-  chessnut_bridge_python.cpp
-                           -- Debug-fallback impl: fork+exec the
-                              Python helper for protocol traces.
-  tools/chessnut_bridge.py -- Long-running Python helper. Uses
-                              `bleak` for BLE.
+  chessnut_bridge.cpp      -- Desktop driver: SimpleBLE in-process,
+                              worker thread + command queue.
+  tools/chessnut_bridge.py -- Standalone Python helper for
+                              protocol experimentation (uses
+                              `bleak`). Speaks the same wire
+                              format; not used by the main binary.
   web/chessnut_web.cpp     -- Web build: bridge to the browser's
                               navigator.bluetooth API. Reuses
                               chessnut_encode.h for the wire

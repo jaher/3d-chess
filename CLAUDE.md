@@ -92,7 +92,7 @@ If you change the wire format (e.g. switch to a different opcode or
 re-encode the board), there's a single source of truth:
 `chessnut_encode.h`. The header-only encoder is shared by:
 
-- Desktop native impl (`chessnut_bridge_native.cpp`).
+- Desktop SimpleBLE impl (`chessnut_bridge.cpp`).
 - Web Bluetooth impl (`web/chessnut_web.cpp`).
 
 Update `chessnut_encode.h` and **also** mirror the change in the
