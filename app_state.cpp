@@ -763,6 +763,11 @@ void app_enter_game(AppState& a) {
     }
     app_refresh_status(a);
     queue_redraw(a);
+    // Drop the sensor-frame baseline so the next stable frame after
+    // motors settle gets re-checked against the starting position.
+    // Any squares still disagreeing then are missing pieces / dead
+    // ID-chip batteries, and the user gets a status hint.
+    a.chessnut_sensor_baseline_set = false;
     // First-time-on-start position sync. force=true so the firmware
     // always replans from current sensor state — handles boards
     // that were left in arbitrary positions after the last session.
@@ -2422,81 +2427,158 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             return;
         }
     }
-    auto sensor   = chessnut::board_bytes_to_grid(bytes);
-    auto expected = digital_grid_snapshot(a.game);
+    auto sensor  = chessnut::board_bytes_to_grid(bytes);
+    auto digital = digital_grid_snapshot(a.game);
 
-    // Collect (row, col, before, after) tuples for every square
-    // that differs between the digital state and the sensor frame.
+    // Settling window — motors are mid-motion, sensor frames during
+    // this period are transient and don't match the eventual
+    // resting state. Used both to silence move-detection during the
+    // window and to suppress error chatter from our own animations.
+    constexpr int64_t kSyncSettlingUs = 2'000'000;  // 2 s
+    int64_t now = now_us(a);
+    bool settling = (a.chessnut_last_sync_us != 0) &&
+                    (now - a.chessnut_last_sync_us < kSyncSettlingUs);
+
+    auto& prev = a.chessnut_last_sensor_grid;
+    // Always copy the new sensor reading into prev at end-of-frame
+    // — the *next* frame should diff against this one. The
+    // baseline_set flag is updated explicitly in the dedicated
+    // "establish baseline" branch below, not here, so we can hold
+    // off until motors finish settling before declaring a baseline.
+    struct PrevUpdater {
+        std::array<std::array<char, 8>, 8>& target;
+        const std::array<std::array<char, 8>, 8>& source;
+        ~PrevUpdater() { target = source; }
+    } prev_guard{prev, sensor};
+
+    // Compute deltas against the *previous* sensor frame (the move
+    // the user actually made on the board) AND the static
+    // disagreements with the digital state (purely diagnostic).
     struct Diff { int row, col; char before, after; };
-    std::vector<Diff> diffs;
+    std::vector<Diff> deltas;        // sensor[t-1] vs sensor[t]
+    std::vector<Diff> digital_diffs; // digital   vs sensor[t]
     for (int r = 0; r < 8; r++) {
         for (int c = 0; c < 8; c++) {
-            if (expected[r][c] != sensor[r][c]) {
-                diffs.push_back(Diff{r, c, expected[r][c], sensor[r][c]});
+            if (a.chessnut_sensor_baseline_set &&
+                prev[r][c] != sensor[r][c]) {
+                deltas.push_back(Diff{r, c, prev[r][c], sensor[r][c]});
+            }
+            if (digital[r][c] != sensor[r][c]) {
+                digital_diffs.push_back(
+                    Diff{r, c, digital[r][c], sensor[r][c]});
             }
         }
     }
+
     std::fprintf(stderr,
-        "[chessnut/sensor] frame diff=%zu (mode=%d two_player=%d "
-        "white_turn=%d)\n",
-        diffs.size(),
+        "[chessnut/sensor] frame delta=%zu digital_diff=%zu (mode=%d "
+        "two_player=%d white_turn=%d settling=%d baseline_set=%d)\n",
+        deltas.size(), digital_diffs.size(),
         static_cast<int>(a.mode),
         a.two_player_mode ? 1 : 0,
-        a.game.white_turn ? 1 : 0);
-    // Dump both grids side-by-side for easy visual comparison.
-    // Layout: rank 8 at top, rank 1 at bottom; a-file on the left
-    // of each block (matches FEN reading order). 'X' marks squares
-    // where digital and sensor differ.
-    auto fmt_cell = [](char c) -> char { return c ? c : '.'; };
-    std::fprintf(stderr, "      digital            sensor             diff\n");
+        a.game.white_turn ? 1 : 0,
+        settling ? 1 : 0,
+        a.chessnut_sensor_baseline_set ? 1 : 0);
+    // Dump three grids: digital, current sensor, and 'd' marks for
+    // squares disagreeing with digital + 'X' marks for squares that
+    // changed since the previous sensor frame (the actual move).
+    auto fmt_cell = [](char c) -> char { return (c && c != ' ') ? c : '.'; };
+    std::fprintf(stderr, "      digital     sensor     diff\n");
     for (int r = 7; r >= 0; r--) {  // rank 8 → rank 1
         char dig[9] = "        ";
         char sen[9] = "        ";
         char dif[9] = "        ";
         for (int file = 0; file < 8; file++) {
             int col = 7 - file;  // file 0 = a = our col 7
-            char dc = fmt_cell(expected[r][col]);
-            char sc = fmt_cell(sensor[r][col]);
-            dig[file] = dc == ' ' ? '.' : dc;
-            sen[file] = sc == ' ' ? '.' : sc;
-            dif[file] = (expected[r][col] == sensor[r][col]) ? '.' : 'X';
+            dig[file] = fmt_cell(digital[r][col]);
+            sen[file] = fmt_cell(sensor[r][col]);
+            char mark = '.';
+            if (digital[r][col] != sensor[r][col]) mark = 'd';
+            if (a.chessnut_sensor_baseline_set &&
+                prev[r][col] != sensor[r][col]) mark = 'X';
+            dif[file] = mark;
         }
         std::fprintf(stderr, "  %d   %s     %s     %s\n", r + 1, dig, sen, dif);
     }
-    for (const auto& d : diffs) {
+    for (const auto& d : deltas) {
         std::fprintf(stderr,
-            "  square col=%d row=%d (%c%c) digital='%c' sensor='%c'\n",
+            "  delta col=%d row=%d (%c%c) prev='%c' now='%c'\n",
             d.col, d.row,
             static_cast<char>('a' + (7 - d.col)),
             static_cast<char>('1' + d.row),
             d.before ? d.before : '?',
             d.after  ? d.after  : '?');
     }
-    if (diffs.empty()) return;  // no change, no action.
 
-    // Mid-pickup intermediate state (a piece is in the user's hand
-    // and the corresponding sensor square is empty). Wait for the
-    // landing.
-    if (diffs.size() == 1) {
+    // First frame after enable / connect / new game: nothing to
+    // diff against. Wait for motors to finish (settling window
+    // closed) before snapshotting the baseline — otherwise we'd
+    // capture an in-flight transient and the missing-piece check
+    // below would fire on every game start while pieces are still
+    // moving.
+    if (!a.chessnut_sensor_baseline_set) {
+        if (settling) {
+            std::fprintf(stderr,
+                "[chessnut/sensor] motors settling, baseline pending\n");
+            return;
+        }
+        a.chessnut_sensor_baseline_set = true;
+        // Game-start sanity check: if the firmware reports any
+        // square disagreeing with the digital starting position,
+        // either pieces are missing from the board or some have
+        // dead ID-chip batteries. Surface a UI hint so the user
+        // can correct it before playing.
+        if (digital_diffs.empty()) {
+            std::fprintf(stderr,
+                "[chessnut/sensor] baseline established — board matches digital state\n");
+            return;
+        }
         std::fprintf(stderr,
-            "[chessnut/sensor] 1-diff (mid-pickup) — waiting for landing\n");
+            "[chessnut/sensor] baseline established with %zu disagreements\n",
+            digital_diffs.size());
+        std::string missing_squares;
+        int n_missing = 0;
+        for (const auto& d : digital_diffs) {
+            if (d.before == ' ' || d.after != ' ') continue;
+            if (n_missing > 0) missing_squares += ", ";
+            missing_squares += static_cast<char>('a' + (7 - d.col));
+            missing_squares += static_cast<char>('1' + d.row);
+            n_missing++;
+            if (n_missing >= 6) {
+                missing_squares += "…";
+                break;
+            }
+        }
+        std::string msg;
+        if (n_missing > 0) {
+            msg = "Chessnut: pieces missing on " + missing_squares +
+                  " — place them or check the piece battery";
+        } else {
+            msg = "Chessnut: board doesn't match the starting position";
+        }
+        set_status(a, msg.c_str());
+        audio_play(SoundEffect::Mistake);
         return;
     }
 
-    // Settling window after we last pushed a sync — while the
-    // motors are mid-motion the sensor frames don't match the
-    // digital position. We only use it here to suppress the
-    // status message (and SFX) so we don't spam the user with
-    // "wrong side moved" hints while the firmware is replaying
-    // an animation we just commanded.
-    constexpr int64_t kSyncSettlingUs = 2'000'000;  // 2 s
-    int64_t now = now_us(a);
-    bool settling = (a.chessnut_last_sync_us != 0) &&
-                    (now - a.chessnut_last_sync_us < kSyncSettlingUs);
+    if (deltas.empty()) return;  // no change, no action.
+
+    if (deltas.size() == 1) {
+        // Mid-pickup intermediate state (piece in the user's hand,
+        // sensor square empty). Wait for the landing.
+        std::fprintf(stderr,
+            "[chessnut/sensor] 1-delta (mid-pickup) — waiting for landing\n");
+        return;
+    }
+
+    // While motors are mid-motion the firmware feeds us in-flight
+    // frames that look like 2-square deltas — but they're our own
+    // animation, not user moves. Don't try to interpret.
     if (settling) {
         std::fprintf(stderr,
-            "[chessnut/sensor] in settling window (%lld us since last sync)\n",
+            "[chessnut/sensor] in settling window (%lld us since last sync) — ignoring\n",
             static_cast<long long>(now - a.chessnut_last_sync_us));
+        return;
     }
 
     // Single-player mode: the AI is the opponent and the physical
@@ -2509,9 +2591,8 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // restore the position by hand.
     auto reject = [&](const char* reason) {
         std::fprintf(stderr,
-            "[chessnut/sensor] reject: %s — diff=%zu\n",
-            reason, diffs.size());
-        if (settling) return;
+            "[chessnut/sensor] reject: %s — delta=%zu\n",
+            reason, deltas.size());
         if (a.two_player_mode) {
             std::string msg = std::string("Chessnut: ") + reason +
                               " — restore the position to continue";
@@ -2524,28 +2605,28 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         set_status(a, msg.c_str());
         audio_play(SoundEffect::Mistake);
         // Force-sync drives pieces back to the digital state. The
-        // next ~2 s of NOTIFY frames will land in the settling
-        // window above and be ignored.
+        // next ~2 s of NOTIFY frames land in the settling window
+        // above and are ignored.
         app_chessnut_sync_board(a, /*force=*/true);
     };
 
     // Only handle the simple-move pattern automatically: exactly
-    // two squares differ — one piece left, one piece arrived —
+    // two squares changed — one piece left, one piece arrived —
     // and the moved piece type+colour matches between source and
-    // destination. Castling (4 diffs) and en passant (3 diffs)
+    // destination. Castling (4 deltas) and en passant (3 deltas)
     // would also need handling but are rarer; deferring those.
-    if (diffs.size() != 2) {
+    if (deltas.size() != 2) {
         reject("unrecognised state (multi-piece change)");
         return;
     }
 
     // Identify which side moved. The "from" square is the one that
-    // was occupied digitally and is empty on the sensor; the "to"
-    // square is the one whose sensor value matches the piece that
-    // disappeared from the "from" square.
+    // was occupied in the previous sensor frame and is empty now;
+    // the "to" square is the one whose new value matches the piece
+    // that disappeared from the "from" square.
     Diff* from = nullptr;
     Diff* to   = nullptr;
-    for (auto& d : diffs) {
+    for (auto& d : deltas) {
         if (d.before != ' ' && d.after == ' ') from = &d;
         else                                    to   = &d;
     }

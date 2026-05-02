@@ -7,6 +7,7 @@
 #include "chess_types.h"     // GameState, GameMode
 #include "game_state.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -254,6 +255,15 @@ struct AppState {
     // to suppress the auto-reject behaviour during a settling
     // window so we don't fight our own motors.
     int64_t chessnut_last_sync_us = 0;
+    // Most recent sensor grid the firmware reported, kept around so
+    // each new frame can be diff'd against the *previous* sensor
+    // state (delta detection) instead of against the digital game.
+    // That way a ghost piece the firmware can't see (e.g. a Chessnut
+    // Move piece with a flat ID-chip battery) becomes a stable
+    // disagreement we ignore, rather than poisoning every move
+    // attempt with a permanent extra diff.
+    std::array<std::array<char, 8>, 8> chessnut_last_sensor_grid{};
+    bool chessnut_sensor_baseline_set = false;
 
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask
