@@ -3202,33 +3202,28 @@ void app_chessnut_sync_board(AppState& a, bool force) {
     app_chessnut_highlight_last_move(a);
 }
 
-// LED bitmask layout (per CHESSNUT.md): "row-major from h1".
-// 8 bytes = 64 bits, byte index = rank-1 (row), bit-within-byte =
-// h..a (col 0=h, col 7=a in this project's internal grid). bit_for_square
-// returns the (byte, mask) tuple to OR into the bitmask buffer.
-namespace {
-void or_square_bit(uint8_t bytes[8], int col, int row) {
-    if (col < 0 || col > 7 || row < 0 || row > 7) return;
-    bytes[row] |= static_cast<uint8_t>(1u << col);
-}
-}  // namespace
-
+// Light up the from + to squares of the last move on the Chessnut
+// Move's RGB LED grid: blue on the source square, green on the
+// destination. An empty move history clears the LEDs.
+//
+// Uses the Move-format LED frame (opcode 0x43, 4 bits per square).
+// The Air-format 0x0A bitmask is silently ignored by Move firmware,
+// which is why this didn't visibly do anything before.
 void app_chessnut_highlight_last_move(AppState& a) {
     if (!g_chessnut_bridge || !a.chessnut_connected) return;
-    uint8_t bytes[8] = {0};
+    std::array<std::array<uint8_t, 8>, 8> grid{};
+    for (auto& r : grid) r.fill(chessnut::LED_COLOR_OFF);
     if (!a.game.move_history.empty()) {
         const std::string& uci = a.game.move_history.back();
         int fc = -1, fr = -1, tc = -1, tr = -1;
         if (parse_uci_move(uci, fc, fr, tc, tr)) {
-            or_square_bit(bytes, fc, fr);
-            or_square_bit(bytes, tc, tr);
+            if (fc >= 0 && fc < 8 && fr >= 0 && fr < 8)
+                grid[fr][fc] = chessnut::LED_COLOR_BLUE;
+            if (tc >= 0 && tc < 8 && tr >= 0 && tr < 8)
+                grid[tr][tc] = chessnut::LED_COLOR_GREEN;
         }
     }
-    char hex[17];
-    for (int i = 0; i < 8; i++) {
-        std::snprintf(hex + i * 2, 3, "%02x", bytes[i]);
-    }
-    g_chessnut_bridge->send_led_hex(hex);
+    g_chessnut_bridge->send_led_move_grid(grid);
 }
 
 void app_chessnut_shutdown(AppState& a) {

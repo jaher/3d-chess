@@ -82,13 +82,32 @@ movement.
 Both `0x21` and `0x27` are used in the codebase for *something*;
 `0x27` is just the legacy unbranded-firmware handshake. Skip it.
 
-### LED control
+### LED control — two formats, Air vs Move
+
+The Android app sends a *different* LED frame depending on the
+connected device's name (see `ChessnutService.java:192-322`,
+`setLed`):
 
 ```
-ChessnutService.java:230,257  → 0x0A 0x08 [8 bytes of bitmask]      // 1 bit per square; row-major from h1
+# Chessnut Air (and any non-"Chessnut Move" BLE device)
+ChessnutService.java:230,257  → 0x0A 0x08 [8 bytes of on/off bitmask]
+                                // 1 bit per square; row-major from h1; monochrome.
+
+# Chessnut Move
+ChessnutService.java:262,317  → 0x43 0x20 [32 bytes of 4bpp colour grid]
+                                // 4 bits per square in the same pair-reversed packing
+                                // as setMoveBoard (h-pair at offset 0 of each rank's
+                                // 4-byte slice, a-pair at offset 3). Each nibble:
+                                //   0 = off
+                                //   1 = red
+                                //   2 = green
+                                //   3 = blue (Android's fall-through when r==g==0)
 ```
 
-Same `0x0A` length-8 LED format as Air.
+The Move firmware **silently ignores** the Air-format `0x0A` frame —
+sending it does nothing visible. New code should always use `0x43`
+when targeting a Move board (per the device-name dispatch in the
+Android source).
 
 ### Board-state read (32-byte 4bpp, with header)
 

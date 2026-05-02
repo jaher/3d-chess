@@ -114,7 +114,8 @@ WRITE_UUID = UUID_CMD_WRITE_B
 # Wire-format opcodes — keep in sync with chessnut_encode.h.
 # ---------------------------------------------------------------------------
 # Outbound (host → firmware):
-OPCODE_LED              = 0x0A  # 8-byte LED bitmask frame
+OPCODE_LED              = 0x0A  # Air: 8-byte on/off LED bitmask
+OPCODE_SET_MOVE_LED     = 0x43  # Move: 32-byte RGB LED frame
 OPCODE_AUX_INIT         = 0x0B  # post-subscribe handshake
 OPCODE_STREAM_ENABLE    = 0x21  # enable board-state push (Air "init")
 OPCODE_LEGACY_INIT      = 0x27  # legacy unbranded init — Move SKIPS this
@@ -130,7 +131,14 @@ INFO_GET_PIECE_STATE    = 0x0B  # getMovePieceState
 
 # Frame-length constants:
 SET_MOVE_BOARD_PAYLOAD_LEN = 0x21  # 33 bytes (32 board + 1 force byte)
-LED_PAYLOAD_LEN            = 0x08  # 8-byte bitmask
+LED_PAYLOAD_LEN            = 0x08  # Air: 8-byte bitmask
+SET_MOVE_LED_PAYLOAD_LEN   = 0x20  # Move: 32-byte 4bpp colour grid
+
+# Move LED colour codes (one nibble per square):
+LED_COLOR_OFF   = 0
+LED_COLOR_RED   = 1
+LED_COLOR_GREEN = 2
+LED_COLOR_BLUE  = 3
 FEN_DATA_PAYLOAD_LEN       = 0x24  # 36 bytes (32 board + 4 trailer)
 
 

@@ -11,6 +11,8 @@
 
 #ifndef __EMSCRIPTEN__
 
+#include <array>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -31,12 +33,19 @@ public:
     void start_scan();
     void connect_to_address(const std::string& address);
     void send_fen(const std::string& fen, bool force);
+    // Air-format LED frame (8-byte on/off bitmask). Kept for
+    // potential Chessnut Air support — Move firmware silently
+    // ignores it. New callers should prefer send_led_move_grid.
     void send_led_hex(const std::string& bitmask_hex);
+    // Move-format LED frame (32-byte 4-bits-per-square RGB). Each
+    // grid_color[row][col] is one of LED_COLOR_OFF/RED/GREEN/BLUE.
+    // col 0 = h-file, col 7 = a-file; row 0 = rank 1, row 7 = rank 8.
+    void send_led_move_grid(
+        const std::array<std::array<uint8_t, 8>, 8>& grid_color);
     // Pulse the LED at (col, row) a few times with short on/off
     // gaps to draw the user's attention to that square. Used right
     // before a setMoveBoard so they can see where the motors are
-    // about to push a piece. col 0 = h-file, col 7 = a-file (matches
-    // the project's internal coords); row 0 = rank 1, row 7 = rank 8.
+    // about to push a piece.
     void blink_square(int col, int row);
     // Diagnostic — write 0x41 0x01 0x0B (getMovePieceState). Reply
     // arrives on a notify channel and is logged raw.

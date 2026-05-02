@@ -21,12 +21,13 @@ namespace chessnut {
 // Wire-format opcodes (one source of truth for all drivers)
 // ===========================================================================
 // Outbound (host → firmware), routed via WRITE_UUID:
-constexpr uint8_t OPCODE_LED            = 0x0A;  // 8-byte LED bitmask frame
+constexpr uint8_t OPCODE_LED            = 0x0A;  // Air: 8-byte on/off LED bitmask
 constexpr uint8_t OPCODE_AUX_INIT       = 0x0B;  // post-subscribe handshake
 constexpr uint8_t OPCODE_STREAM_ENABLE  = 0x21;  // enable board-state push (Air "init")
 constexpr uint8_t OPCODE_LEGACY_INIT    = 0x27;  // legacy unbranded init — Move SKIPS this
 constexpr uint8_t OPCODE_INFO_QUERY     = 0x41;  // 0x41 0x?? sub-commands
 constexpr uint8_t OPCODE_SET_MOVE_BOARD = 0x42;  // motor command (target board)
+constexpr uint8_t OPCODE_SET_MOVE_LED   = 0x43;  // Move: 32-byte RGB LED frame
 
 // Inbound (firmware → host) opcodes seen on notify channels:
 constexpr uint8_t OPCODE_FEN_DATA       = 0x01;  // 32-byte board-state push
@@ -46,8 +47,24 @@ constexpr size_t  FEN_DATA_HEX_CHARS    = FEN_DATA_TOTAL_BYTES * 2;  // = 76
 constexpr uint8_t SET_MOVE_BOARD_PAYLOAD_LEN = 0x21;  // = 33 bytes (32 board + 1 force)
 constexpr size_t  SET_MOVE_BOARD_TOTAL_BYTES = 35;
 
-// LED outbound frame: [opcode, payload_len, bitmask[8]]
+// Air LED outbound frame: [OPCODE_LED, LED_PAYLOAD_LEN (=8), bitmask[8]].
+// One bit per square; LEDs are monochrome.
 constexpr uint8_t LED_PAYLOAD_LEN       = 0x08;
+
+// Move LED outbound frame: [OPCODE_SET_MOVE_LED, SET_MOVE_LED_PAYLOAD_LEN
+// (=32), grid[32]]. 4 bits per square in the same pair-reversed packing
+// as the setMoveBoard frame. Each nibble is a colour code:
+//   0 = off
+//   1 = red
+//   2 = green
+//   3 = blue (also the fall-through when the Android app passes
+//            non-zero ledSwitches but r==0 && g==0)
+constexpr uint8_t SET_MOVE_LED_PAYLOAD_LEN = 0x20;  // = 32 bytes
+constexpr size_t  SET_MOVE_LED_TOTAL_BYTES = 34;
+constexpr uint8_t LED_COLOR_OFF   = 0;
+constexpr uint8_t LED_COLOR_RED   = 1;
+constexpr uint8_t LED_COLOR_GREEN = 2;
+constexpr uint8_t LED_COLOR_BLUE  = 3;
 
 // ---------------------------------------------------------------------------
 // Pre-built command frames used by the post-subscribe handshake and the
@@ -179,8 +196,8 @@ inline std::vector<uint8_t> make_set_move_board(const std::string& fen,
     return frame;
 }
 
-// LED frame: [OPCODE_LED, LED_PAYLOAD_LEN (=8), bitmask[8]] from a
-// 16-hex-char bitmask string.
+// Air LED frame: [OPCODE_LED, LED_PAYLOAD_LEN (=8), bitmask[8]] from a
+// 16-hex-char bitmask string. One bit per square; monochrome.
 inline std::vector<uint8_t> make_led_frame(const std::string& bitmask_hex) {
     if (bitmask_hex.size() != 16)
         throw std::runtime_error("LED bitmask must be 16 hex chars");
@@ -192,6 +209,32 @@ inline std::vector<uint8_t> make_led_frame(const std::string& bitmask_hex) {
         unsigned v = 0;
         std::sscanf(bitmask_hex.substr(i, 2).c_str(), "%x", &v);
         frame.push_back(static_cast<uint8_t>(v));
+    }
+    return frame;
+}
+
+// Move LED frame: [OPCODE_SET_MOVE_LED, SET_MOVE_LED_PAYLOAD_LEN (=32),
+// grid[32]]. grid_color[row][col] is a 4-bit colour code (0..3); see
+// LED_COLOR_* constants. Packing matches setMoveBoard: 8 ranks × 4
+// pairs, pair-reversed within each rank (h-pair at offset 0, a-pair at
+// offset 3 of each rank's 4-byte slice). Rank order: i=0 → rank 8
+// (algebraic), i.e. our internal row 7. col 0 = h-file, col 7 = a-file
+// (project's internal coords).
+inline std::vector<uint8_t> make_led_move_frame(
+    const std::array<std::array<uint8_t, 8>, 8>& grid_color) {
+    std::vector<uint8_t> frame(2 + SET_MOVE_LED_PAYLOAD_LEN, 0);
+    frame[0] = OPCODE_SET_MOVE_LED;
+    frame[1] = SET_MOVE_LED_PAYLOAD_LEN;
+    for (int i = 0; i < 8; i++) {
+        int internal_row = 7 - i;  // i=0 is rank 8 = our row 7
+        for (int i2 = 0; i2 < 4; i2++) {
+            int col_hi = 7 - (2 * i2);
+            int col_lo = 7 - (2 * i2 + 1);
+            uint8_t hi = grid_color[internal_row][col_hi] & 0x0F;
+            uint8_t lo = grid_color[internal_row][col_lo] & 0x0F;
+            frame[2 + (i * 4) + (3 - i2)] =
+                static_cast<uint8_t>((hi << 4) | lo);
+        }
     }
     return frame;
 }
