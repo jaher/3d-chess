@@ -1852,7 +1852,12 @@ void renderer_draw(GameState& gs, int width, int height,
         float wx, wz; square_center(bp.col, bp.row, wx, wz);
         float s = BASE_PIECE_SCALE * piece_scale[bp.type];
 
-        bool animating = gs.ai_animating && bp.col == gs.ai_from_col && bp.row == gs.ai_from_row && !bp.is_white;
+        // Animate whichever piece is at the from-square — colour-
+        // agnostic. Was previously gated on !bp.is_white because
+        // the original design assumed AI always plays black, but
+        // the same animation now also drives sensor-driven moves
+        // (any colour) and AI-as-white when the human picks black.
+        bool animating = gs.ai_animating && bp.col == gs.ai_from_col && bp.row == gs.ai_from_row;
         if (animating) {
             float fx, fz, tx, tz;
             square_center(gs.ai_from_col, gs.ai_from_row, fx, fz);
@@ -1864,7 +1869,10 @@ void renderer_draw(GameState& gs, int width, int height,
             orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
             Mat4 pm = mat4_multiply(mat4_translate(wx, BOARD_Y + s + arc, wz),
                                     mat4_multiply(mat4_scale(s,s,s), orient));
-            set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
+            // Material picks up the piece colour so a white piece
+            // doesn't render black mid-flight.
+            if (bp.is_white) set_material(g_program, 0.92f,0.88f,0.78f, 0,0.28f,1, 0);
+            else             set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
             draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
             continue;
         }
