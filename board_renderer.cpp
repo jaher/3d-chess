@@ -79,6 +79,17 @@ static GLuint g_scene_color_tex  = 0;
 static GLuint g_scene_depth_tex  = 0;
 static int    g_scene_fbo_w      = 0;
 static int    g_scene_fbo_h      = 0;
+// Multisample FBO that the 3D scene actually renders into. Resolved
+// into g_scene_fbo (when the cartoon outline is on, so the post-
+// process can sample the result) or directly into the default FB
+// (no outline) before UI overlays draw. GtkGLArea doesn't expose
+// MSAA on the default FB, so we get it via a custom MS RBO.
+static GLuint g_scene_ms_fbo       = 0;
+static GLuint g_scene_ms_color_rbo = 0;
+static GLuint g_scene_ms_depth_rbo = 0;
+static int    g_scene_ms_fbo_w     = 0;
+static int    g_scene_ms_fbo_h     = 0;
+constexpr int kSceneMSAASamples    = 4;
 // Two-triangle NDC fullscreen quad, reused by the outline pass.
 static GLuint g_fullscreen_vao   = 0;
 static GLuint g_fullscreen_vbo   = 0;
@@ -122,6 +133,53 @@ static void ensure_scene_fbo(int w, int h) {
 
     g_scene_fbo_w = w;
     g_scene_fbo_h = h;
+}
+
+// Multisample FBO used as the actual 3D-pass target. Color +
+// depth are renderbuffers (we never sample them as textures —
+// the resolve pass blits into the single-sample g_scene_fbo /
+// default FB, which is what the outline shader / display read).
+static void ensure_scene_ms_fbo(int w, int h) {
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    if (g_scene_ms_fbo &&
+        g_scene_ms_fbo_w == w && g_scene_ms_fbo_h == h) return;
+
+    if (g_scene_ms_fbo == 0)       glGenFramebuffers (1, &g_scene_ms_fbo);
+    if (g_scene_ms_color_rbo == 0) glGenRenderbuffers(1, &g_scene_ms_color_rbo);
+    if (g_scene_ms_depth_rbo == 0) glGenRenderbuffers(1, &g_scene_ms_depth_rbo);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, g_scene_ms_color_rbo);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, kSceneMSAASamples,
+                                     GL_RGBA8, w, h);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_scene_ms_depth_rbo);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, kSceneMSAASamples,
+                                     GL_DEPTH_COMPONENT24, w, h);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_scene_ms_fbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, g_scene_ms_color_rbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, g_scene_ms_depth_rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    g_scene_ms_fbo_w = w;
+    g_scene_ms_fbo_h = h;
+}
+
+// Resolve g_scene_ms_fbo into `dst_fbo`. Color is averaged across
+// samples (the actual MSAA work); depth picks one sample per spec
+// (single-sample depth is fine for the outline shader, which only
+// looks for discontinuities at pixel boundaries). Use GL_NEAREST
+// — required for the depth bit and lossless for the color resolve.
+static void resolve_scene_ms_to(GLuint dst_fbo, int w, int h,
+                                bool include_depth) {
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_scene_ms_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst_fbo);
+    GLbitfield mask = GL_COLOR_BUFFER_BIT;
+    if (include_depth) mask |= GL_DEPTH_BUFFER_BIT;
+    glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, mask, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
 }
 
 // Run the cartoon-outline post-process. The caller is expected to
@@ -253,16 +311,16 @@ static std::vector<float> build_board_mesh(int& light_verts, int& dark_verts) {
 }
 
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
-    // Smooth per-vertex normals are only worth computing on decimated
-    // meshes — at web build density (~80k tris) raw face normals show
-    // visible facets. Hi-res desktop meshes (~1M tris each) have sub-
-    // pixel triangles where flat shading is indistinguishable from
-    // smooth, and the hash-map dance in build_vertex_buffer costs
-    // seconds at that size. Flip to the flat fast-path above the
-    // threshold.
-    constexpr size_t SMOOTH_TRI_LIMIT = 200'000;
-    float crease = model.triangle_count() > SMOOTH_TRI_LIMIT ? 0.0f : 60.0f;
-    std::vector<float> buf = model.build_vertex_buffer(crease);
+    // Always smooth per-vertex normals via build_vertex_buffer's
+    // angle-weighted average. The pieces are still visibly faceted
+    // at gameplay zoom even at 1M tris each — bands of flat-shaded
+    // triangles show up along curved surfaces. The hash-map dedup
+    // costs a few seconds at startup on the desktop hi-res meshes
+    // but the visual difference is well worth it; the web build's
+    // decimated meshes (~80k tris) finish in well under a second.
+    // crease_angle 60° preserves intentionally sharp edges (e.g.
+    // base/collar transitions) while smoothing curved regions.
+    std::vector<float> buf = model.build_vertex_buffer(60.0f);
     gpu.num_vertices = static_cast<int>(buf.size() / 6);
     glGenVertexArrays(1, &gpu.vao); glGenBuffers(1, &gpu.vbo);
     glBindVertexArray(gpu.vao);
@@ -1729,18 +1787,18 @@ void renderer_draw(GameState& gs, int width, int height,
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
-    // When the cartoon outline is on, the 3D-MVP pass renders into
-    // an offscreen FBO instead of the default framebuffer; after
-    // the 3D draws we run a fullscreen-quad post-process that reads
-    // the FBO's color + depth textures and darkens pixels along
-    // depth discontinuities. NDC overlays draw AFTER the post-
-    // process directly to the default FB so they aren't affected.
-    if (cartoon_outline) {
-        ensure_scene_fbo(width, height);
-    }
-    const GLuint main_pass_fbo = cartoon_outline
-        ? g_scene_fbo
-        : static_cast<GLuint>(default_fbo);
+    // The 3D pass always renders into a multisampled FBO so we get
+    // free MSAA on every silhouette and curved surface. After the
+    // 3D draws we resolve:
+    //   * cartoon outline on  → resolve into the single-sample
+    //     g_scene_fbo so the post-process can sample it as textures;
+    //     the post-process then writes to the default FB.
+    //   * cartoon outline off → resolve straight to the default FB.
+    // NDC UI overlays always draw to the default FB after the
+    // resolve / post-process so they aren't affected.
+    ensure_scene_ms_fbo(width, height);
+    if (cartoon_outline) ensure_scene_fbo(width, height);
+    const GLuint main_pass_fbo = g_scene_ms_fbo;
 
     float aspect = static_cast<float>(width) / static_cast<float>(height);
     float deg2rad = static_cast<float>(M_PI) / 180.0f;
@@ -1997,14 +2055,17 @@ void renderer_draw(GameState& gs, int width, int height,
         glDepthMask(GL_TRUE); glDisable(GL_BLEND);
     }
 
-    // --- Cartoon outline post-process ---
-    // When enabled, the 3D-MVP draws above rendered into g_scene_fbo
-    // instead of the default FB. The shared helper samples those
-    // textures and writes the darkened-edge result to the default FB;
-    // after this the NDC overlays continue to draw on the default FB
-    // as they always have.
+    // --- MSAA resolve + (optional) cartoon-outline post-process ---
+    // The 3D pass above wrote into the multisample FBO. Resolve it
+    // either into the single-sample scene FBO (so the outline shader
+    // can sample colour + depth) or directly to the default FB.
     if (cartoon_outline) {
+        resolve_scene_ms_to(g_scene_fbo, width, height,
+                            /*include_depth=*/true);
         run_outline_post_process(default_fbo, width, height);
+    } else {
+        resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
+                            width, height, /*include_depth=*/false);
     }
 
     draw_score_graph(gs, human_plays_white);
@@ -2045,14 +2106,14 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
-    // When the outline is requested, the 3D pass renders into the
-    // scene FBO so the post-process has a depth buffer to sample.
-    // NDC UI overlays (title, buttons, labels) still go to the
-    // default FB after the post-process so they don't get outlined.
-    if (cartoon_outline) {
-        ensure_scene_fbo(width, height);
-        glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
-    }
+    // 3D pass renders into the multisample scene FBO so menu pieces
+    // tumbling against the dark backdrop get free MSAA. After the
+    // 3D draws we resolve into either the single-sample scene FBO
+    // (cartoon outline on) or the default FB (off). NDC UI overlays
+    // always draw to the default FB after the resolve.
+    ensure_scene_ms_fbo(width, height);
+    if (cartoon_outline) ensure_scene_fbo(width, height);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_scene_ms_fbo);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -2103,7 +2164,12 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     }
 
     if (cartoon_outline) {
+        resolve_scene_ms_to(g_scene_fbo, width, height,
+                            /*include_depth=*/true);
         run_outline_post_process(default_fbo, width, height);
+    } else {
+        resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
+                            width, height, /*include_depth=*/false);
     }
 
     // --- UI overlay ---
