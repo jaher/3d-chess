@@ -2536,7 +2536,11 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // this period are transient and don't match the eventual
     // resting state. Used both to silence move-detection during the
     // window and to suppress error chatter from our own animations.
-    constexpr int64_t kSyncSettlingUs = 2'000'000;  // 2 s
+    // 4 s covers the blink-before-motor (~1 s) plus the motor's
+    // glide (~1-2 s) with a safety margin; if this is too short,
+    // mid-motor transit frames leak out and can look like illegal
+    // hand-moves.
+    constexpr int64_t kSyncSettlingUs = 4'000'000;  // 4 s
     int64_t now = now_us(a);
     bool settling = (a.chessnut_last_sync_us != 0) &&
                     (now - a.chessnut_last_sync_us < kSyncSettlingUs);
@@ -2765,14 +2769,42 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             !a.game.ai_animating) {
             const auto& md = digital_diffs[paired_moves[0].from_idx];
             const auto& ed = digital_diffs[paired_moves[0].to_idx];
-            std::fprintf(stderr,
-                "[chessnut/sensor] settled move detected via digital_diff: %c%c%c%c\n",
-                static_cast<char>('a' + (7 - md.col)),
-                static_cast<char>('1' + md.row),
-                static_cast<char>('a' + (7 - ed.col)),
-                static_cast<char>('1' + ed.row));
-            deltas.push_back(Diff{md.row, md.col, md.before, ' '});
-            deltas.push_back(Diff{ed.row, ed.col, ' ',       ed.after});
+            // Pre-validate the implied move's legality before
+            // synthesising — if it isn't legal, this paired pair is
+            // almost certainly a motor-in-transit transient (e.g.
+            // a pawn glided through e3 on its way from e2 to e4).
+            // Without this check the apply path would reject the
+            // bogus move as "illegal" and fire the chess-violation
+            // shake on every motor move that bumps a piece across
+            // an intermediate square.
+            bool legal = false;
+            int piece_idx = a.game.grid[md.row][md.col];
+            int side_to_move_white = a.game.white_turn ? 1 : 0;
+            if (piece_idx >= 0 &&
+                (a.game.pieces[piece_idx].is_white ? 1 : 0) == side_to_move_white) {
+                auto legal_moves = generate_legal_moves(a.game, md.col, md.row);
+                for (const auto& [mc, mr] : legal_moves) {
+                    if (mc == ed.col && mr == ed.row) { legal = true; break; }
+                }
+            }
+            if (legal) {
+                std::fprintf(stderr,
+                    "[chessnut/sensor] settled move detected via digital_diff: %c%c%c%c\n",
+                    static_cast<char>('a' + (7 - md.col)),
+                    static_cast<char>('1' + md.row),
+                    static_cast<char>('a' + (7 - ed.col)),
+                    static_cast<char>('1' + ed.row));
+                deltas.push_back(Diff{md.row, md.col, md.before, ' '});
+                deltas.push_back(Diff{ed.row, ed.col, ' ',       ed.after});
+            } else {
+                std::fprintf(stderr,
+                    "[chessnut/sensor] paired pair %c%c→%c%c not legal — "
+                    "treating as motor-in-transit, no action\n",
+                    static_cast<char>('a' + (7 - md.col)),
+                    static_cast<char>('1' + md.row),
+                    static_cast<char>('a' + (7 - ed.col)),
+                    static_cast<char>('1' + ed.row));
+            }
         }
         if (deltas.empty()) {
             if (!settling) refresh_missing_modal(/*can_open=*/false);
