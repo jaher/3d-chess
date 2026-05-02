@@ -264,6 +264,16 @@ struct AppState {
     // attempt with a permanent extra diff.
     std::array<std::array<char, 8>, 8> chessnut_last_sensor_grid{};
     bool chessnut_sensor_baseline_set = false;
+    // "Pieces missing" modal — opens automatically on game start /
+    // mid-game whenever the firmware reports a square that should
+    // hold a piece is empty (commonly: a piece with a dead ID-chip
+    // battery, or pieces left off the board). Blocks game input
+    // until either every piece is detected or the user clicks
+    // "Exit to Menu". Auto-closes when the board agrees with the
+    // digital state again.
+    bool chessnut_missing_modal_open = false;
+    std::string chessnut_missing_squares_msg;
+    bool chessnut_missing_exit_hover = false;
 
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask

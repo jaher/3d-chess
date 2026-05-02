@@ -542,6 +542,28 @@ static const float WC_NO_X1 =  0.22f;
 static const float WC_NO_Y0 = -0.10f;
 static const float WC_NO_Y1 =  0.00f;
 
+// "Pieces missing" modal (CMM = Chessnut Missing-pieces Modal).
+// Wider/taller than the withdraw modal so it can fit a title, a
+// missing-squares list, a hint, and a single Exit-to-Menu button.
+static const float CMM_PANEL_X0 = -0.42f;
+static const float CMM_PANEL_X1 =  0.42f;
+static const float CMM_PANEL_Y0 = -0.22f;
+static const float CMM_PANEL_Y1 =  0.26f;
+
+// Single Exit-to-Menu button, centred at the bottom of the panel.
+static const float CMM_EXIT_X0 = -0.18f;
+static const float CMM_EXIT_X1 =  0.18f;
+static const float CMM_EXIT_Y0 = -0.16f;
+static const float CMM_EXIT_Y1 = -0.06f;
+
+bool chessnut_missing_exit_button_hit_test(double mx, double my,
+                                           int width, int height) {
+    float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
+    float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    return ndc_x >= CMM_EXIT_X0 && ndc_x <= CMM_EXIT_X1 &&
+           ndc_y >= CMM_EXIT_Y0 && ndc_y <= CMM_EXIT_Y1;
+}
+
 bool withdraw_confirm_hit_test(double mx, double my,
                                int width, int height, int* which) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
@@ -1367,6 +1389,148 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
         glDrawArrays(GL_TRIANGLES, 0, title_count);
         glDrawArrays(GL_TRIANGLES, title_count, yes_count);
         glDrawArrays(GL_TRIANGLES, title_count + yes_count, no_count);
+
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+    }
+
+    glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
+}
+
+// "Pieces missing" modal — same visual style as draw_withdraw_confirm_modal
+// (full-screen dim + outlined dark panel) but with one exit button
+// instead of Yes/No, and an extra body line listing the squares
+// the firmware reports as empty.
+void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
+                                          bool exit_hover) {
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(g_highlight_program);
+    Mat4 id_cm = mat4_identity();
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                       1, GL_FALSE, id_cm.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+    auto draw_quad = [&](float x0, float y0, float x1, float y1) {
+        std::vector<float> v;
+        push_quad(v, x0, y0, x1, y1);
+        GLuint vao, vbo;
+        glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
+        glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size() / 3));
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &vbo); glDeleteVertexArrays(1, &vao);
+    };
+
+    // Full-screen backdrop dim.
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                0.0f, 0.0f, 0.0f, 0.55f);
+    draw_quad(-1.0f, -1.0f, 1.0f, 1.0f);
+
+    // Outlined panel (border + inner fill).
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                0.60f, 0.65f, 0.75f, 0.95f);
+    draw_quad(CMM_PANEL_X0 - 0.006f, CMM_PANEL_Y0 - 0.010f,
+              CMM_PANEL_X1 + 0.006f, CMM_PANEL_Y1 + 0.010f);
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                0.10f, 0.12f, 0.16f, 0.97f);
+    draw_quad(CMM_PANEL_X0, CMM_PANEL_Y0, CMM_PANEL_X1, CMM_PANEL_Y1);
+
+    // Exit-to-Menu button (red, brighter on hover — same palette as
+    // the withdraw modal's "No" button so the destructive-action
+    // colour is consistent across the app).
+    {
+        float r = exit_hover ? 0.80f : 0.65f;
+        float g = exit_hover ? 0.28f : 0.22f;
+        float b = exit_hover ? 0.28f : 0.22f;
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    r, g, b, 0.95f);
+        draw_quad(CMM_EXIT_X0, CMM_EXIT_Y0, CMM_EXIT_X1, CMM_EXIT_Y1);
+    }
+
+    // Text layer.
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                       1, GL_FALSE, id_cm.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    std::vector<float> tv;
+
+    // Title.
+    {
+        std::string title = "Place all pieces on the board";
+        float cw = 0.030f, ch = 0.046f;
+        float tw = title.size() * cw * 0.7f;
+        add_screen_string(tv, -tw * 0.5f, 0.16f, cw, ch, title);
+    }
+    int title_count = static_cast<int>(tv.size() / 5);
+
+    // Body line 1: list of missing squares (or a fallback).
+    {
+        std::string body = squares_msg.empty()
+            ? std::string("No pieces detected on the board")
+            : (std::string("Missing: ") + squares_msg);
+        float cw = 0.022f, ch = 0.034f;
+        float bw = body.size() * cw * 0.7f;
+        add_screen_string(tv, -bw * 0.5f, 0.06f, cw, ch, body);
+    }
+    int body1_end = static_cast<int>(tv.size() / 5);
+    int body1_count = body1_end - title_count;
+
+    // Body line 2: hint about piece batteries.
+    {
+        std::string hint = "(or check the piece battery)";
+        float cw = 0.020f, ch = 0.030f;
+        float hw = hint.size() * cw * 0.7f;
+        add_screen_string(tv, -hw * 0.5f, 0.005f, cw, ch, hint);
+    }
+    int body2_end = static_cast<int>(tv.size() / 5);
+    int body2_count = body2_end - body1_end;
+
+    // Exit button label.
+    {
+        std::string s = "Exit to Menu";
+        float cw = 0.026f, ch = 0.038f;
+        float sw = s.size() * cw * 0.7f;
+        float cx = (CMM_EXIT_X0 + CMM_EXIT_X1) * 0.5f;
+        float cy = (CMM_EXIT_Y0 + CMM_EXIT_Y1) * 0.5f;
+        add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
+    }
+    int btn_end = static_cast<int>(tv.size() / 5);
+    int btn_count = btn_end - body2_end;
+
+    if (!tv.empty()) {
+        GLuint tvao, tvbo;
+        glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
+        glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
+                     tv.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                              5 * sizeof(float),
+                              (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.95f, 0.95f, 0.95f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, title_count);
+        glDrawArrays(GL_TRIANGLES, title_count, body1_count);
+        glDrawArrays(GL_TRIANGLES, body1_end, body2_count);
+        glDrawArrays(GL_TRIANGLES, body2_end, btn_count);
 
         glBindVertexArray(0);
         glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);

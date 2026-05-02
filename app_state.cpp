@@ -675,6 +675,9 @@ void app_enter_menu(AppState& a) {
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
     a.continue_playing_hover = false;
+    a.chessnut_missing_modal_open = false;
+    a.chessnut_missing_squares_msg.clear();
+    a.chessnut_missing_exit_hover = false;
     audio_music_play("intro_music.wav");
     set_status(a, "3D Chess");
     queue_redraw(a);
@@ -1102,6 +1105,18 @@ static void release_challenge(AppState& a, double mx, double my,
 
 static void release_playing(AppState& a, double mx, double my,
                             int width, int height) {
+    // Pieces-missing modal eats every click while open. Only the
+    // Exit-to-Menu button does anything; everywhere else the
+    // click is swallowed.
+    if (a.chessnut_missing_modal_open) {
+        double dx_m = mx - a.press_x, dy_m = my - a.press_y;
+        if (dx_m*dx_m + dy_m*dy_m < 25.0 &&
+            chessnut_missing_exit_button_hit_test(mx, my, width, height)) {
+            app_enter_menu(a);
+        }
+        return;
+    }
+
     // Withdraw confirmation modal is modal — it eats every click
     // while open, whether it hits a button or not.
     if (a.withdraw_confirm_open) {
@@ -1314,6 +1329,16 @@ static void motion_challenge(AppState& a, double mx, double my,
 
 static void motion_playing(AppState& a, double mx, double my,
                            int width, int height) {
+    if (a.chessnut_missing_modal_open) {
+        bool h_now = chessnut_missing_exit_button_hit_test(mx, my, width, height);
+        if (h_now != a.chessnut_missing_exit_hover) {
+            a.chessnut_missing_exit_hover = h_now;
+            queue_redraw(a);
+        }
+        // Modal swallows the rest of the motion handling — no
+        // camera drag, no hover on board widgets.
+        return;
+    }
     if (a.withdraw_confirm_open) {
         int which = 0;
         withdraw_confirm_hit_test(mx, my, width, height, &which);
@@ -1375,8 +1400,14 @@ void app_key(AppState& a, AppKey key) {
         audio_music_play("intro_music.wav");
     }
 
-    // Modal takes priority over every other key handler — ESC closes
-    // it, everything else is swallowed.
+    // Modal takes priority over every other key handler. ESC on
+    // the pieces-missing modal exits to the main menu (matching
+    // the only button), since the modal is non-dismissable until
+    // the board is fixed; ESC on the withdraw modal just closes it.
+    if (a.mode == MODE_PLAYING && a.chessnut_missing_modal_open) {
+        if (key == KEY_ESCAPE) app_enter_menu(a);
+        return;
+    }
     if (a.mode == MODE_PLAYING && a.withdraw_confirm_open) {
         if (key == KEY_ESCAPE) {
             a.withdraw_confirm_open = false;
@@ -1858,6 +1889,15 @@ static void render_board(AppState& a, int width, int height) {
                   draw_clock, clock_ms, clock_side_is_white,
                   a.cartoon_outline,
                   a.board_shake_x);
+
+    // Pieces-missing modal sits on top of everything else in the
+    // playing scene. Drawn after renderer_draw so it overlays the
+    // game-over / withdraw modals if they happen to coincide.
+    if (a.chessnut_missing_modal_open) {
+        renderer_draw_chessnut_missing_modal(
+            a.chessnut_missing_squares_msg,
+            a.chessnut_missing_exit_hover);
+    }
 
     if (a.mode == MODE_CHALLENGE) {
         gs.game_over   = save_game_over;
@@ -2378,6 +2418,7 @@ digital_grid_snapshot(const GameState& gs) {
 bool sensor_action_allowed(const AppState& a) {
     if (a.game.ai_thinking || a.game.ai_animating) return false;
     if (a.withdraw_confirm_open) return false;
+    if (a.chessnut_missing_modal_open) return false;
     if (a.game.game_over) return false;
     if (a.game.analysis_mode) return false;
     if (a.mode != MODE_PLAYING && a.mode != MODE_CHALLENGE) return false;
@@ -2510,6 +2551,46 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             d.after  ? d.after  : '?');
     }
 
+    // Maintain the "pieces missing" modal based on the current
+    // sensor vs digital disagreement. Lambda so we can call it
+    // both at baseline establishment and on every later stable
+    // frame — the modal must auto-close as soon as the board
+    // re-agrees with the digital state.
+    auto refresh_missing_modal = [&] {
+        std::string list;
+        int n_missing = 0;
+        for (const auto& d : digital_diffs) {
+            // Only count squares where digital has a piece and
+            // sensor sees nothing. Extra/wrong-piece squares
+            // don't get listed here (rarer, and we don't want
+            // to crowd the dialog).
+            if (d.before == ' ' || d.after != ' ') continue;
+            if (n_missing > 0) list += ", ";
+            list += static_cast<char>('a' + (7 - d.col));
+            list += static_cast<char>('1' + d.row);
+            n_missing++;
+            if (n_missing >= 8) { list += "…"; break; }
+        }
+        if (n_missing > 0) {
+            bool was_open = a.chessnut_missing_modal_open;
+            a.chessnut_missing_modal_open  = true;
+            a.chessnut_missing_squares_msg = list;
+            if (!was_open) {
+                std::string status = "Chessnut: pieces missing on " + list +
+                                     " — place them or check the piece battery";
+                set_status(a, status.c_str());
+                audio_play(SoundEffect::Mistake);
+            }
+            queue_redraw(a);
+        } else if (a.chessnut_missing_modal_open) {
+            a.chessnut_missing_modal_open  = false;
+            a.chessnut_missing_squares_msg.clear();
+            a.chessnut_missing_exit_hover  = false;
+            set_status(a, "Chessnut: all pieces detected");
+            queue_redraw(a);
+        }
+    };
+
     // First frame after enable / connect / new game: nothing to
     // diff against. Wait for motors to finish (settling window
     // closed) before snapshotting the baseline — otherwise we'd
@@ -2523,45 +2604,21 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             return;
         }
         a.chessnut_sensor_baseline_set = true;
-        // Game-start sanity check: if the firmware reports any
-        // square disagreeing with the digital starting position,
-        // either pieces are missing from the board or some have
-        // dead ID-chip batteries. Surface a UI hint so the user
-        // can correct it before playing.
-        if (digital_diffs.empty()) {
-            std::fprintf(stderr,
-                "[chessnut/sensor] baseline established — board matches digital state\n");
-            return;
-        }
         std::fprintf(stderr,
-            "[chessnut/sensor] baseline established with %zu disagreements\n",
+            "[chessnut/sensor] baseline established (%zu disagreements with digital)\n",
             digital_diffs.size());
-        std::string missing_squares;
-        int n_missing = 0;
-        for (const auto& d : digital_diffs) {
-            if (d.before == ' ' || d.after != ' ') continue;
-            if (n_missing > 0) missing_squares += ", ";
-            missing_squares += static_cast<char>('a' + (7 - d.col));
-            missing_squares += static_cast<char>('1' + d.row);
-            n_missing++;
-            if (n_missing >= 6) {
-                missing_squares += "…";
-                break;
-            }
-        }
-        std::string msg;
-        if (n_missing > 0) {
-            msg = "Chessnut: pieces missing on " + missing_squares +
-                  " — place them or check the piece battery";
-        } else {
-            msg = "Chessnut: board doesn't match the starting position";
-        }
-        set_status(a, msg.c_str());
-        audio_play(SoundEffect::Mistake);
+        refresh_missing_modal();
         return;
     }
 
-    if (deltas.empty()) return;  // no change, no action.
+    if (deltas.empty()) {
+        // Stable frame: re-evaluate whether pieces are missing.
+        // Closes the modal as soon as every square agrees with the
+        // digital state, opens it if a piece disappears mid-game
+        // (e.g. user knocks one off the board).
+        if (!settling) refresh_missing_modal();
+        return;
+    }
 
     if (deltas.size() == 1) {
         // Mid-pickup intermediate state (piece in the user's hand,
@@ -2578,6 +2635,19 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         std::fprintf(stderr,
             "[chessnut/sensor] in settling window (%lld us since last sync) — ignoring\n",
             static_cast<long long>(now - a.chessnut_last_sync_us));
+        return;
+    }
+
+    // Pieces-missing modal is up — game is paused. Don't promote
+    // any sensor delta into a digital move; we also re-check the
+    // missing-piece state in case the user just placed a piece
+    // back (which would have shown up as a delta, not a stable
+    // frame, so we wouldn't have caught it in the deltas.empty()
+    // branch above).
+    if (a.chessnut_missing_modal_open) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] missing-pieces modal open — ignoring delta\n");
+        refresh_missing_modal();
         return;
     }
 
