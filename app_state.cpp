@@ -1594,10 +1594,13 @@ static void tick_menu_physics(AppState& a, int64_t now) {
 
 // Commit an AI / sensor-driven animation when its duration has
 // elapsed: run the move, play SFX, kick the eval refresh in live
-// play. ai_anim_skip_chessnut_sync is set by the sensor handler in
-// two-player mode (the piece is already at its destination
-// physically, so we shouldn't drive the firmware again — but the
-// LED last-move highlight still fires).
+// play. Two flags from the sensor handler tweak the tail end:
+//   * ai_anim_skip_chessnut_sync — piece is already at its
+//     destination on the physical board (set in both 1P and 2P
+//     for sensor moves), so just refresh the LED highlight
+//     instead of re-driving the firmware.
+//   * ai_anim_trigger_ai_after — single-player sensor move just
+//     applied, so Stockfish's reply needs to be kicked off.
 static void tick_ai_animation(AppState& a, int64_t now) {
     GameState& gs = a.game;
     if (!gs.ai_animating) return;
@@ -1617,31 +1620,52 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         } else {
             app_chessnut_sync_board(a, /*force=*/false);
         }
+        bool trigger_ai_after = gs.ai_anim_trigger_ai_after;
+        gs.ai_anim_trigger_ai_after = false;
         if (a.mode == MODE_PLAYING) {
             trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
+        }
+        if (trigger_ai_after && a.mode == MODE_PLAYING && !gs.game_over &&
+            gs.white_turn != a.human_plays_white) {
+            trigger_ai(a);
         }
     }
     queue_redraw(a);
 }
 
-// Damped sine board shake after a mate_in_N mistake. Settles to 0
-// after MISTAKE_SHAKE_DURATION; keep redrawing until
-// mistake_reveal_ready flips so the Try-Again button surfaces on
-// the same frame the sfx finishes.
+// Damped sine board shake driven by either a challenge mistake
+// (mate_in_N) or anything that's set a generic board_shake_start_us
+// (e.g. an invalid sensor-driven hand-move). Settles to 0 after
+// MISTAKE_SHAKE_DURATION; while the challenge-mistake reveal is
+// pending, keeps redrawing so the Try-Again button surfaces on the
+// same frame the sfx finishes.
 static void tick_mistake_shake(AppState& a, int64_t now) {
-    if (a.mode != MODE_CHALLENGE || !a.challenge_mistake) return;
+    bool challenge_active =
+        a.mode == MODE_CHALLENGE && a.challenge_mistake;
+    bool generic_active = a.board_shake_start_us != 0;
+    if (!challenge_active && !generic_active) return;
+
+    int64_t start_us = challenge_active
+        ? a.challenge_mistake_start_us : a.board_shake_start_us;
     float t = static_cast<float>(
-        static_cast<double>(now - a.challenge_mistake_start_us) / 1e6);
+        static_cast<double>(now - start_us) / 1e6);
     if (t < MISTAKE_SHAKE_DURATION) {
         float pi = static_cast<float>(M_PI);
         a.board_shake_x =
             0.25f * std::exp(-5.0f * t) * std::sin(2.0f * pi * 5.0f * t);
         queue_redraw(a);
-    } else if (a.board_shake_x != 0.0f) {
-        a.board_shake_x = 0.0f;
-        queue_redraw(a);
+    } else {
+        if (a.board_shake_x != 0.0f) {
+            a.board_shake_x = 0.0f;
+            queue_redraw(a);
+        }
+        // Clear the generic trigger so we don't keep ticking
+        // forever after the wobble settles. challenge_mistake is
+        // cleared elsewhere (Try-Again / next puzzle).
+        if (generic_active && !challenge_active)
+            a.board_shake_start_us = 0;
     }
-    if (!mistake_reveal_ready(a)) queue_redraw(a);
+    if (challenge_active && !mistake_reveal_ready(a)) queue_redraw(a);
 }
 
 // Withdraw-flag cloth verlet physics. Gated on live gameplay (not
@@ -2748,29 +2772,21 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         return;
     }
 
-    // Single-player mode: the AI is the opponent and the physical
-    // board exists to mirror the digital game, so an unauthorised
-    // hand-move (e.g. fiddling with the AI's piece during your
-    // turn) gets force-synced back via the motors. Two-player
-    // mode: both players use the same board, so an "illegal-
-    // looking" sensor frame is more often a fumble mid-move than
-    // a true desync — leave the board alone and let the player
-    // restore the position by hand.
+    // An invalid hand-move (wrong side, illegal piece, multi-piece
+    // junk) gets the same feedback in both single- and two-player
+    // modes: a damped board shake on screen (matches the
+    // mate_in_N challenge feedback), the mistake SFX + status,
+    // and a force-sync that drives the motors to push the piece
+    // back to its digital-state position.
     auto reject = [&](const char* reason) {
         std::fprintf(stderr,
             "[chessnut/sensor] reject: %s — delta=%zu\n",
             reason, deltas.size());
-        if (a.two_player_mode) {
-            std::string msg = std::string("Chessnut: ") + reason +
-                              " — restore the position to continue";
-            set_status(a, msg.c_str());
-            audio_play(SoundEffect::Mistake);
-            return;
-        }
         std::string msg = std::string("Chessnut: ") + reason +
                           " — re-syncing board";
         set_status(a, msg.c_str());
         audio_play(SoundEffect::Mistake);
+        a.board_shake_start_us = now_us(a);
         // Force-sync drives pieces back to the digital state. The
         // next ~2 s of NOTIFY frames land in the settling window
         // above and are ignored.
@@ -2850,37 +2866,20 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         static_cast<char>('1' + to->row),
         capture ? 1 : 0);
 
-    if (a.two_player_mode) {
-        // Two-player hot-seat: the off-board player is watching the
-        // screen, so animate the move the same way an AI move is
-        // animated (arrow + piece flying across the board). The
-        // ai_anim_skip_chessnut_sync flag tells tick_ai_animation
-        // to skip the post-animation sync_board — the piece is
-        // already at its destination on the physical board. SFX,
-        // status refresh, and trigger_eval all run inside
-        // tick_ai_animation when execute_move is called there.
-        gs.selected_col = gs.selected_row = -1;
-        gs.valid_moves.clear();
-        gs.ai_anim_skip_chessnut_sync = true;
-        start_ai_animation(a, from->col, from->row, to->col, to->row);
-        (void)capture;
-        return;
-    }
-
-    // Single-player: execute immediately so Stockfish's reply
-    // doesn't have to wait an extra 0.5 s animation we don't need.
-    execute_move(gs, from->col, from->row, to->col, to->row);
+    // Both single- and two-player sensor moves go through the
+    // animation pipeline so the user sees the same arrow + piece-
+    // flying visual that AI moves produce. ai_anim_skip_chessnut_sync
+    // tells tick_ai_animation to skip the post-animation sync_board
+    // (the piece is already at its destination on the physical
+    // board). ai_anim_trigger_ai_after kicks Stockfish off in
+    // single-player after execute_move runs there. Both flags are
+    // cleared by tick_ai_animation when consumed.
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
-    play_move_sfx(gs, capture);
-    queue_redraw(a);
-    app_refresh_status(a);
-    app_chessnut_highlight_last_move(a);
-    if (a.mode == MODE_PLAYING && !gs.game_over) {
-        trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
-        if (gs.white_turn != a.human_plays_white)
-            trigger_ai(a);
-    }
+    gs.ai_anim_skip_chessnut_sync = true;
+    gs.ai_anim_trigger_ai_after   = !a.two_player_mode;
+    start_ai_animation(a, from->col, from->row, to->col, to->row);
+    (void)capture;
 }
 
 void app_chessnut_apply_status(AppState& a, const std::string& status) {

@@ -80,6 +80,12 @@ struct GameState {
     // the firmware. This flag is set by the sensor handler to
     // suppress that final sync; tick_ai_animation clears it.
     bool ai_anim_skip_chessnut_sync = false;
+    // Set when a single-player sensor-driven move is animating: once
+    // the move applies, tick_ai_animation kicks off Stockfish for
+    // the reply. (Two-player sensor moves never trigger AI; AI
+    // moves themselves arrive via app_ai_move_ready and start the
+    // animation directly.)
+    bool ai_anim_trigger_ai_after = false;
 
     bool analysis_mode = false;
     int analysis_index = 0;

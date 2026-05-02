@@ -142,6 +142,11 @@ struct AppState {
     // Current horizontal shake offset (view-space units). Zero unless
     // a mistake animation is in flight.
     float   board_shake_x = 0.0f;
+    // Generic shake trigger — set to now_us(a) by anything that wants
+    // a brief "that was wrong" wobble (e.g. an invalid Chessnut Move
+    // hand-move). The mistake-shake ticker also reads this so any
+    // mode can trigger the same animation.
+    int64_t board_shake_start_us = 0;
 
     // Glass-shatter transition between challenge puzzles
     bool  transition_active = false;
