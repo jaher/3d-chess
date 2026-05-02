@@ -270,8 +270,11 @@ struct AppState {
     std::array<std::array<char, 8>, 8> chessnut_last_sensor_grid{};
     bool chessnut_sensor_baseline_set = false;
     // Modal popup that blocks game input when the physical board
-    // disagrees with the digital state at game start. Two flavours
-    // depending on what's wrong:
+    // disagrees with the digital state at game start. Three flavours:
+    //   * Positioning — motors are mid-animation moving pieces into
+    //     the starting position (or the user just hit Start and we
+    //     haven't even heard from the firmware yet). Auto-closes
+    //     once a stable sensor frame confirms the board matches.
     //   * Missing — pieces are unaccounted for (typically a Chessnut
     //     Move piece with a dead ID-chip battery, or pieces left
     //     off the board). chessnut_missing_squares_msg lists the
@@ -279,12 +282,18 @@ struct AppState {
     //   * WrongLayout — every piece is detected but they're not in
     //     the correct starting position. The user just needs to
     //     reset the layout.
-    // Auto-closes when the disagreement resolves.
-    enum class ChessnutModalType { Missing, WrongLayout };
+    enum class ChessnutModalType { Positioning, Missing, WrongLayout };
     bool chessnut_missing_modal_open = false;
     ChessnutModalType chessnut_missing_modal_type = ChessnutModalType::Missing;
     std::string chessnut_missing_squares_msg;
     bool chessnut_missing_exit_hover = false;
+    // Stockfish's first move (when the human picked black) is held
+    // back while the Positioning modal is open — otherwise the AI
+    // would advance the digital state while motors are still
+    // arranging the starting position on the physical board, and
+    // the firmware's view would diverge from the digital game.
+    // Set in app_enter_game; consumed when the modal closes.
+    bool chessnut_pending_ai_trigger = false;
 
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask

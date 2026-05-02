@@ -82,15 +82,20 @@ bool flag_hit_test(const ClothFlag& flag,
 // button; auto-closes from the app side when the disagreement
 // resolves.
 //
-// missing=true   → pieces are unaccounted for; squares_msg is a
-//                  comma-separated list (e.g. "e8, a7"). Empty
-//                  string means "no pieces at all".
-// missing=false  → every piece is on the board but in the wrong
-//                  position; squares_msg is ignored. The user
-//                  needs to reset the layout to the starting
-//                  position.
+// kind selects the title + body wording:
+//   Positioning → motors mid-animation, "Positioning pieces on
+//                 the chessboard" + "Wait for the motors to
+//                 finish".
+//   Missing     → pieces unaccounted for; squares_msg is a comma-
+//                 separated list (e.g. "e8, a7"). Empty string
+//                 means "no pieces at all".
+//   WrongLayout → every piece on the board but in the wrong
+//                 position; squares_msg is ignored. The user
+//                 needs to reset the layout to the starting
+//                 position.
+enum class ChessnutBoardModalKind { Positioning, Missing, WrongLayout };
 void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
-                                          bool missing,
+                                          ChessnutBoardModalKind kind,
                                           bool exit_hover);
 bool chessnut_missing_exit_button_hit_test(double mx, double my,
                                            int width, int height);

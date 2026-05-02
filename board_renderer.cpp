@@ -1402,7 +1402,7 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
 // instead of Yes/No, and an extra body line listing the squares
 // the firmware reports as empty.
 void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
-                                          bool missing,
+                                          ChessnutBoardModalKind kind,
                                           bool exit_hover) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1468,18 +1468,23 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
 
     std::vector<float> tv;
 
-    // Title + body strings depend on what's wrong.
-    std::string title, body1, body2;
-    if (missing) {
+    // Title + body string depend on what's wrong.
+    std::string title, body1;
+    switch (kind) {
+    case ChessnutBoardModalKind::Positioning:
+        title = "Positioning pieces on the chessboard";
+        body1 = "Wait for the motors to finish";
+        break;
+    case ChessnutBoardModalKind::Missing:
         title = "Place all pieces on the board";
         body1 = squares_msg.empty()
             ? std::string("No pieces detected on the board")
             : (std::string("Missing: ") + squares_msg);
-        body2 = "(or check the piece battery)";
-    } else {
+        break;
+    case ChessnutBoardModalKind::WrongLayout:
         title = "Place pieces in the starting position";
         body1 = "All pieces detected, but the layout is wrong";
-        body2 = "rnbqkbnr / pppppppp on ranks 8 and 7";
+        break;
     }
 
     {
@@ -1492,18 +1497,10 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
     {
         float cw = 0.022f, ch = 0.034f;
         float bw = body1.size() * cw * 0.7f;
-        add_screen_string(tv, -bw * 0.5f, 0.06f, cw, ch, body1);
+        add_screen_string(tv, -bw * 0.5f, 0.04f, cw, ch, body1);
     }
     int body1_end = static_cast<int>(tv.size() / 5);
     int body1_count = body1_end - title_count;
-
-    {
-        float cw = 0.020f, ch = 0.030f;
-        float hw = body2.size() * cw * 0.7f;
-        add_screen_string(tv, -hw * 0.5f, 0.005f, cw, ch, body2);
-    }
-    int body2_end = static_cast<int>(tv.size() / 5);
-    int body2_count = body2_end - body1_end;
 
     // Exit button label.
     {
@@ -1515,7 +1512,7 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
         add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
     }
     int btn_end = static_cast<int>(tv.size() / 5);
-    int btn_count = btn_end - body2_end;
+    int btn_count = btn_end - body1_end;
 
     if (!tv.empty()) {
         GLuint tvao, tvbo;
@@ -1536,8 +1533,7 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
                     0.95f, 0.95f, 0.95f, 1.0f);
         glDrawArrays(GL_TRIANGLES, 0, title_count);
         glDrawArrays(GL_TRIANGLES, title_count, body1_count);
-        glDrawArrays(GL_TRIANGLES, body1_end, body2_count);
-        glDrawArrays(GL_TRIANGLES, body2_end, btn_count);
+        glDrawArrays(GL_TRIANGLES, body1_end, btn_count);
 
         glBindVertexArray(0);
         glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);

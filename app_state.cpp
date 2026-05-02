@@ -678,6 +678,7 @@ void app_enter_menu(AppState& a) {
     a.chessnut_missing_modal_open = false;
     a.chessnut_missing_squares_msg.clear();
     a.chessnut_missing_exit_hover = false;
+    a.chessnut_pending_ai_trigger = false;
     audio_music_play("intro_music.wav");
     set_status(a, "3D Chess");
     queue_redraw(a);
@@ -775,10 +776,27 @@ void app_enter_game(AppState& a) {
     // always replans from current sensor state — handles boards
     // that were left in arbitrary positions after the last session.
     app_chessnut_sync_board(a, /*force=*/true);
-    // If the human plays black, Stockfish makes the first move as
-    // white. In two-player (Chessnut hot-seat) mode there's no
-    // Stockfish — both sides are humans.
-    if (!a.two_player_mode && !a.human_plays_white) trigger_ai(a);
+
+    // While the motors are arranging the starting position on the
+    // physical board, block game input with a "positioning" modal.
+    // The modal auto-closes from the apply_sensor_frame baseline
+    // path once a stable sensor frame confirms the layout matches
+    // (or transitions to Missing / WrongLayout if it doesn't).
+    bool ai_will_open_first = !a.two_player_mode && !a.human_plays_white;
+    if (a.chessnut_connected) {
+        a.chessnut_missing_modal_open = true;
+        a.chessnut_missing_modal_type = AppState::ChessnutModalType::Positioning;
+        a.chessnut_missing_squares_msg.clear();
+        a.chessnut_missing_exit_hover = false;
+        // Hold Stockfish's first move until motors finish — kicking
+        // it off now would race the digital state ahead of the
+        // physical board.
+        a.chessnut_pending_ai_trigger = ai_will_open_first;
+        queue_redraw(a);
+    } else if (ai_will_open_first) {
+        // No chessnut board — Stockfish goes immediately as before.
+        trigger_ai(a);
+    }
 }
 
 void app_enter_challenge_select(AppState& a) {
@@ -1927,10 +1945,18 @@ static void render_board(AppState& a, int width, int height) {
     // playing scene. Drawn after renderer_draw so it overlays the
     // game-over / withdraw modals if they happen to coincide.
     if (a.chessnut_missing_modal_open) {
+        ChessnutBoardModalKind kind = ChessnutBoardModalKind::Missing;
+        switch (a.chessnut_missing_modal_type) {
+        case AppState::ChessnutModalType::Positioning:
+            kind = ChessnutBoardModalKind::Positioning; break;
+        case AppState::ChessnutModalType::Missing:
+            kind = ChessnutBoardModalKind::Missing;     break;
+        case AppState::ChessnutModalType::WrongLayout:
+            kind = ChessnutBoardModalKind::WrongLayout; break;
+        }
         renderer_draw_chessnut_missing_modal(
             a.chessnut_missing_squares_msg,
-            a.chessnut_missing_modal_type ==
-                AppState::ChessnutModalType::Missing,
+            kind,
             a.chessnut_missing_exit_hover);
     }
 
@@ -2685,6 +2711,17 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             a.chessnut_missing_exit_hover  = false;
             set_status(a, "Chessnut: all pieces detected");
             queue_redraw(a);
+            // If the human is playing black, Stockfish was held
+            // back so it wouldn't race the motors. Now that the
+            // board is positioned, kick it off.
+            if (a.chessnut_pending_ai_trigger) {
+                a.chessnut_pending_ai_trigger = false;
+                if (a.mode == MODE_PLAYING && !a.game.game_over &&
+                    !a.two_player_mode &&
+                    a.game.white_turn != a.human_plays_white) {
+                    trigger_ai(a);
+                }
+            }
         }
     };
 
