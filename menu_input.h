@@ -8,20 +8,38 @@
 // overlay drawing in renderer_draw_menu share these so the click
 // regions and the rendered backgrounds never drift apart.
 //
-// BTN_MULTIPLAYER_Y sits where the "Play against stockfish"
-// subtitle is when no Chessnut Move is connected. When the board
-// is connected, the subtitle is suppressed and the Multiplayer
-// button takes its slot — same NDC range, no layout shift for
-// the buttons below.
+// Five vertical slots are reserved (BTN_SLOT_1 = topmost). Layout
+// depends on whether a Chessnut Move board is connected:
+//
+//   chessnut_connected = false        chessnut_connected = true
+//   ─────────────────────────         ─────────────────────────
+//   "Play against stockfish"          (subtitle suppressed)
+//   SLOT_1: Start Game                SLOT_1: Multiplayer
+//   SLOT_2: Challenges                SLOT_2: Start Game
+//   SLOT_3: Options                   SLOT_3: Challenges
+//   SLOT_4: Quit                      SLOT_4: Options
+//   (SLOT_5 unused)                   SLOT_5: Quit
+//
+// i.e. when Multiplayer is shown it takes the *Start Game* slot and
+// every button below shifts one slot down — the buttons never crowd
+// the "3D Chess" title.
 namespace menu_ui {
-constexpr float BTN_W            =  0.35f;
-constexpr float BTN_H            =  0.08f;
-constexpr float BTN_X            = -BTN_W * 0.5f;
-constexpr float BTN_MULTIPLAYER_Y=  0.25f;
-constexpr float BTN_START_Y      =  0.12f;
-constexpr float BTN_CHALLENGE_Y  = -0.05f;
-constexpr float BTN_OPTIONS_Y    = -0.22f;
-constexpr float BTN_QUIT_Y       = -0.39f;
+constexpr float BTN_W       =  0.35f;
+constexpr float BTN_H       =  0.08f;
+constexpr float BTN_X       = -BTN_W * 0.5f;
+constexpr float BTN_SLOT_1  =  0.12f;
+constexpr float BTN_SLOT_2  = -0.05f;
+constexpr float BTN_SLOT_3  = -0.22f;
+constexpr float BTN_SLOT_4  = -0.39f;
+constexpr float BTN_SLOT_5  = -0.56f;
+
+// Per-button Y resolvers. `mp` = chessnut_connected (true → the
+// Multiplayer button is on screen, all other buttons shift down).
+constexpr float btn_multiplayer_y()              { return BTN_SLOT_1; }
+constexpr float btn_start_y(bool mp)     { return mp ? BTN_SLOT_2 : BTN_SLOT_1; }
+constexpr float btn_challenge_y(bool mp) { return mp ? BTN_SLOT_3 : BTN_SLOT_2; }
+constexpr float btn_options_y(bool mp)   { return mp ? BTN_SLOT_4 : BTN_SLOT_3; }
+constexpr float btn_quit_y(bool mp)      { return mp ? BTN_SLOT_5 : BTN_SLOT_4; }
 }  // namespace menu_ui
 
 // Returns 0=none, 1=start, 2=quit, 3=challenges, 4=options,

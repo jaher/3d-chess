@@ -159,16 +159,17 @@ int menu_hit_test(double mx, double my, int width, int height,
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
     if (ndc_x < BTN_X || ndc_x > BTN_X + BTN_W) return 0;
-    if (chessnut_connected &&
-        ndc_y >= BTN_MULTIPLAYER_Y - BTN_H &&
-        ndc_y <= BTN_MULTIPLAYER_Y)                              return 5;
-    if (ndc_y >= BTN_START_Y     - BTN_H && ndc_y <= BTN_START_Y)     return 1;
-    if (ndc_y >= BTN_CHALLENGE_Y - BTN_H && ndc_y <= BTN_CHALLENGE_Y) return 3;
-    if (ndc_y >= BTN_OPTIONS_Y   - BTN_H && ndc_y <= BTN_OPTIONS_Y)   return 4;
+    auto hit = [&](float top) {
+        return ndc_y >= top - BTN_H && ndc_y <= top;
+    };
+    if (chessnut_connected && hit(btn_multiplayer_y()))      return 5;
+    if (hit(btn_start_y(chessnut_connected)))                return 1;
+    if (hit(btn_challenge_y(chessnut_connected)))            return 3;
+    if (hit(btn_options_y(chessnut_connected)))              return 4;
 #ifndef __EMSCRIPTEN__
     // No "Quit" button in the browser build — closing a tab from
     // inside a WASM app is awkward and not expected on the web.
-    if (ndc_y >= BTN_QUIT_Y      - BTN_H && ndc_y <= BTN_QUIT_Y)      return 2;
+    if (hit(btn_quit_y(chessnut_connected)))                 return 2;
 #endif
     return 0;
 }

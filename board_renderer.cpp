@@ -2126,34 +2126,38 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     }
 
     float bcw = 0.028f, bch = 0.042f;
+    const float start_y     = btn_start_y(chessnut_connected);
+    const float challenge_y = btn_challenge_y(chessnut_connected);
+    const float options_y   = btn_options_y(chessnut_connected);
+    const float quit_y      = btn_quit_y(chessnut_connected);
     int multi_end = subtitle_end;
     if (chessnut_connected) {
         std::string mp_text = "Multiplayer";
         float mtw = mp_text.size() * bcw * 0.7f;
         add_screen_string(ui_verts, -mtw*0.5f,
-                          BTN_MULTIPLAYER_Y - 0.018f,
+                          btn_multiplayer_y() - 0.018f,
                           bcw, bch, mp_text);
         multi_end = static_cast<int>(ui_verts.size() / 5);
     }
     std::string start_text = "Start Game";
     float stw = start_text.size() * bcw * 0.7f;
-    add_screen_string(ui_verts, -stw*0.5f, BTN_START_Y - 0.018f, bcw, bch, start_text);
+    add_screen_string(ui_verts, -stw*0.5f, start_y - 0.018f, bcw, bch, start_text);
     int start_end = static_cast<int>(ui_verts.size() / 5);
 
     std::string ch_text = "Challenges";
     float chw = ch_text.size() * bcw * 0.7f;
-    add_screen_string(ui_verts, -chw*0.5f, BTN_CHALLENGE_Y - 0.018f, bcw, bch, ch_text);
+    add_screen_string(ui_verts, -chw*0.5f, challenge_y - 0.018f, bcw, bch, ch_text);
     int ch_end = static_cast<int>(ui_verts.size() / 5);
 
     std::string opt_text = "Options";
     float otw = opt_text.size() * bcw * 0.7f;
-    add_screen_string(ui_verts, -otw*0.5f, BTN_OPTIONS_Y - 0.018f, bcw, bch, opt_text);
+    add_screen_string(ui_verts, -otw*0.5f, options_y - 0.018f, bcw, bch, opt_text);
     int opt_end = static_cast<int>(ui_verts.size() / 5);
 
 #ifndef __EMSCRIPTEN__
     std::string quit_text = "Quit";
     float qtw = quit_text.size() * bcw * 0.7f;
-    add_screen_string(ui_verts, -qtw*0.5f, BTN_QUIT_Y - 0.018f, bcw, bch, quit_text);
+    add_screen_string(ui_verts, -qtw*0.5f, quit_y - 0.018f, bcw, bch, quit_text);
     int quit_end = static_cast<int>(ui_verts.size() / 5);
 #endif
 
@@ -2182,11 +2186,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
             };
             bg.insert(bg.end(), v, v + 18);
         };
-        push_quad(BTN_START_Y);
-        push_quad(BTN_CHALLENGE_Y);
-        push_quad(BTN_OPTIONS_Y);
-        push_quad(BTN_QUIT_Y);
-        if (chessnut_connected) push_quad(BTN_MULTIPLAYER_Y);
+        push_quad(start_y);
+        push_quad(challenge_y);
+        push_quad(options_y);
+        push_quad(quit_y);
+        if (chessnut_connected) push_quad(btn_multiplayer_y());
         GLuint bvao, bvbo;
         glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
         glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
