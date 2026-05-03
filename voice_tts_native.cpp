@@ -73,8 +73,20 @@ bool synthesize_via_piper(const std::string& text,
                           std::vector<int16_t>* out_pcm) {
     int in_pipe[2];   // parent → child stdin
     int out_pipe[2];  // child stdout → parent
-    if (pipe(in_pipe) < 0) return false;
-    if (pipe(out_pipe) < 0) {
+    // O_CLOEXEC is critical here. Without it, an unrelated fork+exec
+    // anywhere else in the process (e.g. AI thread spawning
+    // Stockfish moments after we kicked off piper) inherits these
+    // pipe FDs. Stockfish's exec wouldn't close them, so when the
+    // piper child exits its stdout pipe stays "open" via Stockfish's
+    // copy — the parent's read() below blocks forever waiting for
+    // an EOF that never comes. Symptom: "piper synth" log appears
+    // but "piper done" never does. With O_CLOEXEC the pipe ends
+    // close on every exec the parent does later, so EOF arrives
+    // when piper exits as expected. dup2 in the child clears
+    // CLOEXEC on the new FD numbers (0/1), so piper itself sees a
+    // normal stdin/stdout.
+    if (pipe2(in_pipe, O_CLOEXEC) < 0) return false;
+    if (pipe2(out_pipe, O_CLOEXEC) < 0) {
         close(in_pipe[0]); close(in_pipe[1]);
         return false;
     }
