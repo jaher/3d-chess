@@ -462,12 +462,25 @@ static void handle_board_click(AppState& a, double mx, double my,
                     (gs.white_turn == a.current_challenge.starts_white);
                 // Snapshot the grid BEFORE the move so we can tell
                 // whether the destination was occupied (capture) —
-                // that info is gone once execute_move runs.
+                // that info is gone once execute_move runs. Same
+                // snapshot powers the TTS render below.
                 bool sfx_capture = gs.grid[row][col] >= 0;
+                BoardSnapshot tts_before;
+                if (a.voice_tts_enabled) {
+                    tts_before.pieces        = gs.pieces;
+                    tts_before.white_turn    = gs.white_turn;
+                    tts_before.castling      = gs.castling;
+                    tts_before.ep_target_col = gs.ep_target_col;
+                    tts_before.ep_target_row = gs.ep_target_row;
+                }
                 execute_move(gs, gs.selected_col, gs.selected_row, col, row);
                 gs.selected_col = gs.selected_row = -1;
                 gs.valid_moves.clear();
                 play_move_sfx(gs, sfx_capture);
+                if (a.voice_tts_enabled && !gs.move_history.empty()) {
+                    voice_tts_speak(uci_to_speech(
+                        tts_before, gs.move_history.back()));
+                }
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2289,10 +2302,21 @@ void apply_voice_utterance(AppState& a,
     }
 
     bool sfx_capture = gs.grid[to_row][to_col] >= 0;
+    BoardSnapshot tts_before;
+    if (a.voice_tts_enabled) {
+        tts_before.pieces        = gs.pieces;
+        tts_before.white_turn    = gs.white_turn;
+        tts_before.castling      = gs.castling;
+        tts_before.ep_target_col = gs.ep_target_col;
+        tts_before.ep_target_row = gs.ep_target_row;
+    }
     execute_move(gs, from_col, from_row, to_col, to_row);
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
     play_move_sfx(gs, sfx_capture);
+    if (a.voice_tts_enabled && !gs.move_history.empty()) {
+        voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));
+    }
     app_chessnut_sync_board(a, /*force=*/false);
 
     std::string msg = std::string("Voice — heard '") + utterance +

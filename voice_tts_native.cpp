@@ -33,6 +33,10 @@ namespace {
 
 std::mutex                g_init_mu;
 std::atomic<bool>         g_inited{false};
+// Sticky-failed flag: once espeak_Initialize fails we stop retrying
+// on every voice_tts_speak() call so a missing data path doesn't
+// flood stderr with one error per move.
+std::atomic<bool>         g_init_failed{false};
 
 // Worker-thread state.
 std::thread               g_worker;
@@ -142,7 +146,21 @@ bool voice_tts_init(std::string& err_out) {
 }
 
 void voice_tts_speak(const std::string& text) {
-    if (!g_inited.load() || text.empty()) return;
+    if (text.empty()) return;
+    // Lazy init: voice_tts_enabled defaults to true, so the first
+    // move call may arrive without any explicit toggle click. Init
+    // here so it Just Works; sticky-failed avoids retry storms if
+    // the data path is bad.
+    if (!g_inited.load() && !g_init_failed.load()) {
+        std::string err;
+        if (!voice_tts_init(err)) {
+            std::fprintf(stderr,
+                "voice_tts: lazy init failed: %s\n", err.c_str());
+            g_init_failed.store(true);
+            return;
+        }
+    }
+    if (!g_inited.load()) return;
     {
         std::lock_guard<std::mutex> lk(g_q_mu);
         // Drop in-flight backlog if it grows past a couple of

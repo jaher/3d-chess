@@ -176,12 +176,11 @@ status-bar hint so the two modes never race for the same mic.
 
 #### Speak moves (TTS announcements)
 
-Below the voice toggles is a **Speak moves** row. When on, the AI's
-reply is announced through the speakers after every move ("Knight
-to f three", "Pawn takes d five", "Castles kingside, check"). Your
-own moves are not spoken — reading them back is redundant noise.
-Off by default; flip it on if you want to play eyes-free or
-glance away from the board between moves.
+Below the voice toggles is a **Speak moves** row, **on by default**.
+Every move — yours and the opponent's — is announced through the
+speakers ("Knight to f three", "Pawn takes d five", "Castles
+kingside, check"). Flip the toggle off in Options if you'd rather
+play silently.
 
 Native build: powered by [espeak-ng](https://github.com/espeak-ng/espeak-ng)
 vendored as a git submodule under `third_party/espeak-ng/`. The

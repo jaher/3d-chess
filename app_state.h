@@ -238,13 +238,14 @@ struct AppState {
     // API (web/voice_web.cpp).
     bool voice_continuous_enabled = false;
 
-    // Voice-output (TTS): announce the AI's reply over the speaker
-    // after every move. Desktop drives espeak-ng; web drives the
-    // browser's speechSynthesis. Off by default. The user's own
-    // moves are NOT spoken — reading them back would be redundant
-    // noise; flip this on to hear what Stockfish (or the remote
-    // opponent) just played.
-    bool voice_tts_enabled = false;
+    // Voice-output (TTS): announce every move (yours and the
+    // opponent's) over the speaker. Desktop drives espeak-ng; web
+    // drives the browser's speechSynthesis. ON by default so a
+    // brand-new install gets the eyes-free experience without
+    // hunting through Options. Flip OFF in Options if you'd rather
+    // play silently. Voice phrases: "speak moves" / "announce
+    // moves" / "toggle voice output".
+    bool voice_tts_enabled = true;
 
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app
