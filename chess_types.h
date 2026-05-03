@@ -62,6 +62,19 @@ struct GameState {
     int selected_col = -1, selected_row = -1;
     std::vector<std::pair<int,int>> valid_moves;
 
+    // Move-hint visualisation (Options → Move hints). Populated from
+    // Stockfish's bestmove on the user's turn; -1 means "no hint
+    // currently rendered". The renderer draws yellow rings on the
+    // (col, row) pairs alongside the regular blue valid-move rings.
+    int hint_from_col = -1, hint_from_row = -1;
+    int hint_to_col   = -1, hint_to_row   = -1;
+    // Most recent hint UCI we spoke aloud — keyed by (uci + ply
+    // count) so we don't repeat the same hint when the eval refreshes
+    // multiple times for the same position, but we DO speak again
+    // after the user moves and a new position arrives.
+    std::string hint_last_spoken_uci;
+    int         hint_last_spoken_ply = -1;
+
     bool game_over = false;
     std::string game_result;
 

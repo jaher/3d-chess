@@ -110,8 +110,16 @@ window.StockfishBridge = (function () {
         const sideBlack = fenSideToMove(active.fen);
         const cp = sideBlack ? -bestEval : bestEval;
         const idx = active.idx;
+        // Capture the bestmove UCI alongside the cp score — drives
+        // the hint feature on the C++ side. Format: "bestmove e7e5
+        // ponder d2d4" / "bestmove (none)" / "bestmove 0000".
+        const parts = line.split(/\s+/);
+        let bestUci = parts.length >= 2 ? parts[1] : '';
+        if (bestUci === '(none)' || bestUci === '0000') bestUci = '';
         finishActive(function () {
-          safe_ccall('on_eval_from_js', null, ['number', 'number'], [cp, idx]);
+          safe_ccall('on_eval_from_js', null,
+                     ['number', 'number', 'string'],
+                     [cp, idx, bestUci]);
         });
       }
       return;

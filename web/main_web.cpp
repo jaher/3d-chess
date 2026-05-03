@@ -35,9 +35,10 @@ extern "C" void voice_web_bind_app(AppState* a);
 namespace web_ai {
     extern bool        move_ready;
     extern std::string move_uci;
-    extern bool eval_ready;
-    extern int  eval_cp;
-    extern int  eval_index;
+    extern bool        eval_ready;
+    extern int         eval_cp;
+    extern int         eval_index;
+    extern std::string eval_best_uci;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +302,8 @@ static void poll_ai_results() {
     }
     if (web_ai::eval_ready) {
         web_ai::eval_ready = false;
-        app_eval_ready(g_app, web_ai::eval_cp, web_ai::eval_index);
+        app_eval_ready(g_app, web_ai::eval_cp, web_ai::eval_index,
+                       web_ai::eval_best_uci);
     }
 }
 

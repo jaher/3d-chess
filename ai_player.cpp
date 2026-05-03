@@ -263,7 +263,9 @@ public:
     }
 
     // Returns centipawns from white's perspective, or INT_MIN on failure.
-    int eval_position(const std::string& fen, int movetime_ms) {
+    int eval_position(const std::string& fen, int movetime_ms,
+                      std::string* out_best_uci = nullptr) {
+        if (out_best_uci) out_best_uci->clear();
         if (!write_line("ucinewgame")) { stop(); return INT_MIN; }
         if (!write_line("isready"))    { stop(); return INT_MIN; }
         if (wait_for_contains("readyok", 2000).empty()) { stop(); return INT_MIN; }
@@ -289,7 +291,21 @@ public:
             auto line_opt = read_line(deadline_budget);
             if (!line_opt) { stop(); return INT_MIN; }
             const std::string& line = *line_opt;
-            if (line.rfind("bestmove ", 0) == 0) break;
+            if (line.rfind("bestmove ", 0) == 0) {
+                // Capture the bestmove for the hint pipeline. Format is
+                // "bestmove e7e5 ponder d2d4" or "bestmove (none)" /
+                // "bestmove 0000" for mate/stalemate.
+                if (out_best_uci) {
+                    std::istringstream bm(line);
+                    std::string keyword, move;
+                    bm >> keyword >> move;
+                    if (move != "(none)" && move != "0000" &&
+                        move.size() >= 4) {
+                        *out_best_uci = move;
+                    }
+                }
+                break;
+            }
 
             if (line.rfind("info ", 0) != 0) continue;
 
@@ -499,6 +515,14 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
     StockfishEngine* eng = get_engine_locked();
     if (!eng) return INT_MIN;
     return eng->eval_position(fen, movetime_ms);
+}
+
+int stockfish_eval(const std::string& fen, int movetime_ms,
+                   std::string& out_best_uci) {
+    std::lock_guard<std::mutex> lk(g_engine_mu);
+    StockfishEngine* eng = get_engine_locked();
+    if (!eng) { out_best_uci.clear(); return INT_MIN; }
+    return eng->eval_position(fen, movetime_ms, &out_best_uci);
 }
 
 void ai_player_set_elo(int elo) {

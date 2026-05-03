@@ -53,6 +53,7 @@ struct AiMoveArrived {
 struct EvalArrived {
     int cp;
     int score_index;
+    std::string best_uci;  // empty when engine returned (none)
 };
 
 static gboolean on_ai_move_ready(gpointer data) {
@@ -64,7 +65,7 @@ static gboolean on_ai_move_ready(gpointer data) {
 
 static gboolean on_eval_ready(gpointer data) {
     auto* r = static_cast<EvalArrived*>(data);
-    app_eval_ready(g_app, r->cp, r->score_index);
+    app_eval_ready(g_app, r->cp, r->score_index, r->best_uci);
     delete r;
     return G_SOURCE_REMOVE;
 }
@@ -85,8 +86,9 @@ static void plat_trigger_eval(const char* fen_c, int movetime, int idx) {
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
     std::thread([fen, mt, idx]() {
-        int cp = stockfish_eval(fen, mt);
-        auto* r = new EvalArrived{cp, idx};
+        std::string best;
+        int cp = stockfish_eval(fen, mt, best);
+        auto* r = new EvalArrived{cp, idx, std::move(best)};
         g_idle_add(on_eval_ready, r);
     }).detach();
 }

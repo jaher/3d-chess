@@ -247,6 +247,16 @@ struct AppState {
     // moves" / "toggle voice output".
     bool voice_tts_enabled = true;
 
+    // Move hints (coach mode): when on, the app uses Stockfish's
+    // ongoing evaluation pipeline to surface the optimal move on
+    // the user's turn — yellow rings on the from + to squares
+    // (mirroring the existing blue valid-move rings) plus a TTS
+    // announcement ("Hint: Knight to f three"). Off by default —
+    // opt in via Options or the spoken phrase "move hints" /
+    // "hint mode" / "show hints". Single-player only; ignored
+    // in two-player mode and during challenges.
+    bool hint_enabled = false;
+
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app
     // pushes the current FEN to the board on every state change.
@@ -399,7 +409,8 @@ void app_render(AppState& a, int width, int height);
 // uci may be empty to indicate "no move produced" — in that case
 // app_state picks a random legal black move as a fallback.
 void app_ai_move_ready(AppState& a, const char* uci);
-void app_eval_ready(AppState& a, int cp, int score_index);
+void app_eval_ready(AppState& a, int cp, int score_index,
+                    const std::string& best_uci = std::string());
 
 #ifndef __EMSCRIPTEN__
 // Voice push-to-talk (desktop only — SDL2 + whisper.cpp). The

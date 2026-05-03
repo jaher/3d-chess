@@ -476,6 +476,8 @@ static void handle_board_click(AppState& a, double mx, double my,
                 execute_move(gs, gs.selected_col, gs.selected_row, col, row);
                 gs.selected_col = gs.selected_row = -1;
                 gs.valid_moves.clear();
+                gs.hint_from_col = gs.hint_from_row = -1;
+                gs.hint_to_col   = gs.hint_to_row   = -1;
                 play_move_sfx(gs, sfx_capture);
                 if (a.voice_tts_enabled && !gs.move_history.empty()) {
                     voice_tts_speak(uci_to_speech(
@@ -1101,6 +1103,20 @@ static void release_options(AppState& a, double mx, double my,
         queue_redraw(a);
     } else if (btn == 8 && voice_supported) {
         app_voice_toggle_speak_moves_request(a);
+    } else if (btn == 9) {
+        a.hint_enabled = !a.hint_enabled;
+        if (!a.hint_enabled) {
+            // Clear stale rings + dedup state immediately so the
+            // user sees the toggle take effect.
+            a.game.hint_from_col = a.game.hint_from_row = -1;
+            a.game.hint_to_col   = a.game.hint_to_row   = -1;
+            a.game.hint_last_spoken_uci.clear();
+            a.game.hint_last_spoken_ply = -1;
+        }
+        set_status(a, a.hint_enabled
+            ? "Move hints: ON — Stockfish's recommendation will appear in yellow"
+            : "Move hints: OFF");
+        queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -1597,7 +1613,8 @@ void app_ai_move_ready(AppState& a, const char* uci_c) {
     }
 }
 
-void app_eval_ready(AppState& a, int cp, int score_index) {
+void app_eval_ready(AppState& a, int cp, int score_index,
+                    const std::string& best_uci) {
     GameState& gs = a.game;
     if (cp == INT_MIN) return;
     if (score_index < 0 ||
@@ -1614,6 +1631,49 @@ void app_eval_ready(AppState& a, int cp, int score_index) {
         pawn_units = cp / 100.0f;
     }
     gs.score_history[score_index] = pawn_units;
+
+    // Hint feature — surface Stockfish's bestmove for this position
+    // when it's the user's turn (single-player mode, AI not
+    // animating, game not over). The eval pipeline already runs
+    // after every move; we just piggyback on its bestmove output.
+    bool hint_active =
+        a.hint_enabled &&
+        !a.two_player_mode &&
+        a.mode == MODE_PLAYING &&
+        !gs.game_over &&
+        !gs.ai_animating &&
+        !gs.ai_thinking &&
+        gs.white_turn == a.human_plays_white &&
+        !best_uci.empty();
+    if (hint_active) {
+        int fc, fr, tc, tr;
+        if (parse_uci_move(best_uci, fc, fr, tc, tr)) {
+            gs.hint_from_col = fc;
+            gs.hint_from_row = fr;
+            gs.hint_to_col   = tc;
+            gs.hint_to_row   = tr;
+            // Speak the hint once per position. The score-graph eval
+            // can refresh multiple times for the same ply (e.g. when
+            // the user lingers); ply count + uci is a stable key.
+            int ply = static_cast<int>(gs.move_history.size());
+            if (gs.hint_last_spoken_uci != best_uci ||
+                gs.hint_last_spoken_ply != ply) {
+                gs.hint_last_spoken_uci = best_uci;
+                gs.hint_last_spoken_ply = ply;
+                if (!gs.snapshots.empty()) {
+                    std::string spoken = uci_to_speech(
+                        gs.snapshots.back(), best_uci);
+                    voice_tts_speak("Hint: " + spoken);
+                }
+            }
+        }
+    } else {
+        // Conditions don't match: drop any stale hint so the rings
+        // don't linger across mode/turn boundaries.
+        gs.hint_from_col = gs.hint_from_row = -1;
+        gs.hint_to_col   = gs.hint_to_row   = -1;
+    }
+
     queue_redraw(a);
 }
 
@@ -1665,6 +1725,8 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         }
         execute_move(gs, gs.ai_from_col, gs.ai_from_row,
                      gs.ai_to_col,   gs.ai_to_row);
+        gs.hint_from_col = gs.hint_from_row = -1;
+        gs.hint_to_col   = gs.hint_to_row   = -1;
         play_move_sfx(gs, sfx_capture);
         // Speak the AI's reply over the speaker. Skipped when the
         // toggle is off; the user's own moves are never announced
@@ -1914,6 +1976,7 @@ static void render_options(AppState& a, int width, int height) {
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
+                          a.hint_enabled,
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           a.ble_verbose_log,
@@ -2232,6 +2295,18 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         if (app_voice_continuous_supported())
             app_voice_toggle_speak_moves_request(a);
         break;
+    case VoiceCommand::ToggleHints:
+        a.hint_enabled = !a.hint_enabled;
+        if (!a.hint_enabled) {
+            a.game.hint_from_col = a.game.hint_from_row = -1;
+            a.game.hint_to_col   = a.game.hint_to_row   = -1;
+            a.game.hint_last_spoken_uci.clear();
+            a.game.hint_last_spoken_ply = -1;
+        }
+        set_status(a, a.hint_enabled
+            ? "Move hints: ON"
+            : "Move hints: OFF");
+        break;
     case VoiceCommand::PlayWhite:
         a.human_plays_white = true;
         break;
@@ -2313,6 +2388,8 @@ void apply_voice_utterance(AppState& a,
     execute_move(gs, from_col, from_row, to_col, to_row);
     gs.selected_col = gs.selected_row = -1;
     gs.valid_moves.clear();
+    gs.hint_from_col = gs.hint_from_row = -1;
+    gs.hint_to_col   = gs.hint_to_row   = -1;
     play_move_sfx(gs, sfx_capture);
     if (a.voice_tts_enabled && !gs.move_history.empty()) {
         voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));

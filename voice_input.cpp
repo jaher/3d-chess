@@ -404,6 +404,10 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "toggle speak", "toggle voice output",
                           "speak", "announce"}))
             return VoiceCommand::ToggleSpeakMoves;
+        if (match_any(s, {"move hints", "hints", "hint mode",
+                          "show hints", "toggle hints",
+                          "coach mode"}))
+            return VoiceCommand::ToggleHints;
         break;
 
     case MODE_PLAYING:

@@ -193,6 +193,26 @@ follows the platform's installed TTS engine.
 Spoken phrase to flip the toggle from voice: "speak moves" /
 "announce moves" / "toggle voice output".
 
+#### Move hints (coach mode)
+
+The next Options row, **Move hints** (off by default), turns on
+opt-in coaching against Stockfish. When it's your turn, the engine
+suggests the optimal move:
+
+- Yellow rings glow on the source + destination squares of the
+  recommended move (same primitive as the blue valid-move rings,
+  different colour).
+- The move is announced: "Hint: Knight to f three" via the same
+  TTS engine the Speak moves toggle uses.
+
+Hints piggyback on the score-graph's existing eval pipeline — no
+extra Stockfish queries — so they appear within ~150 ms after your
+opponent moves, with zero engine-load cost. Single-player games vs
+Stockfish only; ignored in two-player mode and during challenges.
+
+Spoken phrase to flip the toggle: "move hints" / "hint mode" /
+"coach mode".
+
 #### Voice UI commands
 
 In addition to chess moves, the same speech engine recognises spoken
@@ -200,7 +220,7 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "challenges", "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "verbose log" (BLE diagnostic)
+- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" (Stockfish coach), "verbose log" (BLE diagnostic)
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other

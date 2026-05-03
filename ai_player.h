@@ -43,6 +43,15 @@ std::string ask_ai_move(const std::string& fen);
 // ±(30000 - distance_to_mate). Returns INT_MIN if the engine is unavailable.
 int stockfish_eval(const std::string& fen, int movetime_ms = 150);
 
+// Same as above, but also captures the side-to-move's best UCI move
+// from the same Stockfish response (the `bestmove` line ships with
+// every `go movetime` query — same subprocess call, no extra cost).
+// Used by the hint feature to surface the optimal move on the user's
+// turn. `out_best_uci` may be empty if the engine returned no
+// bestmove (mate / stalemate position).
+int stockfish_eval(const std::string& fen, int movetime_ms,
+                   std::string& out_best_uci);
+
 // Update the engine's UCI_Elo strength setting. If the engine is already
 // running this sends `setoption name UCI_Elo value N`, which takes effect
 // on the next `go`. If it hasn't been spawned yet the value is latched and

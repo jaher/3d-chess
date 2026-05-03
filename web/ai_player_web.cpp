@@ -37,9 +37,10 @@ namespace web_ai {
     bool        move_ready = false;
     std::string move_uci;
 
-    bool eval_ready = false;
-    int  eval_cp = 0;
-    int  eval_index = -1;
+    bool        eval_ready = false;
+    int         eval_cp = 0;
+    int         eval_index = -1;
+    std::string eval_best_uci;  // populated alongside cp on each eval
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +82,7 @@ void web_request_eval(const std::string& fen, int movetime_ms, int score_index) 
     web_ai::eval_ready = false;
     web_ai::eval_cp = 0;
     web_ai::eval_index = score_index;
+    web_ai::eval_best_uci.clear();
     js_request_eval(fen.c_str(), movetime_ms, score_index);
 }
 
@@ -104,9 +106,10 @@ void on_ai_move_from_js(const char* uci) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-void on_eval_from_js(int cp, int idx) {
+void on_eval_from_js(int cp, int idx, const char* best_uci) {
     web_ai::eval_cp = cp;
     web_ai::eval_index = idx;
+    web_ai::eval_best_uci = (best_uci && *best_uci) ? best_uci : "";
     web_ai::eval_ready = true;
 }
 

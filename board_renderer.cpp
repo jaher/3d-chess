@@ -2050,6 +2050,42 @@ void renderer_draw(GameState& gs, int width, int height,
         glUniform1f(lin, mi); glUniform1f(lout, mo);
         glBindVertexArray(g_disc_vao); glDrawArrays(GL_TRIANGLES, 0, g_disc_vertex_count); glBindVertexArray(0);
     }
+
+    // Move-hint rings — yellow disc on the source + destination of
+    // Stockfish's recommended move when Options → Move hints is on.
+    // Same disc primitive as the valid-move rings above; different
+    // colour and slightly larger inner/outer radii so the source
+    // square reads distinctly from a click-selected piece's blue
+    // glow above.
+    if (gs.hint_from_col >= 0 && gs.hint_to_col >= 0) {
+        float hi = 0.30f + pulse * 0.06f;
+        float ho = 0.46f + pulse * 0.04f;
+        float ha = 0.55f + pulse * 0.25f;
+        // From-square: filled yellow ring.
+        {
+            float sx, sz;
+            square_center(gs.hint_from_col, gs.hint_from_row, sx, sz);
+            Mat4 mvp = mat4_multiply(vp, mat4_translate(sx, hy, sz));
+            glUniformMatrix4fv(lmvp, 1, GL_FALSE, mvp.m);
+            glUniform4f(lcol_loc, 1.0f, 0.85f, 0.15f, ha);
+            glUniform1f(lin, hi); glUniform1f(lout, ho);
+            glBindVertexArray(g_disc_vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_disc_vertex_count);
+            glBindVertexArray(0);
+        }
+        // To-square: same yellow.
+        {
+            float dx, dz;
+            square_center(gs.hint_to_col, gs.hint_to_row, dx, dz);
+            Mat4 mvp = mat4_multiply(vp, mat4_translate(dx, hy, dz));
+            glUniformMatrix4fv(lmvp, 1, GL_FALSE, mvp.m);
+            glUniform4f(lcol_loc, 1.0f, 0.85f, 0.15f, ha);
+            glUniform1f(lin, hi); glUniform1f(lout, ho);
+            glBindVertexArray(g_disc_vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_disc_vertex_count);
+            glBindVertexArray(0);
+        }
+    }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND);
 
     // --- Board coordinate labels (a-h, 1-8) using font texture ---
