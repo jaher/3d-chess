@@ -96,37 +96,30 @@ CXXFLAGS += -I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
             -I$(SIMPLEBLE_DIR)/dependencies/external
 LDFLAGS  += $(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1)
 
-# espeak-ng for the voice-output (TTS) move announcer. Built via its
-# own CMake into a static lib; voice data ships with the source tree
-# and is loaded at runtime via the absolute path baked in at compile
-# time. Disabling all the optional deps (sonic / pcaudio / mbrola /
-# async) keeps the static lib lean and avoids a runtime ALSA/PulseAudio
-# dependency — TTS PCM samples come back via the synth callback and
-# are mixed into our existing SDL2 audio stream.
-ESPEAK_DIR    := third_party/espeak-ng
-ESPEAK_BUILD  := $(ESPEAK_DIR)/build
-ESPEAK_LIB    := $(ESPEAK_BUILD)/src/libespeak-ng/libespeak-ng.a
-# espeak-ng's CMake build also produces two helper static libs the
-# main lib has unresolved references into: libucd (Unicode database
-# used by readclause / dictionary / numbers) and libspeechPlayer
-# (Klatt formant synthesiser). Both are private deps so cmake only
-# emits them as separate archives — link them explicitly.
-ESPEAK_AUX_LIBS := $(ESPEAK_BUILD)/src/ucd-tools/libucd.a \
-                   $(ESPEAK_BUILD)/src/speechPlayer/libspeechPlayer.a
-ESPEAK_INC    := $(ESPEAK_DIR)/src/include
-# espeak-ng's runtime data (phontab / phondata / phonindex /
-# intonations + per-language *_dict files) is *generated* by the
-# CMake build, not committed to the source tree. Point at the
-# build dir's espeak-ng-data/ where the `data` target writes.
-ESPEAK_DATA   := $(abspath $(ESPEAK_BUILD))
-ESPEAK_DATA_MARKER := $(ESPEAK_BUILD)/espeak-ng-data/phontab
-ESPEAK_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-                     -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF \
-                     -DUSE_LIBPCAUDIO=OFF -DUSE_KLATT=ON \
-                     -DUSE_SPEECHPLAYER=ON \
-                     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-CXXFLAGS += -I$(ESPEAK_INC) -DESPEAK_DATA_PATH='"$(ESPEAK_DATA)"'
-LDFLAGS  += $(ESPEAK_LIB) $(ESPEAK_AUX_LIBS)
+# Piper neural-TTS for the voice-output (move announcer). Replaces
+# the earlier espeak-ng formant synth, which sounded too robotic
+# next to the web build's `window.speechSynthesis`. Piper bundles
+# its own ONNX runtime + phonemizer in its release tarball — we
+# fetch the prebuilt binary + a single voice model on first build
+# (~90 MB total) and shell out per utterance, same pattern as the
+# Stockfish subprocess. Audio comes back as raw S16 22050 Hz PCM
+# on stdout and feeds the existing audio.cpp 8-voice mixer.
+#
+# Voice: en_US-amy-medium. Roomy budget for natural female English
+# pronunciation; swap the *_NAME / *_BASE_URL pair below for a
+# different voice (lessac, ryan, kathleen, ...) or model size.
+PIPER_DIR        := third_party/piper-bin
+PIPER_BIN        := $(PIPER_DIR)/piper/piper
+PIPER_VERSION    := 2023.11.14-2
+PIPER_URL        := https://github.com/rhasspy/piper/releases/download/$(PIPER_VERSION)/piper_linux_x86_64.tar.gz
+PIPER_MODEL_DIR  := third_party/piper-models
+PIPER_MODEL_NAME := en_US-amy-medium
+PIPER_MODEL      := $(PIPER_MODEL_DIR)/$(PIPER_MODEL_NAME).onnx
+PIPER_MODEL_JSON := $(PIPER_MODEL).json
+PIPER_MODEL_BASE_URL := https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium
+
+CXXFLAGS += -DPIPER_BINARY_PATH='"$(abspath $(PIPER_BIN))"' \
+            -DPIPER_MODEL_PATH='"$(abspath $(PIPER_MODEL))"'
 
 # Pre-converted distil-small.en GGML, hosted by the whisper.cpp/HF
 # community. Pinning by sha256 keeps the build reproducible — replace
@@ -134,9 +127,11 @@ LDFLAGS  += $(ESPEAK_LIB) $(ESPEAK_AUX_LIBS)
 WHISPER_MODEL_URL    := https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
 WHISPER_MODEL_SHA256 := ?
 
-all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL)
+all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL) \
+     $(PIPER_BIN) $(PIPER_MODEL) $(PIPER_MODEL_JSON)
 
-$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) $(ESPEAK_LIB) $(ESPEAK_DATA_MARKER)
+$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) \
+           $(PIPER_BIN) $(PIPER_MODEL) $(PIPER_MODEL_JSON)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.cpp $(HEADERS)
@@ -188,27 +183,36 @@ $(SIMPLEBLE_LIB):
 		$(SIMPLEBLE_CMAKE_ARGS)
 	cmake --build $(SIMPLEBLE_BUILD) --config Release -j
 
-# espeak-ng — built via its own CMake. The lib's voice data lives at
-# $(ESPEAK_DATA)/espeak-ng-data/ and is referenced at runtime via the
-# ESPEAK_DATA_PATH compile-time define. Build skips the language
-# data generation and CLI executable to keep build time short.
-$(ESPEAK_LIB):
-	@if [ ! -f $(ESPEAK_DIR)/CMakeLists.txt ]; then \
-		echo "espeak-ng submodule not initialized."; \
-		echo "Run: git submodule update --init --recursive"; \
-		exit 1; \
-	fi
-	cmake -B $(ESPEAK_BUILD) -S $(ESPEAK_DIR) $(ESPEAK_CMAKE_ARGS)
-	cmake --build $(ESPEAK_BUILD) --config Release -j --target espeak-ng
+# Piper TTS — fetch the prebuilt linux x86_64 release tarball
+# (binary + ONNX runtime + bundled espeak-ng phoneme data) on first
+# build. The release ships a self-contained `piper` executable
+# with RPATH=$ORIGIN, so the .so files load from the same dir
+# without LD_LIBRARY_PATH gymnastics. Subsequent builds are no-ops
+# once the file target exists.
+$(PIPER_BIN):
+	@mkdir -p $(PIPER_DIR)
+	@echo "Downloading piper-tts $(PIPER_VERSION) (~26 MB) ..."
+	curl -L --fail -o $(PIPER_DIR)/piper.tar.gz $(PIPER_URL)
+	tar -xzf $(PIPER_DIR)/piper.tar.gz -C $(PIPER_DIR)
+	rm $(PIPER_DIR)/piper.tar.gz
+	@echo "Piper installed at $(PIPER_BIN)"
 
-# Generate the phoneme tables (phontab / phondata / phonindex /
-# intonations) and per-language *_dict files into
-# $(ESPEAK_BUILD)/espeak-ng-data/. espeak_Initialize at runtime
-# refuses to start without phontab (the user reported "No such
-# file or directory" right after a move because we'd previously
-# only built the static lib). The CMake `data` target writes them.
-$(ESPEAK_DATA_MARKER): $(ESPEAK_LIB)
-	cmake --build $(ESPEAK_BUILD) --config Release -j --target data
+# Voice model — pinned to the v1.0.0 tag of rhasspy/piper-voices on
+# Hugging Face so updates upstream don't silently change the voice
+# the desktop build uses. Two files: the ONNX weights (~63 MB) and
+# a tiny .onnx.json with phoneme map + sample rate metadata.
+$(PIPER_MODEL):
+	@mkdir -p $(PIPER_MODEL_DIR)
+	@echo "Downloading piper voice model $(PIPER_MODEL_NAME) (~63 MB) ..."
+	curl -L --fail -o $@ $(PIPER_MODEL_BASE_URL)/$(PIPER_MODEL_NAME).onnx
+	@echo "Saved to $@"
+
+$(PIPER_MODEL_JSON):
+	@mkdir -p $(PIPER_MODEL_DIR)
+	curl -L --fail -o $@ $(PIPER_MODEL_BASE_URL)/$(PIPER_MODEL_NAME).onnx.json
+
+fetch-piper-binary: $(PIPER_BIN)
+fetch-piper-model:  $(PIPER_MODEL) $(PIPER_MODEL_JSON)
 
 clean:
 	rm -f $(OBJS) $(TARGET)
@@ -216,7 +220,8 @@ clean:
 
 distclean: clean
 	-$(MAKE) -C $(STOCKFISH_DIR)/src clean
-	-rm -rf $(WHISPER_BUILD) $(SIMPLEBLE_BUILD) $(ESPEAK_BUILD)
+	-rm -rf $(WHISPER_BUILD) $(SIMPLEBLE_BUILD)
+	-rm -rf $(PIPER_DIR) $(PIPER_MODEL_DIR)
 
 # Build and run the unit-test binary (see tests/). No GL, no GTK, no
 # Stockfish subprocess, no whisper.cpp — just the pure-logic layer.
@@ -233,4 +238,6 @@ simpleble_scan: tools/simpleble_scan.cpp $(SIMPLEBLE_LIB)
 		-o tools/simpleble_scan tools/simpleble_scan.cpp \
 		$(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1) -lpthread
 
-.PHONY: all clean distclean test fetch-whisper-model simpleble_scan
+.PHONY: all clean distclean test \
+        fetch-whisper-model fetch-piper-binary fetch-piper-model \
+        simpleble_scan

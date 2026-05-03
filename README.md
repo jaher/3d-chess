@@ -182,11 +182,17 @@ speakers ("Knight to f three", "Pawn takes d five", "Castles
 kingside, check"). Flip the toggle off in Options if you'd rather
 play silently.
 
-Native build: powered by [espeak-ng](https://github.com/espeak-ng/espeak-ng)
-vendored as a git submodule under `third_party/espeak-ng/`. The
-formant synth is small (~7 MB build artifact, voice data baked in)
-and gives the announcement a deliberately retro chess-computer
-voice. Web build: uses the browser's built-in
+Native build: powered by [Piper](https://github.com/rhasspy/piper)
+neural-TTS. The Makefile fetches the prebuilt linux x86_64 binary
+(~26 MB tarball, ONNX runtime bundled in) and a single voice
+model (`en_US-amy-medium.onnx`, ~63 MB) from the canonical Piper
+release + Hugging Face URLs on first build, into
+`third_party/piper-bin/` and `third_party/piper-models/`
+(both `.gitignore`'d). Per-utterance flow shells out to the
+binary like the Stockfish subprocess does — text in on stdin,
+raw S16 22050 Hz PCM out on stdout, fed straight into the existing
+audio.cpp 8-voice mixer. Sounds nearly identical to web's
+speechSynthesis. Web build: uses the browser's built-in
 `window.speechSynthesis` API — no model download, voice quality
 follows the platform's installed TTS engine.
 
@@ -658,11 +664,13 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               `san_to_speech`). Shared between
                               desktop and web; doctest-covered in
                               tests/voice_tts_test.cpp.
-  voice_tts_native.cpp     -- Desktop only: espeak-ng synth
-                              callback + worker-thread queue.
-                              PCM samples come back via the synth
-                              callback and feed the existing
-                              audio.cpp 8-voice mixer.
+  voice_tts_native.cpp     -- Desktop only: forks the Piper
+                              prebuilt binary per utterance,
+                              writes text to its stdin, drains
+                              raw S16 22050 Hz PCM from stdout
+                              into the audio.cpp 8-voice mixer.
+                              Worker-thread queue so the GTK
+                              main thread never blocks on synth.
   web/voice_tts_web.cpp    -- Web only: EM_JS shim around
                               `window.speechSynthesis.speak`.
 
@@ -717,11 +725,15 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   third_party/whisper-models/
                            -- distil-small.en GGML weights (downloaded by
                               `make fetch-whisper-model`, gitignored)
-  third_party/espeak-ng/   -- eSpeak NG TTS engine (git submodule,
-                              desktop only). Voice data ships in-tree
-                              under `espeak-ng-data/`; loaded at
-                              runtime via the ESPEAK_DATA_PATH define
-                              the Makefile bakes in.
+  third_party/piper-bin/   -- Piper TTS prebuilt binary (~30 MB
+                              extracted), fetched on first `make`
+                              into this dir; gitignored.
+  third_party/piper-models/
+                           -- Piper voice model (`en_US-amy-medium.onnx`
+                              + `.json` config, ~63 MB), fetched
+                              on first `make`; gitignored. Pinned
+                              to the v1.0.0 tag of
+                              huggingface.co/rhasspy/piper-voices.
   models/                  -- High-res STL piece models (desktop build)
   models-web/              -- Decimated STL pieces (~80k tris, intermediate)
   models-web-packed/       -- Gzipped indexed-mesh packed pieces (~4 MB total,

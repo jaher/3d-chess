@@ -1,65 +1,153 @@
-// Desktop TTS impl — espeak-ng via static-linked third_party submodule.
-// Voice data path is baked in at compile time via -DESPEAK_DATA_PATH
-// pointing at $(repo)/third_party/espeak-ng (the parent of the
-// `espeak-ng-data/` directory the library expects).
+// Desktop TTS impl — shells out to Piper neural-TTS for natural-
+// sounding voice. Same shape as the espeak-ng version this
+// replaces (worker thread + queue + audio_play_pcm dispatch), but
+// the synthesizer is the prebuilt `piper` binary fetched on first
+// `make` into third_party/piper-bin/. Per-utterance flow:
 //
-// Threading: espeak-ng is built with USE_ASYNC=OFF, so espeak_Synth
-// blocks on the calling thread until synthesis is complete. We run
-// it on a dedicated worker thread that drains a request queue, so
-// the GTK main thread never stalls on TTS work and so we never have
-// two synth_callbacks racing each other (the library is not
-// thread-safe). The callback collects PCM samples for one
-// utterance, then on MSG_TERMINATED hands the buffer to
-// audio_play_pcm where the existing 8-voice mixer plays it back.
+//   parent: fork
+//   child:  exec piper --model ... --output-raw --quiet
+//           (text comes in on stdin, raw S16 PCM goes out on stdout)
+//   parent: write text → close stdin → drain stdout PCM →
+//           waitpid → audio_play_pcm
+//
+// Per-utterance subprocess startup adds ~80 ms latency before the
+// first sample plays, but the move-animation arc already runs
+// ~500 ms so it's masked. Voice quality matches the web build's
+// browser speechSynthesis; far less robotic than the formant-synth
+// espeak-ng path was.
+//
+// Paths to the binary and model are baked in at compile time via
+// the Makefile's PIPER_BINARY_PATH / PIPER_MODEL_PATH defines.
 
 #ifndef __EMSCRIPTEN__
 
 #include "voice_tts.h"
-
 #include "audio.h"
 
-#include <espeak-ng/speak_lib.h>
-
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 namespace {
+
+#ifndef PIPER_BINARY_PATH
+#  define PIPER_BINARY_PATH ""
+#endif
+#ifndef PIPER_MODEL_PATH
+#  define PIPER_MODEL_PATH ""
+#endif
 
 std::mutex                g_init_mu;
 std::atomic<bool>         g_inited{false};
-// Sticky-failed flag: once espeak_Initialize fails we stop retrying
-// on every voice_tts_speak() call so a missing data path doesn't
-// flood stderr with one error per move.
 std::atomic<bool>         g_init_failed{false};
 
-// Worker-thread state.
 std::thread               g_worker;
 std::mutex                g_q_mu;
 std::condition_variable   g_q_cv;
 std::deque<std::string>   g_q;
 std::atomic<bool>         g_worker_running{false};
 
-// Per-utterance PCM buffer. The synth callback runs on the worker
-// thread (espeak_Synth is synchronous) so a plain global is fine
-// as long as we serialise utterances one at a time, which the
-// queue does by construction.
-std::vector<int16_t>      g_synth_pcm;
-
-int synth_callback(short* wav, int numsamples, espeak_EVENT* /*events*/) {
-    // Just accumulate. MSG_TERMINATED isn't reliably emitted in
-    // every espeak-ng configuration, so dispatch happens in the
-    // worker after espeak_Synchronize() returns, not from the
-    // events list.
-    if (numsamples > 0 && wav) {
-        g_synth_pcm.insert(g_synth_pcm.end(), wav, wav + numsamples);
+// Drain a single Piper invocation: pipe text → child stdin, read
+// raw S16 PCM → child stdout. Returns true if the child exited
+// cleanly with PCM data; the caller is responsible for handing
+// `out_pcm` to audio_play_pcm.
+//
+// Uses a writer thread so the parent can read stdout concurrently
+// — without it, a long utterance can fill the child's stdout pipe
+// buffer before we've finished writing stdin and the whole flow
+// deadlocks.
+bool synthesize_via_piper(const std::string& text,
+                          std::vector<int16_t>* out_pcm) {
+    int in_pipe[2];   // parent → child stdin
+    int out_pipe[2];  // child stdout → parent
+    if (pipe(in_pipe) < 0) return false;
+    if (pipe(out_pipe) < 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        return false;
     }
-    return 0;  // continue
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        return false;
+    }
+    if (pid == 0) {
+        // Child: rewire stdin/stdout/stderr and exec piper.
+        dup2(in_pipe[0],  STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        close(in_pipe[0]);  close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        execl(PIPER_BINARY_PATH, "piper",
+              "--model", PIPER_MODEL_PATH,
+              "--output-raw",
+              "--quiet",
+              static_cast<char*>(nullptr));
+        _exit(127);  // exec failed
+    }
+
+    // Parent: close ends we won't use.
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+
+    // Writer thread — push the text into the child's stdin and
+    // close. Closing signals end-of-input so piper finishes
+    // synthesizing rather than waiting for more.
+    int stdin_fd  = in_pipe[1];
+    int stdout_fd = out_pipe[0];
+    std::thread writer([stdin_fd, text]() {
+        size_t total = 0;
+        while (total < text.size()) {
+            ssize_t w = write(stdin_fd, text.data() + total,
+                              text.size() - total);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            total += static_cast<size_t>(w);
+        }
+        close(stdin_fd);
+    });
+
+    // Drain stdout into the PCM buffer. piper writes raw S16 LE
+    // samples at the model's native rate (22050 Hz for
+    // en_US-amy-medium, matching what audio.cpp opens).
+    char buf[8192];
+    while (true) {
+        ssize_t n = read(stdout_fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        const int16_t* samples = reinterpret_cast<const int16_t*>(buf);
+        size_t sample_count = static_cast<size_t>(n) / sizeof(int16_t);
+        out_pcm->insert(out_pcm->end(), samples, samples + sample_count);
+    }
+    close(stdout_fd);
+    writer.join();
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 void worker_loop() {
@@ -77,36 +165,21 @@ void worker_loop() {
         if (text.empty()) continue;
 
         std::fprintf(stderr,
-            "[voice_tts] synth start: \"%s\"\n", text.c_str());
-        g_synth_pcm.clear();
-        unsigned int unique_id = 0;
-        espeak_ERROR rc = espeak_Synth(
-            text.c_str(),
-            text.size() + 1,   // size in bytes including null
-            /*position=*/0,
-            POS_CHARACTER,
-            /*end_position=*/0,
-            espeakCHARS_UTF8,
-            &unique_id,
-            /*user_data=*/nullptr);
-        if (rc != EE_OK) {
-            std::fprintf(stderr, "voice_tts: espeak_Synth rc=%d\n", rc);
-            g_synth_pcm.clear();
-            continue;
-        }
-        // Block until synthesis is fully complete — espeak_Synth
-        // schedules the work; espeak_Synchronize waits for the
-        // synth_callback to be drained. After this returns,
-        // g_synth_pcm holds every sample for this utterance.
-        espeak_Synchronize();
+            "[voice_tts] piper synth: \"%s\"\n", text.c_str());
+        std::vector<int16_t> pcm;
+        bool ok = synthesize_via_piper(text, &pcm);
         std::fprintf(stderr,
-            "[voice_tts] synth done — %zu samples queued for playback\n",
-            g_synth_pcm.size());
-        if (!g_synth_pcm.empty()) {
-            audio_play_pcm(std::move(g_synth_pcm));
-            g_synth_pcm = {};
-        }
+            "[voice_tts] piper %s — %zu samples\n",
+            ok ? "done" : "failed", pcm.size());
+        if (ok && !pcm.empty()) audio_play_pcm(std::move(pcm));
     }
+}
+
+bool path_executable(const char* p) {
+    return p && *p && access(p, X_OK) == 0;
+}
+bool path_readable(const char* p) {
+    return p && *p && access(p, R_OK) == 0;
 }
 
 }  // namespace
@@ -115,67 +188,27 @@ bool voice_tts_init(std::string& err_out) {
     std::lock_guard<std::mutex> lk(g_init_mu);
     if (g_inited.load()) return true;
 
-#ifndef ESPEAK_DATA_PATH
-#  define ESPEAK_DATA_PATH nullptr
-#endif
-    int rate = espeak_Initialize(
-        AUDIO_OUTPUT_RETRIEVAL,
-        /*buflength_ms=*/200,
-        ESPEAK_DATA_PATH,
-        /*options=*/0);
-    if (rate < 0) {
-        err_out = "espeak_Initialize failed (data path: ";
-#ifdef ESPEAK_DATA_PATH_STR
-        err_out += ESPEAK_DATA_PATH_STR;
-#else
-        err_out += "<compile-time path>";
-#endif
-        err_out += ")";
+    if (!path_executable(PIPER_BINARY_PATH)) {
+        err_out = std::string("piper binary missing at ") +
+                  PIPER_BINARY_PATH +
+                  " — run `make fetch-piper-binary`";
         return false;
     }
-    espeak_SetSynthCallback(synth_callback);
-    // espeak-ng's data tree only has voice variants under voices/!v/
-    // and language configs under lang/gmw/en — there is no
-    // voices/en-us file, so SetVoiceByName("en-us") fails silently
-    // and synth produces no PCM. SetVoiceByProperties with the
-    // language code routes through espeak's language map and
-    // resolves correctly to the en/en-us voice. Fall back to plain
-    // "en" if the more specific code fails (e.g. on stripped data
-    // builds).
-    espeak_VOICE voice_props{};
-    voice_props.languages = "en-us";
-    espeak_ERROR vrc = espeak_SetVoiceByProperties(&voice_props);
-    if (vrc != EE_OK) {
-        std::fprintf(stderr,
-            "voice_tts: SetVoiceByProperties(en-us) rc=%d, "
-            "falling back to en\n", vrc);
-        voice_props.languages = "en";
-        vrc = espeak_SetVoiceByProperties(&voice_props);
-        if (vrc != EE_OK) {
-            std::fprintf(stderr,
-                "voice_tts: SetVoiceByProperties(en) rc=%d "
-                "(synth will use whatever default loaded)\n", vrc);
-        }
+    if (!path_readable(PIPER_MODEL_PATH)) {
+        err_out = std::string("piper voice model missing at ") +
+                  PIPER_MODEL_PATH +
+                  " — run `make fetch-piper-model`";
+        return false;
     }
+
+    // Ignore SIGPIPE — without this, the parent dies if the child
+    // closes its stdin before we finish writing (rare, but happens
+    // when piper rejects a malformed input or runs out of resources).
+    signal(SIGPIPE, SIG_IGN);
+
     std::fprintf(stderr,
-        "voice_tts: initialised — espeak rate=%d Hz "
-        "(device 22050 Hz; data path=%s)\n",
-        rate,
-#ifdef ESPEAK_DATA_PATH
-        ESPEAK_DATA_PATH
-#else
-        "(default)"
-#endif
-    );
-    // espeak's en-us default sample rate is 22050, matching what
-    // audio.cpp opens. If a future voice change drops to 16000, the
-    // mismatch is audible but not fatal — we'd need to resample in
-    // audio_play_pcm at that point.
-    if (rate != 22050) {
-        std::fprintf(stderr,
-            "voice_tts: warning — espeak rate %d != device rate 22050; "
-            "playback may sound off-pitch\n", rate);
-    }
+        "voice_tts: piper initialised — binary=%s model=%s\n",
+        PIPER_BINARY_PATH, PIPER_MODEL_PATH);
 
     g_worker_running.store(true);
     g_worker = std::thread(worker_loop);
@@ -185,10 +218,6 @@ bool voice_tts_init(std::string& err_out) {
 
 void voice_tts_speak(const std::string& text) {
     if (text.empty()) return;
-    // Lazy init: voice_tts_enabled defaults to true, so the first
-    // move call may arrive without any explicit toggle click. Init
-    // here so it Just Works; sticky-failed avoids retry storms if
-    // the data path is bad.
     if (!g_inited.load() && !g_init_failed.load()) {
         std::string err;
         if (!voice_tts_init(err)) {
@@ -201,9 +230,8 @@ void voice_tts_speak(const std::string& text) {
     if (!g_inited.load()) return;
     {
         std::lock_guard<std::mutex> lk(g_q_mu);
-        // Drop in-flight backlog if it grows past a couple of
-        // utterances — the user just wants the latest move read,
-        // not a historical recap.
+        // Drop in-flight backlog past a couple of utterances — the
+        // user wants the latest move read, not a historical recap.
         if (g_q.size() >= 3) g_q.clear();
         g_q.push_back(text);
     }
@@ -214,19 +242,11 @@ void voice_tts_shutdown() {
     if (!g_inited.exchange(false)) return;
     g_worker_running.store(false);
     g_q_cv.notify_all();
-    // Don't join — espeak_Synthesize is uninterruptible and may be
-    // mid-utterance when the user closes the window. A blocking
-    // join would stall process exit for up to ~1s per pending
-    // utterance, which the user reported as a hang. Detaching
-    // hands the worker to the OS reaper; the loop exits cleanly
-    // on its next dequeue (the running flag flipped above), and
-    // any in-flight synth runs to completion in the background
-    // before being torn down at process exit.
+    // Detach instead of join — a worker mid-piper-subprocess can't
+    // be cancelled cleanly. Detaching hands the thread to the OS
+    // reaper at process exit; the next dequeue iteration sees the
+    // running-flag flipped and exits naturally for the idle case.
     if (g_worker.joinable()) g_worker.detach();
-    // Skip espeak_Terminate too — calling it while a detached
-    // worker may still be inside espeak_Synth races on the
-    // library's internal state. The process is exiting anyway, so
-    // reclaiming the data tables is moot.
 }
 
 #endif  // !__EMSCRIPTEN__
