@@ -1113,18 +1113,32 @@ static void release_options(AppState& a, double mx, double my,
     } else if (btn == 8 && voice_supported) {
         app_voice_toggle_speak_moves_request(a);
     } else if (btn == 9) {
-        a.hint_enabled = !a.hint_enabled;
-        if (!a.hint_enabled) {
-            // Clear stale rings + dedup state immediately so the
-            // user sees the toggle take effect.
-            a.game.hint_from_col = a.game.hint_from_row = -1;
-            a.game.hint_to_col   = a.game.hint_to_row   = -1;
-            a.game.hint_last_spoken_uci.clear();
-            a.game.hint_last_spoken_ply = -1;
+        // Cycle Off → Auto → OnDemand → Off.
+        switch (a.hint_mode) {
+        case AppState::HintMode::Off:
+            a.hint_mode = AppState::HintMode::Auto;
+            set_status(a,
+                "Move hints: AUTO — recommendations will appear "
+                "in yellow on every turn");
+            break;
+        case AppState::HintMode::Auto:
+            a.hint_mode = AppState::HintMode::OnDemand;
+            set_status(a,
+                "Move hints: ON DEMAND — say \"give me a hint\" "
+                "to surface the recommendation");
+            break;
+        case AppState::HintMode::OnDemand:
+            a.hint_mode = AppState::HintMode::Off;
+            set_status(a, "Move hints: OFF");
+            break;
         }
-        set_status(a, a.hint_enabled
-            ? "Move hints: ON — Stockfish's recommendation will appear in yellow"
-            : "Move hints: OFF");
+        // Clear any in-flight ring state when the mode changes so
+        // a stale hint from the previous mode doesn't linger.
+        a.game.hint_from_col = a.game.hint_from_row = -1;
+        a.game.hint_to_col   = a.game.hint_to_row   = -1;
+        a.game.hint_last_spoken_uci.clear();
+        a.game.hint_last_spoken_ply = -1;
+        a.hint_request_pending = false;
         queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
@@ -1641,12 +1655,18 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     }
     gs.score_history[score_index] = pawn_units;
 
-    // Hint feature — surface Stockfish's bestmove for this position
-    // when it's the user's turn (single-player mode, AI not
-    // animating, game not over). The eval pipeline already runs
-    // after every move; we just piggyback on its bestmove output.
-    bool hint_active =
-        a.hint_enabled &&
+    // Cache the latest bestmove regardless of hint mode — the
+    // on-demand voice command ("give me a hint") reads from this
+    // cache to surface a hint instantly instead of waiting for a
+    // fresh eval round trip. Updated unconditionally so a mode
+    // flip from Off → OnDemand mid-turn has the right value
+    // ready.
+    if (!best_uci.empty()) a.last_eval_best_uci = best_uci;
+
+    // Decide whether to surface the hint NOW: Auto fires every
+    // eval; OnDemand fires only when the voice command set the
+    // request flag; Off never fires.
+    bool conditions_met =
         !a.two_player_mode &&
         a.mode == MODE_PLAYING &&
         !gs.game_over &&
@@ -1654,16 +1674,23 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         !gs.ai_thinking &&
         gs.white_turn == a.human_plays_white &&
         !best_uci.empty();
-    if (hint_active) {
+    bool surface_now = conditions_met &&
+        (a.hint_mode == AppState::HintMode::Auto ||
+         (a.hint_mode == AppState::HintMode::OnDemand &&
+          a.hint_request_pending));
+
+    if (surface_now) {
         int fc, fr, tc, tr;
         if (parse_uci_move(best_uci, fc, fr, tc, tr)) {
             gs.hint_from_col = fc;
             gs.hint_from_row = fr;
             gs.hint_to_col   = tc;
             gs.hint_to_row   = tr;
-            // Speak the hint once per position. The score-graph eval
-            // can refresh multiple times for the same ply (e.g. when
-            // the user lingers); ply count + uci is a stable key.
+            // Speak the hint once per position. ply + uci is a
+            // stable key so eval refresh on the same position
+            // doesn't repeat. For OnDemand requests the user is
+            // explicitly asking, so reset dedup so the next request
+            // re-speaks even if the position hasn't changed.
             int ply = static_cast<int>(gs.move_history.size());
             if (gs.hint_last_spoken_uci != best_uci ||
                 gs.hint_last_spoken_ply != ply) {
@@ -1675,10 +1702,11 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                     voice_tts_speak("Hint: " + spoken);
                 }
             }
+            a.hint_request_pending = false;  // consume
         }
-    } else {
-        // Conditions don't match: drop any stale hint so the rings
-        // don't linger across mode/turn boundaries.
+    } else if (a.hint_mode != AppState::HintMode::Auto) {
+        // OnDemand idle / Off: drop any stale rings. (Auto leaves
+        // them so the eval-refresh loop doesn't briefly hide them.)
         gs.hint_from_col = gs.hint_from_row = -1;
         gs.hint_to_col   = gs.hint_to_row   = -1;
     }
@@ -1985,7 +2013,7 @@ static void render_options(AppState& a, int width, int height) {
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
-                          a.hint_enabled,
+                          static_cast<int>(a.hint_mode),
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           a.ble_verbose_log,
@@ -2305,17 +2333,80 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             app_voice_toggle_speak_moves_request(a);
         break;
     case VoiceCommand::ToggleHints:
-        a.hint_enabled = !a.hint_enabled;
-        if (!a.hint_enabled) {
-            a.game.hint_from_col = a.game.hint_from_row = -1;
-            a.game.hint_to_col   = a.game.hint_to_row   = -1;
-            a.game.hint_last_spoken_uci.clear();
-            a.game.hint_last_spoken_ply = -1;
+        // Cycle Off → Auto → OnDemand → Off, same as the Options
+        // click handler. Spoken phrases only fire in MODE_OPTIONS
+        // so the parser already gates this.
+        switch (a.hint_mode) {
+        case AppState::HintMode::Off:
+            a.hint_mode = AppState::HintMode::Auto;
+            set_status(a, "Move hints: AUTO");
+            break;
+        case AppState::HintMode::Auto:
+            a.hint_mode = AppState::HintMode::OnDemand;
+            set_status(a, "Move hints: ON DEMAND");
+            break;
+        case AppState::HintMode::OnDemand:
+            a.hint_mode = AppState::HintMode::Off;
+            set_status(a, "Move hints: OFF");
+            break;
         }
-        set_status(a, a.hint_enabled
-            ? "Move hints: ON"
-            : "Move hints: OFF");
+        a.game.hint_from_col = a.game.hint_from_row = -1;
+        a.game.hint_to_col   = a.game.hint_to_row   = -1;
+        a.game.hint_last_spoken_uci.clear();
+        a.game.hint_last_spoken_ply = -1;
+        a.hint_request_pending = false;
         break;
+    case VoiceCommand::RequestHint: {
+        // One-shot hint request from voice. Three sub-cases:
+        //   * Off: gentle nudge; user has to opt in via Options
+        //          first. We don't auto-flip the mode because
+        //          that's a meta-action they didn't ask for.
+        //   * Auto: the hint is already showing (or will on the
+        //          next eval). Re-speak the cached one for
+        //          symmetry — same UX as asking "what is it
+        //          again?".
+        //   * OnDemand: the meat. Surface the cached bestmove
+        //          immediately if we have one; otherwise mark
+        //          the request pending so the next eval
+        //          surfaces it.
+        if (a.hint_mode == AppState::HintMode::Off) {
+            set_status(a,
+                "Move hints are off — say \"move hints\" or "
+                "click the Options row to enable");
+            break;
+        }
+        // Reset dedup so a repeated request re-speaks the same
+        // hint — the user is explicitly asking again.
+        a.game.hint_last_spoken_uci.clear();
+        a.game.hint_last_spoken_ply = -1;
+        if (!a.last_eval_best_uci.empty() &&
+            !a.two_player_mode &&
+            a.mode == MODE_PLAYING &&
+            !a.game.game_over &&
+            !a.game.ai_animating &&
+            !a.game.ai_thinking &&
+            a.game.white_turn == a.human_plays_white) {
+            int fc, fr, tc, tr;
+            if (parse_uci_move(a.last_eval_best_uci, fc, fr, tc, tr)) {
+                a.game.hint_from_col = fc;
+                a.game.hint_from_row = fr;
+                a.game.hint_to_col   = tc;
+                a.game.hint_to_row   = tr;
+                if (!a.game.snapshots.empty()) {
+                    voice_tts_speak("Hint: " + uci_to_speech(
+                        a.game.snapshots.back(),
+                        a.last_eval_best_uci));
+                }
+                queue_redraw(a);
+            }
+        } else {
+            // No cached bestmove yet — let the next eval landing
+            // surface the hint when it arrives.
+            a.hint_request_pending = true;
+            set_status(a, "Hint requested — computing…");
+        }
+        break;
+    }
     case VoiceCommand::PlayWhite:
         a.human_plays_white = true;
         break;

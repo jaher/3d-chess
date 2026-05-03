@@ -201,23 +201,30 @@ Spoken phrase to flip the toggle from voice: "speak moves" /
 
 #### Move hints (coach mode)
 
-The next Options row, **Move hints** (off by default), turns on
-opt-in coaching against Stockfish. When it's your turn, the engine
-suggests the optimal move:
+The next Options row, **Move hints**, is a tri-state cycle:
 
-- Yellow rings glow on the source + destination squares of the
-  recommended move (same primitive as the blue valid-move rings,
-  different colour).
-- The move is announced: "Hint: Knight to f three" via the same
-  TTS engine the Speak moves toggle uses.
+- **OFF** (default) — no rings, no spoken hints.
+- **AUTO** — every time it's your turn, Stockfish's recommended
+  move surfaces automatically: yellow rings on the from + to
+  squares plus a TTS announcement ("Hint: Knight to f three").
+- **ON DEMAND** — silent until you ask. Click the toggle once
+  more to reach this mode; then say "give me a hint" (or
+  "hint" / "best move") and the cached bestmove from the most
+  recent eval surfaces as a one-shot.
+
+Click the row to cycle Off → Auto → On Demand → Off. Voice
+phrases:
+
+- Cycle the mode: "move hints" / "hint mode" / "cycle hints" /
+  "coach mode" (Options screen only).
+- Request a hint (On Demand mode): "give me a hint" / "hint" /
+  "best move" / "what should I play" (live game only).
 
 Hints piggyback on the score-graph's existing eval pipeline — no
-extra Stockfish queries — so they appear within ~150 ms after your
-opponent moves, with zero engine-load cost. Single-player games vs
+extra Stockfish queries, the bestmove is already in every eval
+response — so they appear within ~150 ms after your opponent
+moves, with zero engine-load cost. Single-player games vs
 Stockfish only; ignored in two-player mode and during challenges.
-
-Spoken phrase to flip the toggle: "move hints" / "hint mode" /
-"coach mode".
 
 #### Voice UI commands
 
@@ -226,7 +233,8 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "challenges", "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" (Stockfish coach), "verbose log" (BLE diagnostic)
+- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "verbose log" (BLE diagnostic)
+- **Live game (Move hints On Demand)**: "give me a hint", "hint", "best move", "what should I play"
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other

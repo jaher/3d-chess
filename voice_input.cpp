@@ -404,9 +404,9 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "toggle speak", "toggle voice output",
                           "speak", "announce"}))
             return VoiceCommand::ToggleSpeakMoves;
-        if (match_any(s, {"move hints", "hints", "hint mode",
-                          "show hints", "toggle hints",
-                          "coach mode"}))
+        // Tri-state cycle (Off → Auto → OnDemand → Off).
+        if (match_any(s, {"move hints", "hint mode", "toggle hints",
+                          "cycle hints", "coach mode"}))
             return VoiceCommand::ToggleHints;
         break;
 
@@ -428,6 +428,16 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                               "i resign", "i give up", "surrender",
                               "raise the flag", "wave the flag"}))
                 return VoiceCommand::Resign;
+            // One-shot hint request — works in any hint mode but
+            // only surfaces a hint when the mode isn't Off (the
+            // dispatcher in app_state.cpp handles that gating).
+            if (match_any(s, {"give me a hint", "show me a hint",
+                              "hint please", "show hint", "hint",
+                              "what should i play",
+                              "what is the best move",
+                              "what's the best move",
+                              "best move"}))
+                return VoiceCommand::RequestHint;
         }
         break;
 

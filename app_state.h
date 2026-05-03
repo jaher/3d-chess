@@ -255,15 +255,29 @@ struct AppState {
     // moves" / "toggle voice output".
     bool voice_tts_enabled = true;
 
-    // Move hints (coach mode): when on, the app uses Stockfish's
-    // ongoing evaluation pipeline to surface the optimal move on
-    // the user's turn — yellow rings on the from + to squares
-    // (mirroring the existing blue valid-move rings) plus a TTS
-    // announcement ("Hint: Knight to f three"). Off by default —
-    // opt in via Options or the spoken phrase "move hints" /
-    // "hint mode" / "show hints". Single-player only; ignored
-    // in two-player mode and during challenges.
-    bool hint_enabled = false;
+    // Move hints (coach mode) — tri-state cycle:
+    //   * Off       — no hint rings, no spoken hints.
+    //   * Auto      — every user turn, surface Stockfish's
+    //                 recommended move (yellow rings on
+    //                 from+to squares + TTS "Hint: ...").
+    //   * OnDemand  — silent until the user says "give me a hint"
+    //                 (or "hint" / "best move"), at which point
+    //                 the cached bestmove from the most recent
+    //                 eval surfaces as a one-shot.
+    // Off by default. Click the Options row to cycle Off → Auto
+    // → OnDemand → Off; voice toggles via "move hints" / "hint
+    // mode". The on-demand request itself is "hint" / "give me
+    // a hint" / "best move" — distinct from the toggle phrases.
+    enum class HintMode { Off, Auto, OnDemand };
+    HintMode hint_mode = HintMode::Off;
+    // Set by the on-demand voice command ("give me a hint"),
+    // consumed by app_eval_ready to surface the cached bestmove
+    // once. Reset after one hint is rendered + spoken.
+    bool hint_request_pending = false;
+    // Most recent bestmove from the eval pipeline, cached so the
+    // on-demand path can surface it instantly without waiting for
+    // a fresh eval round trip.
+    std::string last_eval_best_uci;
 
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app

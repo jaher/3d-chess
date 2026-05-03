@@ -110,7 +110,8 @@ enum class VoiceCommand {
     ToggleBleVerbose,     // Surface raw BLE notify frames in the
                           //   status bar (debug aid for protocol RE)
     ToggleSpeakMoves,     // TTS announce the AI's move replies
-    ToggleHints,          // Show Stockfish's recommended move
+    ToggleHints,          // Cycle Move hints mode (Off/Auto/OnDemand)
+    RequestHint,          // One-shot: surface a hint right now
     PlayWhite,            // Pregame side toggle
     PlayBlack,
 };

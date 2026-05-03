@@ -146,7 +146,7 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,
-                           bool hint_enabled,
+                           int  hint_mode,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,
@@ -249,7 +249,17 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         next_offset += 6;
     }
     if (!picker_open) {
-        draw_toggle(hint_enabled, 9, next_offset);
+        // Hint toggle is tri-state — paint a different colour for
+        // each so a glance at the row tells you the mode without
+        // reading the label. Off = grey (matches OFF toggles
+        // above), Auto = same green as binary-ON, OnDemand =
+        // amber so it's visually distinct from "always on".
+        float r = 0.28f, g = 0.30f, b = 0.36f;  // Off (grey)
+        if (hint_mode == 1) { r = 0.22f; g = 0.60f; b = 0.30f; }    // Auto (green)
+        else if (hint_mode == 2) { r = 0.85f; g = 0.55f; b = 0.10f; }  // OnDemand (amber)
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    r, g, b, hover == 9 ? 0.75f : 0.55f);
+        glDrawArrays(GL_TRIANGLES, next_offset, 6);
         next_offset += 6;
     }
     if (picker_open) {
@@ -338,9 +348,11 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     int toggle6_end = toggle5_end;
     if (!picker_open) {
+        const char* hint_label =
+            hint_mode == 1 ? "AUTO" :
+            hint_mode == 2 ? "ON DEMAND" : "OFF";
         add_toggle_label(
-            std::string("Move hints: ") +
-                (hint_enabled ? "ON" : "OFF"),
+            std::string("Move hints: ") + hint_label,
             OPT_TOG6_Y);
         toggle6_end = static_cast<int>(text_verts.size() / 5);
     }
