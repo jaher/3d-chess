@@ -983,7 +983,16 @@ static void release_menu(AppState& a, double mx, double my,
         else if (press_btn == 4) app_enter_options(a);
         else if (press_btn == 5) { a.two_player_mode = true;  app_enter_pregame(a); }
 #ifndef __EMSCRIPTEN__
-        else if (press_btn == 2) std::exit(0);
+        else if (press_btn == 2) {
+            // Quit button — go through the platform hook so main()
+            // returns and runs the cleanup chain (voice_tts /
+            // chessnut / audio shutdown). Calling std::exit() here
+            // jumps over that chain and into static-destructor land
+            // where the still-joinable voice_tts worker thread
+            // deadlocks the process.
+            if (a.platform && a.platform->request_quit)
+                a.platform->request_quit();
+        }
 #endif
         return;
     }

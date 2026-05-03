@@ -114,6 +114,14 @@ static void plat_set_ai_elo(int elo) {
     web_set_ai_elo(elo);
 }
 
+static void plat_request_quit() {
+    // No-op on web — closing a browser tab from inside a WASM app
+    // isn't a natural action and the menu doesn't expose a Quit
+    // button on this platform. The shared layer's hook stays
+    // populated so AppPlatform's struct layout matches across
+    // platforms.
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
@@ -121,6 +129,7 @@ static const AppPlatform g_platform = {
     plat_trigger_ai_move,
     plat_trigger_eval,
     plat_set_ai_elo,
+    plat_request_quit,
 };
 
 // ---------------------------------------------------------------------------

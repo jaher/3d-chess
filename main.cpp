@@ -98,6 +98,10 @@ static void plat_set_ai_elo(int elo) {
     ai_player_set_elo(elo);
 }
 
+static void plat_request_quit() {
+    gtk_main_quit();
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
@@ -105,6 +109,7 @@ static const AppPlatform g_platform = {
     plat_trigger_ai_move,
     plat_trigger_eval,
     plat_set_ai_elo,
+    plat_request_quit,
 };
 
 // ---------------------------------------------------------------------------

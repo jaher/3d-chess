@@ -61,6 +61,14 @@ struct AppPlatform {
     // applied during the first engine handshake when the subprocess
     // hasn't been spawned yet.
     void (*set_ai_elo)(int elo);
+
+    // Request a clean app shutdown. Desktop: gtk_main_quit(), so
+    // main() returns and the post-loop cleanup chain runs (voice
+    // shutdown, BLE bridge shutdown, audio shutdown, etc.). Web:
+    // no-op, since closing a tab from inside WASM isn't natural.
+    // Must be safe to call from a UI event handler (the GTK click
+    // path); it just signals — no blocking work.
+    void (*request_quit)(void);
 };
 
 // ===========================================================================
