@@ -51,24 +51,13 @@ std::atomic<bool>         g_worker_running{false};
 // queue does by construction.
 std::vector<int16_t>      g_synth_pcm;
 
-int synth_callback(short* wav, int numsamples, espeak_EVENT* events) {
+int synth_callback(short* wav, int numsamples, espeak_EVENT* /*events*/) {
+    // Just accumulate. MSG_TERMINATED isn't reliably emitted in
+    // every espeak-ng configuration, so dispatch happens in the
+    // worker after espeak_Synchronize() returns, not from the
+    // events list.
     if (numsamples > 0 && wav) {
         g_synth_pcm.insert(g_synth_pcm.end(), wav, wav + numsamples);
-    }
-    if (events) {
-        for (espeak_EVENT* e = events;
-             e->type != espeakEVENT_LIST_TERMINATED; ++e) {
-            if (e->type == espeakEVENT_MSG_TERMINATED) {
-                std::fprintf(stderr,
-                    "[voice_tts] synth done — %zu samples queued for playback\n",
-                    g_synth_pcm.size());
-                if (!g_synth_pcm.empty()) {
-                    audio_play_pcm(std::move(g_synth_pcm));
-                    g_synth_pcm = {};  // reset, move() left it empty
-                }
-                break;
-            }
-        }
     }
     return 0;  // continue
 }
@@ -89,6 +78,7 @@ void worker_loop() {
 
         std::fprintf(stderr,
             "[voice_tts] synth start: \"%s\"\n", text.c_str());
+        g_synth_pcm.clear();
         unsigned int unique_id = 0;
         espeak_ERROR rc = espeak_Synth(
             text.c_str(),
@@ -101,9 +91,20 @@ void worker_loop() {
             /*user_data=*/nullptr);
         if (rc != EE_OK) {
             std::fprintf(stderr, "voice_tts: espeak_Synth rc=%d\n", rc);
-            // Ensure the next utterance starts with an empty buffer
-            // even if the callback never saw MSG_TERMINATED.
             g_synth_pcm.clear();
+            continue;
+        }
+        // Block until synthesis is fully complete — espeak_Synth
+        // schedules the work; espeak_Synchronize waits for the
+        // synth_callback to be drained. After this returns,
+        // g_synth_pcm holds every sample for this utterance.
+        espeak_Synchronize();
+        std::fprintf(stderr,
+            "[voice_tts] synth done — %zu samples queued for playback\n",
+            g_synth_pcm.size());
+        if (!g_synth_pcm.empty()) {
+            audio_play_pcm(std::move(g_synth_pcm));
+            g_synth_pcm = {};
         }
     }
 }
@@ -133,11 +134,28 @@ bool voice_tts_init(std::string& err_out) {
         return false;
     }
     espeak_SetSynthCallback(synth_callback);
-    espeak_ERROR vrc = espeak_SetVoiceByName("en-us");
+    // espeak-ng's data tree only has voice variants under voices/!v/
+    // and language configs under lang/gmw/en — there is no
+    // voices/en-us file, so SetVoiceByName("en-us") fails silently
+    // and synth produces no PCM. SetVoiceByProperties with the
+    // language code routes through espeak's language map and
+    // resolves correctly to the en/en-us voice. Fall back to plain
+    // "en" if the more specific code fails (e.g. on stripped data
+    // builds).
+    espeak_VOICE voice_props{};
+    voice_props.languages = "en-us";
+    espeak_ERROR vrc = espeak_SetVoiceByProperties(&voice_props);
     if (vrc != EE_OK) {
         std::fprintf(stderr,
-            "voice_tts: warning — SetVoiceByName(\"en-us\") rc=%d "
-            "(falling back to whatever default voice loaded)\n", vrc);
+            "voice_tts: SetVoiceByProperties(en-us) rc=%d, "
+            "falling back to en\n", vrc);
+        voice_props.languages = "en";
+        vrc = espeak_SetVoiceByProperties(&voice_props);
+        if (vrc != EE_OK) {
+            std::fprintf(stderr,
+                "voice_tts: SetVoiceByProperties(en) rc=%d "
+                "(synth will use whatever default loaded)\n", vrc);
+        }
     }
     std::fprintf(stderr,
         "voice_tts: initialised — espeak rate=%d Hz "
