@@ -25,7 +25,9 @@
 #include <string>
 
 #include "../app_state.h"
+#include "../ai_player.h"
 #include "../chessnut_encode.h"
+#include "../phantom_encode.h"
 
 // AppState singleton trampoline — defined in web/voice_web.cpp,
 // bound by main_web.cpp's chess_start(). Reuse here so we don't
@@ -54,6 +56,21 @@ EM_JS(void, chessnut_web_start_js, (), {
                   "1b7e8262" + SUFFIX,
                   "1b7e8271" + SUFFIX,
                   "1b7e8273" + SUFFIX];
+    // Phantom Chessboard — sibling robotic family. Different
+    // service/characteristic UUIDs and a different wire format
+    // (ASCII move strings, not 32-byte FEN frames). We let the
+    // browser show both kinds in the picker; protocol selection
+    // happens after connect based on which service the device
+    // actually exposes. See PHANTOM.md for the full RE notes.
+    var PHANTOM_SVC   = "fd31a840-22e7-11eb-adc1-0242ac120002";
+    var PHANTOM_WRITE = "7b204548-30c3-11eb-adc1-0242ac120002";
+    var PHANTOM_NOTIFY = [
+        "acb646cc-92ca-11ee-b9d1-0242ac120002",  // R+W+N main push
+        "7b204d4a-30c3-11eb-adc1-0242ac120002",  // R+N legacy status
+        "c08d3691-e60f-4467-b2d0-4a4b7c72777e",  // R+N secondary
+        "acb65af4-92ca-11ee-b9d1-0242ac120002",  // R+N version
+        "93601602-bbc2-4e53-95bd-a3ba326bc04b"   // W+N OTA progress
+    ];
     // The parent service UUID isn't fixed across firmware revisions
     // — desktop discovers it dynamically via SimpleBLE. Web
     // Bluetooth needs every candidate listed in optionalServices
@@ -90,8 +107,12 @@ EM_JS(void, chessnut_web_start_js, (), {
     }
 
     navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: "Chessnut" }],
-        optionalServices: CANDIDATE_SVCS
+        filters: [
+            { namePrefix: "Chessnut" },
+            { namePrefix: "Phantom" },
+            { namePrefix: "GoChess" }
+        ],
+        optionalServices: CANDIDATE_SVCS.concat([PHANTOM_SVC])
     }).then(function(device) {
         device.addEventListener("gattserverdisconnected", function() {
             window.__chessnutBoard = null;
@@ -100,12 +121,21 @@ EM_JS(void, chessnut_web_start_js, (), {
         return device.gatt.connect().then(function(server) {
             // Enumerate every primary service the browser exposes
             // (limited to the optionalServices declared above), then
-            // find the one carrying the WRITE characteristic. That's
-            // the parent service for all our notify channels too.
+            // find the one carrying either the Chessnut WRITE or
+            // the Phantom WRITE characteristic. Whichever is present
+            // tells us which protocol family this device speaks; the
+            // post-connect path branches on that.
+            var lname = (device.name || "").toLowerCase();
+            var isPhantom = lname.indexOf("phantom") !== -1
+                         || lname.indexOf("gochess") !== -1;
+            var WRITE_UUID = isPhantom ? PHANTOM_WRITE : WRITE;
             return server.getPrimaryServices().then(function(services) {
-                console.log("[chessnut/web] services:", services.map(function(s){return s.uuid;}));
+                console.log("[chessnut/web] device=" + device.name
+                            + " kind=" + (isPhantom ? "Phantom" : "Move")
+                            + " services:",
+                            services.map(function(s){return s.uuid;}));
                 return Promise.all(services.map(function(s) {
-                    return s.getCharacteristic(WRITE)
+                    return s.getCharacteristic(WRITE_UUID)
                         .then(function(c) { return { service: s, write: c }; })
                         .catch(function() { return null; });
                 })).then(function(results) {
@@ -114,7 +144,7 @@ EM_JS(void, chessnut_web_start_js, (), {
                         if (results[i]) { found = results[i]; break; }
                     }
                     if (!found) {
-                        emit("ERROR write characteristic " + WRITE +
+                        emit("ERROR write characteristic " + WRITE_UUID +
                              " not found on any primary service " +
                              "(saw " + services.length + " services)");
                         return null;
@@ -127,7 +157,9 @@ EM_JS(void, chessnut_web_start_js, (), {
                         device:  device,
                         service: service,
                         write:   write,
-                        name:    device.name || "Chessnut Move"
+                        name:    device.name
+                            || (isPhantom ? "Phantom Chessboard" : "Chessnut Move"),
+                        isPhantom: isPhantom
                     };
                     // Sweep every primary service we discovered
                     // for notify-capable characteristics and
@@ -167,6 +199,14 @@ EM_JS(void, chessnut_web_start_js, (), {
                         return new Promise(function(r) { setTimeout(r, ms); });
                     };
                     return Promise.all(subs).then(function() {
+                        if (isPhantom) {
+                            // Phantom firmware doesn't expect any
+                            // handshake — its Play-Mode loop polls
+                            // sensors continuously. Just announce the
+                            // connection. Wire format: see PHANTOM.md.
+                            emit("CONNECTED " + window.__chessnutBoard.name);
+                            return;
+                        }
                         return write.writeValueWithoutResponse(CMD_STREAM_ENABLE)
                             .then(function() { return sleep(200); })
                             .then(function() { return write.writeValueWithoutResponse(CMD_AUX_INIT); })
@@ -175,7 +215,7 @@ EM_JS(void, chessnut_web_start_js, (), {
                                 return write.writeValueWithoutResponse(CMD_GET_PIECE_STATE)
                                     .catch(function() {});
                             })
-                            .then(function() { emit("CONNECTED " + (device.name || "Chessnut Move")); });
+                            .then(function() { emit("CONNECTED " + window.__chessnutBoard.name); });
                     });
                 });
             });
@@ -266,15 +306,37 @@ void app_chessnut_set_enabled(
 
 void app_chessnut_sync_board(AppState& a, bool force) {
     if (!a.chessnut_enabled || !a.chessnut_connected) return;
-    std::string fen = app_current_fen(a);
     std::vector<uint8_t> frame;
-    try {
-        frame = chessnut::make_set_move_board(fen, force);
-    } catch (const std::exception& e) {
-        if (a.platform && a.platform->set_status)
-            a.platform->set_status(
-                (std::string("Chessnut Move: encode error — ") + e.what()).c_str());
-        return;
+
+    if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
+        // Phantom: per-move ASCII MOVE_CMD; no full-position-set
+        // primitive. Force-syncs (game start / reset) are no-ops.
+        if (force) return;
+        if (a.game.move_history.empty()) return;
+        const std::string& uci = a.game.move_history.back();
+        int fc = -1, fr = -1, tc = -1, tr = -1;
+        if (!parse_uci_move(uci, fc, fr, tc, tr)) return;
+        bool capture = false;
+        const auto& snaps = a.game.snapshots;
+        if (snaps.size() >= 2) {
+            int n_before = 0, n_after = 0;
+            for (const auto& p : snaps[snaps.size() - 2].pieces)
+                if (p.alive) n_before++;
+            for (const auto& p : snaps.back().pieces)
+                if (p.alive) n_after++;
+            capture = (n_after < n_before);
+        }
+        frame = phantom::make_move_cmd_bytes(fc, fr, tc, tr, capture);
+    } else {
+        std::string fen = app_current_fen(a);
+        try {
+            frame = chessnut::make_set_move_board(fen, force);
+        } catch (const std::exception& e) {
+            if (a.platform && a.platform->set_status)
+                a.platform->set_status(
+                    (std::string("Chessnut Move: encode error — ") + e.what()).c_str());
+            return;
+        }
     }
     chessnut_web_write_frame_js(frame.data(), static_cast<int>(frame.size()));
 }

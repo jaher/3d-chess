@@ -7,8 +7,10 @@
 #include "mat.h"
 #include "voice_input.h"
 #include "chessnut_encode.h"
+#include "phantom_encode.h"
 #ifndef __EMSCRIPTEN__
 #  include "chessnut_bridge.h"
+#  include "phantom_bridge.h"
 #endif
 
 #include <algorithm>
@@ -1077,6 +1079,12 @@ static void release_options(AppState& a, double mx, double my,
         app_chessnut_close_picker(a);
     } else if (btn == 6 && a.chessnut_picker_open) {
         app_chessnut_forget_cached_device(a);
+    } else if (btn == 7 && chessnut_supported) {
+        a.ble_verbose_log = !a.ble_verbose_log;
+        set_status(a, a.ble_verbose_log
+            ? "BLE verbose log: ON — every notify frame will surface here"
+            : "BLE verbose log: OFF");
+        queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -1873,6 +1881,7 @@ static void render_options(AppState& a, int width, int height) {
                           voice_supported,
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
+                          a.ble_verbose_log,
                           a.chessnut_picker_open,
                           a.chessnut_picker_scanning,
                           devs.data(),
@@ -2177,6 +2186,12 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         break;
     case VoiceCommand::ToggleChessnut:
         if (app_chessnut_supported()) app_chessnut_toggle_request(a);
+        break;
+    case VoiceCommand::ToggleBleVerbose:
+        a.ble_verbose_log = !a.ble_verbose_log;
+        set_status(a, a.ble_verbose_log
+            ? "BLE verbose log: ON — every notify frame will surface here"
+            : "BLE verbose log: OFF");
         break;
     case VoiceCommand::PlayWhite:
         a.human_plays_white = true;
@@ -3000,46 +3015,104 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
         return;
     }
     if (status.rfind("NOTIFY ", 0) == 0) {
-        // Format: "NOTIFY <uuid> <hex>". Route any frame that's
-        // long enough to be a board-state payload into the sensor
-        // handler. Originally we filtered by UUID containing
-        // "8262", but field firmware revisions push board state on
-        // different characteristic UUIDs (the bridge subscribes to
-        // every notify-capable char now), so size-based routing is
-        // more robust. apply_sensor_frame validates the 0x01 0x24
-        // header and ignores non-board frames (status pings,
-        // command echoes, getMovePieceState replies). The actual
-        // board frame is FEN_DATA_TOTAL_BYTES (38) = 76 hex chars.
+        // Format: "NOTIFY <uuid> <hex>". Route based on payload
+        // size into the right protocol's sensor handler:
+        //
+        //   * Chessnut Move: 38-byte FEN-data frame = 76 hex chars
+        //     (apply_sensor_frame validates the 0x01 0x24 header
+        //     and drops non-board frames).
+        //   * Phantom: 9-byte detected-move frame = 18 hex chars
+        //     starting with the literal "M 1 " prefix.
         std::string rest = status.substr(7);
         size_t sp = rest.find(' ');
         if (sp == std::string::npos) return;
         std::string hex = rest.substr(sp + 1);
+        // Verbose-log surfacing — when the user has the toggle on,
+        // route the raw frame into the status bar so they can
+        // capture frames without terminal access. Truncate the UUID
+        // to its 8-char prefix and the hex to a screen-friendly
+        // length so the line fits the status bar at typical widths.
+        if (a.ble_verbose_log) {
+            std::string uuid = rest.substr(0, sp);
+            std::string uuid_short = uuid.substr(0, 8);
+            std::string hex_show = hex.size() > 64
+                ? (hex.substr(0, 60) + "…")
+                : hex;
+            std::string msg = "BLE " + uuid_short + " " + hex_show;
+            set_status(a, msg.c_str());
+            queue_redraw(a);
+        }
         if (hex.size() >= chessnut::FEN_DATA_HEX_CHARS) {
             app_chessnut_apply_sensor_frame(a, hex);
+            return;
+        }
+        // Phantom detected-move parse: 18 hex chars, ASCII payload
+        // with the verified `"M 1 "` prefix.
+        if (hex.size() == phantom::DETECTED_MOVE_FRAME_LEN * 2 &&
+            a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
+            uint8_t bytes[phantom::DETECTED_MOVE_FRAME_LEN];
+            for (size_t i = 0; i < phantom::DETECTED_MOVE_FRAME_LEN; ++i) {
+                unsigned v = 0;
+                std::sscanf(hex.substr(i * 2, 2).c_str(), "%x", &v);
+                bytes[i] = static_cast<uint8_t>(v);
+            }
+            int sc, sr, dc, dr; bool capture;
+            if (phantom::parse_detected_move(bytes,
+                    phantom::DETECTED_MOVE_FRAME_LEN,
+                    sc, sr, dc, dr, capture)) {
+                std::fprintf(stderr,
+                    "[phantom/sensor] detected move %c%c%c%c%c "
+                    "(capture=%d)\n",
+                    'a' + sc, '1' + sr, capture ? 'x' : '-',
+                    'a' + dc, '1' + dr, capture ? 1 : 0);
+                // TODO: feed (sc,sr)→(dc,dr) into the digital game
+                // via execute_move() once the modal / animation
+                // wiring is in place. For now we just log.
+            }
         }
         return;
     }
     if (!a.chessnut_enabled && !a.chessnut_picker_open) return;
+    auto board_label = [&]() {
+        return a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom
+            ? "Phantom" : "Chessnut Move";
+    };
     if (status.rfind("CONNECTED", 0) == 0) {
+        // Web build doesn't go through pick_device — the browser
+        // owns its picker — so the board kind hasn't been set yet.
+        // Infer it from the connected device's name (the bridge
+        // emits "CONNECTED <name>"), which matches one of the two
+        // protocol families' advertising-name keywords.
+        if (status.size() > 10) {
+            std::string device_name = status.substr(10);  // skip "CONNECTED "
+            if (phantom::is_phantom_name(device_name)) {
+                a.chessnut_board_kind = AppState::ChessnutBoardKind::Phantom;
+            } else {
+                a.chessnut_board_kind = AppState::ChessnutBoardKind::Move;
+            }
+        }
         a.chessnut_connected = true;
         a.chessnut_picker_open = false;  // close picker on success
         a.chessnut_picker_scanning = false;
         a.chessnut_devices.clear();
-        std::string msg = "Chessnut Move: " + status;
+        std::string msg = std::string(board_label()) + ": " + status;
         set_status(a, msg.c_str());
         // Initial sync on connect — push current position with
         // force=1 so the firmware always replans from sensor state.
+        // (For Phantom, sync_board's force path is a no-op — the
+        // board has no setMoveBoard primitive — but calling it
+        // keeps the timestamp bookkeeping consistent.)
         app_chessnut_sync_board(a, /*force=*/true);
     } else if (status == "DISCONNECTED") {
         a.chessnut_connected = false;
-        set_status(a, "Chessnut Move: disconnected");
+        set_status(a, (std::string(board_label()) + ": disconnected").c_str());
     } else if (status.rfind("READY", 0) == 0) {
         // Helper booted; nothing more to do here.
     } else if (status.rfind("ACK ", 0) == 0) {
         // Successful command — no UI noise needed.
     } else if (status.rfind("ERROR ", 0) == 0 ||
                status.rfind("FATAL ", 0) == 0) {
-        std::string msg = "Chessnut Move: " + status;
+        std::string msg = std::string(board_label()) + ": " + status;
         set_status(a, msg.c_str());
     }
     queue_redraw(a);
@@ -3047,14 +3120,24 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
 
 #ifndef __EMSCRIPTEN__
 namespace {
-// Bridge instance owned here so its destructor reaps the
-// SimpleBLE / subprocess resources on app exit.
+// Bridge instances owned here so their destructors reap the
+// SimpleBLE / subprocess resources on app exit. Only one of the
+// two is connected at a time — the one matching the picked
+// device's protocol. The other stays null until the user picks
+// a device of that type. `g_active_bridge` is the polymorphic
+// pointer used for per-move dispatch; it always points at one
+// of the two unique_ptrs above (whichever is currently connected)
+// or nullptr while we're between connections.
 std::unique_ptr<ChessnutBridge> g_chessnut_bridge;
+std::unique_ptr<PhantomBridge>  g_phantom_bridge;
+IBoardBridge*                   g_active_bridge = nullptr;
 
 // Last on_status callback supplied to set_enabled, kept here so the
 // picker entry points (open / pick / close) can re-use the same
 // status routing without forcing every caller to thread the
-// callback through.
+// callback through. Shared between the two bridges — both emit
+// the same status-line vocabulary ("READY", "DEVICE …",
+// "CONNECTED …", "DISCONNECTED", "ERROR …").
 std::function<void(const std::string&)> g_chessnut_status_cb;
 }  // namespace
 
@@ -3078,6 +3161,30 @@ static bool ensure_chessnut_bridge(
         queue_redraw(a);
         return false;
     }
+    g_active_bridge = g_chessnut_bridge.get();
+    a.chessnut_bridge_running = true;
+    return true;
+}
+
+// Mirror of ensure_chessnut_bridge for the Phantom driver. Only one
+// of the two bridges is alive at a time — the picker chooses which
+// based on the selected device's advertised name.
+static bool ensure_phantom_bridge(
+    AppState& a,
+    std::function<void(const std::string&)> on_status) {
+    if (!g_phantom_bridge) g_phantom_bridge = std::make_unique<PhantomBridge>();
+    if (g_phantom_bridge->running()) {
+        if (on_status) g_chessnut_status_cb = on_status;
+        return true;
+    }
+    if (on_status) g_chessnut_status_cb = on_status;
+    if (!g_phantom_bridge->start(g_chessnut_status_cb)) {
+        g_phantom_bridge.reset();
+        set_status(a, "Phantom: bridge failed to start");
+        queue_redraw(a);
+        return false;
+    }
+    g_active_bridge = g_phantom_bridge.get();
     a.chessnut_bridge_running = true;
     return true;
 }
@@ -3088,8 +3195,11 @@ void app_chessnut_set_enabled(
     if (on == a.chessnut_enabled) return;
 
     if (!on) {
+        g_active_bridge = nullptr;
         if (g_chessnut_bridge) g_chessnut_bridge->stop();
         g_chessnut_bridge.reset();
+        if (g_phantom_bridge)  g_phantom_bridge->stop();
+        g_phantom_bridge.reset();
         g_chessnut_status_cb = nullptr;
         a.chessnut_enabled        = false;
         a.chessnut_bridge_running = false;
@@ -3097,6 +3207,7 @@ void app_chessnut_set_enabled(
         a.chessnut_picker_open    = false;
         a.chessnut_picker_scanning = false;
         a.chessnut_devices.clear();
+        a.chessnut_board_kind = AppState::ChessnutBoardKind::Move;
         set_status(a, "Chessnut Move: off");
         app_settings_save(a);
         queue_redraw(a);
@@ -3133,12 +3244,44 @@ void app_chessnut_open_picker(AppState& a) {
 }
 
 void app_chessnut_pick_device(AppState& a, const std::string& address) {
-    if (!ensure_chessnut_bridge(a, g_chessnut_status_cb)) return;
+    // Look up the picked device's advertised name — the keyword
+    // determines which protocol we route writes through. Both
+    // Chessnut Move and Phantom Chessboard advertisements get
+    // surfaced by the (chessnut-side) picker scan because the scan
+    // filter matches both name families; we only learn the kind
+    // here, at pick time.
+    std::string name;
+    for (const auto& d : a.chessnut_devices) {
+        if (d.address == address) { name = d.name; break; }
+    }
+    bool is_phantom = phantom::is_phantom_name(name);
+
     a.chessnut_picker_open     = false;
     a.chessnut_picker_scanning = false;
     a.chessnut_picker_hover    = -1;
     a.chessnut_enabled         = true;
     a.chessnut_connected       = false;
+
+    if (is_phantom) {
+        // Stop the chessnut bridge — it was used for the scan; we
+        // don't need it for ongoing chat with a Phantom. Then start
+        // the Phantom bridge and connect.
+        if (g_chessnut_bridge) {
+            g_chessnut_bridge->stop();
+            g_chessnut_bridge.reset();
+        }
+        a.chessnut_board_kind = AppState::ChessnutBoardKind::Phantom;
+        if (!ensure_phantom_bridge(a, g_chessnut_status_cb)) return;
+        g_active_bridge = g_phantom_bridge.get();
+        set_status(a, ("Phantom: connecting to " + address + "…").c_str());
+        queue_redraw(a);
+        g_phantom_bridge->connect_to_address(address);
+        return;
+    }
+
+    a.chessnut_board_kind = AppState::ChessnutBoardKind::Move;
+    if (!ensure_chessnut_bridge(a, g_chessnut_status_cb)) return;
+    g_active_bridge = g_chessnut_bridge.get();
     set_status(a, ("Chessnut Move: connecting to " + address + "…").c_str());
     queue_redraw(a);
     g_chessnut_bridge->connect_to_address(address);
@@ -3151,8 +3294,11 @@ void app_chessnut_close_picker(AppState& a) {
     a.chessnut_devices.clear();
     if (!a.chessnut_connected) {
         a.chessnut_enabled = false;
+        g_active_bridge = nullptr;
         if (g_chessnut_bridge) g_chessnut_bridge->stop();
         g_chessnut_bridge.reset();
+        if (g_phantom_bridge)  g_phantom_bridge->stop();
+        g_phantom_bridge.reset();
         g_chessnut_status_cb = nullptr;
         a.chessnut_bridge_running = false;
         set_status(a, "Chessnut Move: off");
@@ -3160,78 +3306,75 @@ void app_chessnut_close_picker(AppState& a) {
     queue_redraw(a);
 }
 
+// Polymorphic per-move dispatcher. The shared layer doesn't care
+// which protocol the connected board speaks; each concrete
+// IBoardBridge implementation handles the wire-format encoding
+// internally. Capture detection runs once here and the result is
+// passed to whichever protocol cares (Phantom uses it to lift the
+// captured piece via comerVersion3 before driving the mover).
 void app_chessnut_sync_board(AppState& a, bool force) {
-    if (!g_chessnut_bridge) {
+    if (!g_active_bridge || !a.chessnut_connected) {
         std::fprintf(stderr,
-            "[chessnut/sync] skip: bridge null\n");
-        return;
-    }
-    if (!a.chessnut_connected) {
-        std::fprintf(stderr,
-            "[chessnut/sync] skip: not connected (enabled=%d)\n",
-            a.chessnut_enabled ? 1 : 0);
+            "[bridge/sync] skip: bridge=%p connected=%d\n",
+            static_cast<void*>(g_active_bridge),
+            a.chessnut_connected ? 1 : 0);
         return;
     }
     std::string fen = app_current_fen(a);
-    std::fprintf(stderr,
-        "[chessnut/sync] send force=%d fen=%s\n",
-        force ? 1 : 0, fen.c_str());
 
-    // Soft-sync = a single move just landed in the digital game
-    // (after handle_board_click / voice / AI). Blink the
-    // destination square first so the user can see where the
-    // motors are about to drive a piece. Skipped for force-sync
-    // (game start / reset) — multiple pieces are about to move,
-    // pointing at one square would be misleading.
-    if (!force && !a.game.move_history.empty()) {
-        int fc, fr, tc, tr;
-        if (parse_uci_move(a.game.move_history.back(), fc, fr, tc, tr)) {
-            g_chessnut_bridge->blink_square(tc, tr);
-        }
+    if (force) {
+        std::fprintf(stderr, "[bridge/sync] %s on_full_position_set fen=%s\n",
+                     g_active_bridge->label(), fen.c_str());
+        g_active_bridge->on_full_position_set(fen);
+        a.chessnut_last_sync_us = now_us(a);
+        app_chessnut_highlight_last_move(a);
+        return;
     }
-
-    g_chessnut_bridge->send_fen(fen, force);
-    // After a force-sync (game start / position load), poll the
-    // firmware for its piece-state view. The reply lands as a
-    // NOTIFY frame (see [chessnut/native] NOTIFY <uuid> <hex>) so
-    // we can compare what the firmware sees against the FEN we
-    // just sent — diagnostic for "FEN_FORCE ACKed but motors don't
-    // move" symptoms.
-    if (force) g_chessnut_bridge->probe_piece_state();
+    if (a.game.move_history.empty()) return;
+    const std::string& uci = a.game.move_history.back();
+    int fc = -1, fr = -1, tc = -1, tr = -1;
+    if (!parse_uci_move(uci, fc, fr, tc, tr)) return;
+    // Capture detection by alive-piece delta between the last two
+    // snapshots — handles regular captures and en passant uniformly.
+    bool capture = false;
+    const auto& snaps = a.game.snapshots;
+    if (snaps.size() >= 2) {
+        int n_before = 0, n_after = 0;
+        for (const auto& p : snaps[snaps.size() - 2].pieces)
+            if (p.alive) n_before++;
+        for (const auto& p : snaps.back().pieces)
+            if (p.alive) n_after++;
+        capture = (n_after < n_before);
+    }
+    std::fprintf(stderr, "[bridge/sync] %s on_move_played %s capture=%d\n",
+                 g_active_bridge->label(), uci.c_str(), capture ? 1 : 0);
+    g_active_bridge->on_move_played(fen, fc, fr, tc, tr, capture);
     a.chessnut_last_sync_us = now_us(a);
     app_chessnut_highlight_last_move(a);
 }
 
-// Light up the from + to squares of the last move on the Chessnut
-// Move's RGB LED grid: blue on the source square, green on the
-// destination. An empty move history clears the LEDs.
-//
-// Uses the Move-format LED frame (opcode 0x43, 4 bits per square).
-// The Air-format 0x0A bitmask is silently ignored by Move firmware,
-// which is why this didn't visibly do anything before.
+// Light up the from + to squares of the last move via whatever
+// protocol the active bridge supports. Chessnut Move drives an RGB
+// LED grid; Phantom no-ops (no verified per-move LED API). An empty
+// move history clears the highlight.
 void app_chessnut_highlight_last_move(AppState& a) {
-    if (!g_chessnut_bridge || !a.chessnut_connected) return;
-    std::array<std::array<uint8_t, 8>, 8> grid{};
-    for (auto& r : grid) r.fill(chessnut::LED_COLOR_OFF);
+    if (!g_active_bridge || !a.chessnut_connected) return;
+    int fc = -1, fr = -1, tc = -1, tr = -1;
     if (!a.game.move_history.empty()) {
-        const std::string& uci = a.game.move_history.back();
-        int fc = -1, fr = -1, tc = -1, tr = -1;
-        if (parse_uci_move(uci, fc, fr, tc, tr)) {
-            if (fc >= 0 && fc < 8 && fr >= 0 && fr < 8)
-                grid[fr][fc] = chessnut::LED_COLOR_BLUE;
-            if (tc >= 0 && tc < 8 && tr >= 0 && tr < 8)
-                grid[tr][tc] = chessnut::LED_COLOR_GREEN;
-        }
+        parse_uci_move(a.game.move_history.back(), fc, fr, tc, tr);
     }
-    g_chessnut_bridge->send_led_move_grid(grid);
+    g_active_bridge->on_highlight_move(fc, fr, tc, tr);
 }
 
 void app_chessnut_shutdown(AppState& a) {
     a.chessnut_enabled        = false;
     a.chessnut_bridge_running = false;
     a.chessnut_connected      = false;
+    g_active_bridge = nullptr;
     if (g_chessnut_bridge) g_chessnut_bridge->stop();
     g_chessnut_bridge.reset();
+    if (g_phantom_bridge)  g_phantom_bridge->stop();
+    g_phantom_bridge.reset();
 }
 
 void app_chessnut_forget_cached_device(AppState& a) {
@@ -3266,6 +3409,13 @@ static void chessnut_tick_reconnect(AppState& a, int64_t now) {
     // with the cached MAC (the bridge falls back to it first,
     // so it's a fast 2.5 s scan rather than the 8 s name scan).
     constexpr int64_t kChessnutReconnectUs = 30LL * 1000LL * 1000LL;  // 30 s
+    // Auto-reconnect is Move-only for now. The Phantom bridge has
+    // no name-prefix scan path (it only connects by explicit
+    // address) so we can't reissue a "connect to whichever
+    // Phantom is around" without remembering the address — left
+    // for a follow-up. Phantom users see a plain "DISCONNECTED"
+    // status and need to re-pair via the picker.
+    if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) return;
     if (a.chessnut_enabled && !a.chessnut_connected &&
         !a.chessnut_picker_open &&
         g_chessnut_bridge && g_chessnut_bridge->running()) {

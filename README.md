@@ -179,7 +179,7 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "challenges", "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "cartoon outline", "continuous voice"
+- **Options**: "back", "cartoon outline", "continuous voice", "verbose log" (BLE diagnostic)
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other
@@ -259,6 +259,46 @@ screen (off by default). Available on **both desktop and web**. On enable the ap
 4. After every subsequent move (yours via click / voice, or
    Stockfish's), pushes the new FEN. The motors handle the motion
    planning; we just declare the target state.
+
+#### Phantom Chessboard support (read-the-fine-print)
+
+The same toggle / picker also accepts [Phantom
+Chessboard](https://www.phantomchessboard.com/) devices — same
+robotic-board category, different protocol family. The picker
+matches device names containing `Chessnut`, `Phantom`, or
+`GoChess`; whichever you pick, the app routes per-move events
+through the matching driver via a shared `IBoardBridge` interface.
+For Phantom:
+
+- App→board: each move is encoded as an ASCII MOVE_CMD string and
+  written to characteristic `7b204548-30c3-…`. The firmware's
+  Play-Mode loop parses the string and drives its X/Y stepper
+  motors via its `moveChessPiece` routine.
+- Captures are dispatched with an `'x'` separator so the firmware
+  lifts the captured piece off-square via `comerVersion3` before
+  driving the moving piece into the destination.
+- Notify-frame format from the board is **not yet verified**. The
+  driver subscribes to all five notify-capable characteristics and
+  logs each frame raw to stderr / the JS console — sensor-driven
+  moves (you moving a piece on the physical board) won't reflect in
+  the digital game until that format is confirmed against an HCI
+  capture from a real Phantom.
+- Force-syncs (game start, position load) are no-ops — Phantom has
+  no setMoveBoard primitive, so reset the physical board manually
+  if you reset the digital game.
+
+#### BLE verbose-log toggle
+
+Below the Chessnut Move row in Options is a **BLE verbose log**
+toggle (off by default). Flipping it on routes every BLE notify
+frame the bridge receives — UUID prefix plus the raw hex payload —
+into the in-game status bar (truncated to fit). Intended for
+capturing frames from boards on unverified firmware (especially
+Phantom variants OTA-updated past the protocol we reverse-
+engineered) without needing a terminal. Spoken phrase: "verbose
+log".
+
+See `PHANTOM.md` for the full reverse-engineering notes.
 
 Build dependency: `libdbus-1-dev` (required by SimpleBLE on Linux).
 On Debian/Ubuntu: `sudo apt-get install -y libdbus-1-dev`. The
@@ -576,17 +616,39 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               setMoveBoard / LED frame builders.
                               Shared by the desktop and web drivers
                               so the wire format can't drift.
-  chessnut_bridge.h        -- Desktop-only public PIMPL interface.
+  chessnut_bridge.h        -- Desktop-only public PIMPL interface
+                              for the Chessnut Move driver.
   chessnut_bridge.cpp      -- Desktop driver: SimpleBLE in-process,
                               worker thread + command queue.
+  board_bridge.h           -- Abstract IBoardBridge interface
+                              implemented by both Chessnut Move and
+                              Phantom drivers. The shared dispatch
+                              in app_state.cpp routes per-move
+                              events through this interface so the
+                              rest of the app doesn't have to think
+                              about which protocol the connected
+                              device speaks.
+  phantom_encode.h         -- Pure-logic Phantom Chessboard wire-
+                              format helpers (UUIDs, ASCII MOVE_CMD
+                              builder). See PHANTOM.md for the
+                              protocol notes.
+  phantom_bridge.h         -- Desktop-only public PIMPL interface
+                              for the Phantom driver.
+  phantom_bridge.cpp       -- Desktop Phantom driver. Sibling of
+                              chessnut_bridge.cpp; same threading
+                              model, different protocol.
   tools/chessnut_bridge.py -- Standalone Python helper for
                               protocol experimentation (uses
                               `bleak`). Speaks the same wire
                               format; not used by the main binary.
   web/chessnut_web.cpp     -- Web build: bridge to the browser's
-                              navigator.bluetooth API. Reuses
-                              chessnut_encode.h for the wire
-                              format.
+                              navigator.bluetooth API. Handles
+                              both Chessnut Move and Phantom
+                              devices behind one toggle (the
+                              browser picker shows both name
+                              prefixes; protocol is selected
+                              after connect from the device's
+                              advertised name).
 
   # Desktop driver
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring

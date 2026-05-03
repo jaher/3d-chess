@@ -26,14 +26,14 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             challenge_ui.cpp pregame_ui.cpp shatter_transition.cpp \
             text_atlas.cpp options_ui.cpp \
             voice_input.cpp voice_whisper.cpp \
-            chessnut_bridge.cpp
+            chessnut_bridge.cpp phantom_bridge.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
             challenge.h cloth_flag.h vec.h mat.h shader.h stl_model.h \
             ai_player.h time_control.h audio.h compression.h menu_physics.h \
             menu_input.h challenge_ui.h pregame_ui.h shatter_transition.h \
             render_internal.h text_atlas.h options_ui.h \
-            voice_input.h chessnut_bridge.h
+            voice_input.h chessnut_bridge.h phantom_bridge.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish

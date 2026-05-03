@@ -34,6 +34,16 @@ constexpr float OPT_TOG3_H  =  0.10f;
 constexpr float OPT_TOG3_X  = -OPT_TOG3_W * 0.5f;
 constexpr float OPT_TOG3_Y  = -0.16f;
 
+// BLE verbose-log toggle — fourth row. Co-located with the
+// chessnut/phantom row above because it's the same family of
+// "physical board debug" controls. Hidden together with the picker
+// when one is open so the verbose toggle doesn't visually overlap
+// the device list.
+constexpr float OPT_TOG4_W  =  0.60f;
+constexpr float OPT_TOG4_H  =  0.10f;
+constexpr float OPT_TOG4_X  = -OPT_TOG4_W * 0.5f;
+constexpr float OPT_TOG4_Y  = -0.30f;
+
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
 // each device is its own clickable row underneath. The
@@ -77,6 +87,12 @@ int options_hit_test(double mx, double my, int width, int height,
         ndc_x >= OPT_TOG3_X && ndc_x <= OPT_TOG3_X + OPT_TOG3_W &&
         ndc_y >= OPT_TOG3_Y - OPT_TOG3_H && ndc_y <= OPT_TOG3_Y)
         return 4;
+    // BLE verbose-log toggle is hidden behind the picker when it's
+    // open (same vertical band) — this keeps the click target clean.
+    if (chessnut_supported && !picker_open &&
+        ndc_x >= OPT_TOG4_X && ndc_x <= OPT_TOG4_X + OPT_TOG4_W &&
+        ndc_y >= OPT_TOG4_Y - OPT_TOG4_H && ndc_y <= OPT_TOG4_Y)
+        return 7;
     if (picker_open) {
         // Header row: cancel/rescan.
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
@@ -106,6 +122,7 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                            bool continuous_voice_supported,
                            bool chessnut_enabled,
                            bool chessnut_supported,
+                           bool ble_verbose_log_enabled,
                            bool picker_open,
                            bool picker_scanning,
                            const OptionsScannedDevice* picker_devices,
@@ -133,6 +150,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported) {
         add_quad(OPT_TOG3_X, OPT_TOG3_Y, OPT_TOG3_W, OPT_TOG3_H);
+    }
+    if (chessnut_supported && !picker_open) {
+        add_quad(OPT_TOG4_X, OPT_TOG4_Y, OPT_TOG4_W, OPT_TOG4_H);
     }
     int picker_visible = 0;
     if (picker_open) {
@@ -185,6 +205,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported) {
         draw_toggle(chessnut_enabled, 4, next_offset);
+        next_offset += 6;
+    }
+    if (chessnut_supported && !picker_open) {
+        draw_toggle(ble_verbose_log_enabled, 7, next_offset);
         next_offset += 6;
     }
     if (picker_open) {
@@ -255,8 +279,16 @@ void renderer_draw_options(bool cartoon_outline_enabled,
             OPT_TOG3_Y);
         toggle3_end = static_cast<int>(text_verts.size() / 5);
     }
-    int picker_text_start = toggle3_end;
-    int picker_text_end   = toggle3_end;
+    int toggle4_end = toggle3_end;
+    if (chessnut_supported && !picker_open) {
+        add_toggle_label(
+            std::string("BLE verbose log: ") +
+                (ble_verbose_log_enabled ? "ON" : "OFF"),
+            OPT_TOG4_Y);
+        toggle4_end = static_cast<int>(text_verts.size() / 5);
+    }
+    int picker_text_start = toggle4_end;
+    int picker_text_end   = toggle4_end;
     if (picker_open) {
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
@@ -341,6 +373,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     li3, li3, li3, 1.0f);
         glDrawArrays(GL_TRIANGLES, toggle2_end, toggle3_end - toggle2_end);
+    }
+    if (chessnut_supported && !picker_open && toggle4_end > toggle3_end) {
+        float li4 = hover == 7 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    li4, li4, li4, 1.0f);
+        glDrawArrays(GL_TRIANGLES, toggle3_end, toggle4_end - toggle3_end);
     }
     if (picker_open && picker_text_end > picker_text_start) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),

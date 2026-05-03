@@ -11,27 +11,40 @@
 
 #ifndef __EMSCRIPTEN__
 
+#include "board_bridge.h"
+
 #include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 
-class ChessnutBridge {
+class ChessnutBridge : public IBoardBridge {
 public:
-    using StatusCallback = std::function<void(const std::string& status)>;
-
     ChessnutBridge();
-    ~ChessnutBridge();
+    ~ChessnutBridge() override;
 
     ChessnutBridge(const ChessnutBridge&) = delete;
     ChessnutBridge& operator=(const ChessnutBridge&) = delete;
 
-    bool start(StatusCallback on_status);
-    void stop();
+    // IBoardBridge overrides.
+    bool start(StatusCallback on_status) override;
+    void stop() override;
+    bool running() const override;
+    void connect_to_address(const std::string& address) override;
+    void on_full_position_set(const std::string& fen) override;
+    void on_move_played(const std::string& fen,
+                        int src_col, int src_row,
+                        int dst_col, int dst_row,
+                        bool capture) override;
+    void on_highlight_move(int src_col, int src_row,
+                           int dst_col, int dst_row) override;
+    const char* label() const override { return "Chessnut Move"; }
+
+    // Chessnut-specific helpers retained for callers that need
+    // direct access (the picker scan, the diagnostic probe).
     void request_connect();
     void start_scan();
-    void connect_to_address(const std::string& address);
     void send_fen(const std::string& fen, bool force);
     // Air-format LED frame (8-byte on/off bitmask). Kept for
     // potential Chessnut Air support — Move firmware silently
@@ -50,7 +63,6 @@ public:
     // Diagnostic — write 0x41 0x01 0x0B (getMovePieceState). Reply
     // arrives on a notify channel and is logged raw.
     void probe_piece_state();
-    bool running() const;
 
 private:
     struct Impl;

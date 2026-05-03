@@ -655,4 +655,47 @@ void ChessnutBridge::blink_square(int col, int row) {
 void ChessnutBridge::probe_piece_state()            { impl_->probe_piece_state(); }
 bool ChessnutBridge::running() const                { return impl_->running(); }
 
+// ---------------------------------------------------------------------------
+// IBoardBridge polymorphic overrides — thin shims onto the
+// chessnut-specific helpers above. The shared dispatch code in
+// app_state.cpp calls these without caring which protocol is in
+// play.
+// ---------------------------------------------------------------------------
+void ChessnutBridge::on_full_position_set(const std::string& fen) {
+    // Chessnut Move can absorb a full FEN — send it with force=1
+    // so the firmware always replans from the current sensor view.
+    // After a force-sync (game start / position load), poll the
+    // firmware for its piece-state view as a diagnostic — the reply
+    // lands as a NOTIFY frame so we can compare what the firmware
+    // sees against the FEN we just sent.
+    impl_->send_fen(fen, /*force=*/true);
+    impl_->probe_piece_state();
+}
+
+void ChessnutBridge::on_move_played(const std::string& fen,
+                                    int /*src_col*/, int /*src_row*/,
+                                    int dst_col, int dst_row,
+                                    bool /*capture*/) {
+    // Blink the destination square first so the user can see where
+    // the motors are about to push a piece. Then push the full FEN
+    // (force=0; motors do their own delta vs sensor state). The
+    // blink runs serially on the bridge worker, so the FEN write
+    // dispatches only after the blink finishes — by design.
+    if (dst_col >= 0 && dst_col < 8 && dst_row >= 0 && dst_row < 8) {
+        impl_->blink_square(dst_col, dst_row);
+    }
+    impl_->send_fen(fen, /*force=*/false);
+}
+
+void ChessnutBridge::on_highlight_move(int src_col, int src_row,
+                                       int dst_col, int dst_row) {
+    std::array<std::array<uint8_t, 8>, 8> grid{};
+    for (auto& r : grid) r.fill(chessnut::LED_COLOR_OFF);
+    if (src_col >= 0 && src_col < 8 && src_row >= 0 && src_row < 8)
+        grid[src_row][src_col] = chessnut::LED_COLOR_BLUE;
+    if (dst_col >= 0 && dst_col < 8 && dst_row >= 0 && dst_row < 8)
+        grid[dst_row][dst_col] = chessnut::LED_COLOR_GREEN;
+    impl_->send_led_move_grid(grid);
+}
+
 #endif  // !__EMSCRIPTEN__

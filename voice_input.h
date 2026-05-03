@@ -107,6 +107,8 @@ enum class VoiceCommand {
     ToggleCartoonOutline,
     ToggleContinuousVoice,
     ToggleChessnut,       // Chessnut Move physical-board mirroring
+    ToggleBleVerbose,     // Surface raw BLE notify frames in the
+                          //   status bar (debug aid for protocol RE)
     PlayWhite,            // Pregame side toggle
     PlayBlack,
 };

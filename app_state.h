@@ -295,6 +295,26 @@ struct AppState {
     // Set in app_enter_game; consumed when the modal closes.
     bool chessnut_pending_ai_trigger = false;
 
+    // BLE verbose-log toggle. Off by default; flipping it on in the
+    // Options screen surfaces every notify frame the bridge sees as
+    // a status-bar message of the form "BLE <uuid-suffix> <hex>".
+    // Used for capturing raw frames from boards with unverified wire
+    // formats (notably Phantom variants on different firmware
+    // versions) without needing terminal access. Session-only
+    // persistence — same precedent as cartoon_outline.
+    bool ble_verbose_log = false;
+
+    // Which physical-board protocol the connected device speaks.
+    // The picker scan lists Chessnut Move devices and Phantom
+    // Chessboards together (both are robotic boards with
+    // app-driven motor commands). They have different wire
+    // formats — the chessnut bridge speaks setMoveBoard / RGB
+    // LED frames, the phantom bridge speaks ASCII MOVE_CMD
+    // strings — so we route every per-move sync through whichever
+    // bridge matches the device the user picked.
+    enum class ChessnutBoardKind { Move, Phantom };
+    ChessnutBoardKind chessnut_board_kind = ChessnutBoardKind::Move;
+
     // In-app device picker state. When the user toggles Chessnut
     // Move on without a cached MAC (or when they explicitly ask
     // to re-pair), we run a BLE scan and render the discovered
