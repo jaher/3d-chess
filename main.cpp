@@ -15,6 +15,7 @@
 #include "app_state.h"
 #include "audio.h"
 #include "board_renderer.h"
+#include "voice_tts.h"
 #include "chess_rules.h"
 #include "chess_types.h"
 #include "stl_model.h"
@@ -363,6 +364,7 @@ int main(int argc, char* argv[]) {
     app_enter_menu(g_app);
     gtk_main();
     app_voice_shutdown(g_app);
+    voice_tts_shutdown();
     app_chessnut_shutdown(g_app);
     return 0;
 }

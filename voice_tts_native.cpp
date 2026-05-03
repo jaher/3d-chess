@@ -211,13 +211,22 @@ void voice_tts_speak(const std::string& text) {
 }
 
 void voice_tts_shutdown() {
-    std::lock_guard<std::mutex> lk(g_init_mu);
-    if (!g_inited.load()) return;
+    if (!g_inited.exchange(false)) return;
     g_worker_running.store(false);
     g_q_cv.notify_all();
-    if (g_worker.joinable()) g_worker.join();
-    espeak_Terminate();
-    g_inited.store(false);
+    // Don't join — espeak_Synthesize is uninterruptible and may be
+    // mid-utterance when the user closes the window. A blocking
+    // join would stall process exit for up to ~1s per pending
+    // utterance, which the user reported as a hang. Detaching
+    // hands the worker to the OS reaper; the loop exits cleanly
+    // on its next dequeue (the running flag flipped above), and
+    // any in-flight synth runs to completion in the background
+    // before being torn down at process exit.
+    if (g_worker.joinable()) g_worker.detach();
+    // Skip espeak_Terminate too — calling it while a detached
+    // worker may still be inside espeak_Synth races on the
+    // library's internal state. The process is exiting anyway, so
+    // reclaiming the data tables is moot.
 }
 
 #endif  // !__EMSCRIPTEN__
