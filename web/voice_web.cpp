@@ -18,6 +18,7 @@
 #include <string>
 
 #include "../app_state.h"
+#include "../voice_tts.h"
 #include "../voice_input.h"  // parse_voice_move (not used here directly,
                              // but keeps the include graph consistent)
 
@@ -222,6 +223,14 @@ void app_voice_set_continuous(
         return;
     }
     a.voice_continuous_enabled = true;
+    // Auto-enable TTS so a single click on "Continuous voice" gives
+    // the full eyes-free voice experience (mic in + speech out).
+    // Web's voice_tts_init is essentially a feature check around
+    // window.speechSynthesis so this is cheap and rarely fails.
+    if (!a.voice_tts_enabled) {
+        std::string tts_err;
+        if (voice_tts_init(tts_err)) a.voice_tts_enabled = true;
+    }
     if (a.platform && a.platform->set_status)
         a.platform->set_status("Voice — continuous listening on");
 }

@@ -2464,6 +2464,14 @@ void app_voice_set_continuous(
         return;
     }
     a.voice_continuous_enabled = true;
+    // Auto-enable TTS so a single click on "Continuous voice" gives
+    // the full eyes-free voice experience (mic in + speech out).
+    // The user can still flip TTS off independently via the
+    // "Speak moves" toggle if they only want the mic on.
+    if (!a.voice_tts_enabled) {
+        std::string tts_err;
+        if (voice_tts_init(tts_err)) a.voice_tts_enabled = true;
+    }
     set_status(a, "Voice — continuous listening on");
     queue_redraw(a);
 }
