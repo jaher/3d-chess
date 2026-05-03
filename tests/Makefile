@@ -13,7 +13,8 @@ SHARED_SRCS := \
     ../vec.cpp \
     ../mat.cpp \
     ../ai_player.cpp \
-    ../voice_input.cpp
+    ../voice_input.cpp \
+    ../voice_tts.cpp
 
 TEST_SRCS := \
     doctest_main.cpp \
@@ -21,7 +22,8 @@ TEST_SRCS := \
     ai_player_helpers_test.cpp \
     challenge_test.cpp \
     linalg_test.cpp \
-    voice_input_test.cpp
+    voice_input_test.cpp \
+    voice_tts_test.cpp
 
 HEADERS := doctest.h helpers.h
 

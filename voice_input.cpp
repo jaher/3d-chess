@@ -400,6 +400,10 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "ble log", "verbose ble", "toggle verbose",
                           "debug log"}))
             return VoiceCommand::ToggleBleVerbose;
+        if (match_any(s, {"speak moves", "announce moves",
+                          "toggle speak", "toggle voice output",
+                          "speak", "announce"}))
+            return VoiceCommand::ToggleSpeakMoves;
         break;
 
     case MODE_PLAYING:

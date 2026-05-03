@@ -6,6 +6,7 @@
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
+#include "voice_tts.h"
 #include "chessnut_encode.h"
 #include "phantom_encode.h"
 #ifndef __EMSCRIPTEN__
@@ -1085,6 +1086,8 @@ static void release_options(AppState& a, double mx, double my,
             ? "BLE verbose log: ON — every notify frame will surface here"
             : "BLE verbose log: OFF");
         queue_redraw(a);
+    } else if (btn == 8 && voice_supported) {
+        app_voice_toggle_speak_moves_request(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -1635,9 +1638,27 @@ static void tick_ai_animation(AppState& a, int64_t now) {
     if (elapsed >= gs.ai_anim_duration) {
         gs.ai_animating = false;
         bool sfx_capture = gs.grid[gs.ai_to_row][gs.ai_to_col] >= 0;
+        // Capture the pre-move snapshot for TTS rendering before
+        // execute_move mutates gs. We only build the SAN / spoken
+        // string when the toggle is on, so the BoardSnapshot
+        // construction is gated to avoid the cost in the hot path.
+        BoardSnapshot tts_before;
+        if (a.voice_tts_enabled) {
+            tts_before.pieces        = gs.pieces;
+            tts_before.white_turn    = gs.white_turn;
+            tts_before.castling      = gs.castling;
+            tts_before.ep_target_col = gs.ep_target_col;
+            tts_before.ep_target_row = gs.ep_target_row;
+        }
         execute_move(gs, gs.ai_from_col, gs.ai_from_row,
                      gs.ai_to_col,   gs.ai_to_row);
         play_move_sfx(gs, sfx_capture);
+        // Speak the AI's reply over the speaker. Skipped when the
+        // toggle is off; the user's own moves are never announced
+        // (reading them back is redundant noise).
+        if (a.voice_tts_enabled && !gs.move_history.empty()) {
+            voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));
+        }
         gs.ai_thinking = false;
         app_refresh_status(a);
         if (gs.ai_anim_skip_chessnut_sync) {
@@ -1879,6 +1900,7 @@ static void render_options(AppState& a, int width, int height) {
     renderer_draw_options(a.cartoon_outline,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
+                          voice_supported && a.voice_tts_enabled,
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           a.ble_verbose_log,
@@ -2193,6 +2215,10 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             ? "BLE verbose log: ON — every notify frame will surface here"
             : "BLE verbose log: OFF");
         break;
+    case VoiceCommand::ToggleSpeakMoves:
+        if (app_voice_continuous_supported())
+            app_voice_toggle_speak_moves_request(a);
+        break;
     case VoiceCommand::PlayWhite:
         a.human_plays_white = true;
         break;
@@ -2301,6 +2327,28 @@ void app_voice_continuous_apply_partial(AppState& a,
     if (partial.empty()) return;
     std::string msg = "Hearing: '" + partial + "'";
     set_status(a, msg.c_str());
+}
+
+// "Speak moves" toggle. Lazy-initialises the TTS engine on first
+// enable; idempotent. Same shape as continuous-voice toggle but
+// simpler because there's no async input to plumb — TTS is one-way.
+void app_voice_toggle_speak_moves_request(AppState& a) {
+    bool target = !a.voice_tts_enabled;
+    if (target) {
+        std::string err;
+        if (!voice_tts_init(err)) {
+            std::string msg = "Speak moves unavailable: " + err;
+            set_status(a, msg.c_str());
+            queue_redraw(a);
+            return;
+        }
+        a.voice_tts_enabled = true;
+        set_status(a, "Speak moves: ON — opponent moves will be announced");
+    } else {
+        a.voice_tts_enabled = false;
+        set_status(a, "Speak moves: OFF");
+    }
+    queue_redraw(a);
 }
 
 // ===========================================================================

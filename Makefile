@@ -26,6 +26,7 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             challenge_ui.cpp pregame_ui.cpp shatter_transition.cpp \
             text_atlas.cpp options_ui.cpp \
             voice_input.cpp voice_whisper.cpp \
+            voice_tts.cpp voice_tts_native.cpp \
             chessnut_bridge.cpp phantom_bridge.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
@@ -33,7 +34,7 @@ HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.
             ai_player.h time_control.h audio.h compression.h menu_physics.h \
             menu_input.h challenge_ui.h pregame_ui.h shatter_transition.h \
             render_internal.h text_atlas.h options_ui.h \
-            voice_input.h chessnut_bridge.h phantom_bridge.h
+            voice_input.h chessnut_bridge.h phantom_bridge.h voice_tts.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish
@@ -95,6 +96,33 @@ CXXFLAGS += -I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
             -I$(SIMPLEBLE_DIR)/dependencies/external
 LDFLAGS  += $(SIMPLEBLE_LIB) $(shell $(PKG_CONFIG) --libs dbus-1)
 
+# espeak-ng for the voice-output (TTS) move announcer. Built via its
+# own CMake into a static lib; voice data ships with the source tree
+# and is loaded at runtime via the absolute path baked in at compile
+# time. Disabling all the optional deps (sonic / pcaudio / mbrola /
+# async) keeps the static lib lean and avoids a runtime ALSA/PulseAudio
+# dependency — TTS PCM samples come back via the synth callback and
+# are mixed into our existing SDL2 audio stream.
+ESPEAK_DIR    := third_party/espeak-ng
+ESPEAK_BUILD  := $(ESPEAK_DIR)/build
+ESPEAK_LIB    := $(ESPEAK_BUILD)/src/libespeak-ng/libespeak-ng.a
+# espeak-ng's CMake build also produces two helper static libs the
+# main lib has unresolved references into: libucd (Unicode database
+# used by readclause / dictionary / numbers) and libspeechPlayer
+# (Klatt formant synthesiser). Both are private deps so cmake only
+# emits them as separate archives — link them explicitly.
+ESPEAK_AUX_LIBS := $(ESPEAK_BUILD)/src/ucd-tools/libucd.a \
+                   $(ESPEAK_BUILD)/src/speechPlayer/libspeechPlayer.a
+ESPEAK_INC    := $(ESPEAK_DIR)/src/include
+ESPEAK_DATA   := $(abspath $(ESPEAK_DIR))
+ESPEAK_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+                     -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF \
+                     -DUSE_LIBPCAUDIO=OFF -DUSE_KLATT=ON \
+                     -DUSE_SPEECHPLAYER=ON \
+                     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+CXXFLAGS += -I$(ESPEAK_INC) -DESPEAK_DATA_PATH='"$(ESPEAK_DATA)"'
+LDFLAGS  += $(ESPEAK_LIB) $(ESPEAK_AUX_LIBS)
+
 # Pre-converted distil-small.en GGML, hosted by the whisper.cpp/HF
 # community. Pinning by sha256 keeps the build reproducible — replace
 # WHISPER_MODEL_URL / WHISPER_MODEL_SHA256 if the upstream link rotates.
@@ -103,7 +131,7 @@ WHISPER_MODEL_SHA256 := ?
 
 all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL)
 
-$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB)
+$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) $(ESPEAK_LIB)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.cpp $(HEADERS)
@@ -155,13 +183,26 @@ $(SIMPLEBLE_LIB):
 		$(SIMPLEBLE_CMAKE_ARGS)
 	cmake --build $(SIMPLEBLE_BUILD) --config Release -j
 
+# espeak-ng — built via its own CMake. The lib's voice data lives at
+# $(ESPEAK_DATA)/espeak-ng-data/ and is referenced at runtime via the
+# ESPEAK_DATA_PATH compile-time define. Build skips the language
+# data generation and CLI executable to keep build time short.
+$(ESPEAK_LIB):
+	@if [ ! -f $(ESPEAK_DIR)/CMakeLists.txt ]; then \
+		echo "espeak-ng submodule not initialized."; \
+		echo "Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	cmake -B $(ESPEAK_BUILD) -S $(ESPEAK_DIR) $(ESPEAK_CMAKE_ARGS)
+	cmake --build $(ESPEAK_BUILD) --config Release -j --target espeak-ng
+
 clean:
 	rm -f $(OBJS) $(TARGET)
 	-$(MAKE) -C tests clean
 
 distclean: clean
 	-$(MAKE) -C $(STOCKFISH_DIR)/src clean
-	-rm -rf $(WHISPER_BUILD) $(SIMPLEBLE_BUILD)
+	-rm -rf $(WHISPER_BUILD) $(SIMPLEBLE_BUILD) $(ESPEAK_BUILD)
 
 # Build and run the unit-test binary (see tests/). No GL, no GTK, no
 # Stockfish subprocess, no whisper.cpp — just the pure-logic layer.

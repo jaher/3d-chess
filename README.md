@@ -174,6 +174,26 @@ again to turn it back off (it's session-only, off by default on
 launch). While continuous mode is on, SPACE is suppressed with a
 status-bar hint so the two modes never race for the same mic.
 
+#### Speak moves (TTS announcements)
+
+Below the voice toggles is a **Speak moves** row. When on, the AI's
+reply is announced through the speakers after every move ("Knight
+to f three", "Pawn takes d five", "Castles kingside, check"). Your
+own moves are not spoken — reading them back is redundant noise.
+Off by default; flip it on if you want to play eyes-free or
+glance away from the board between moves.
+
+Native build: powered by [espeak-ng](https://github.com/espeak-ng/espeak-ng)
+vendored as a git submodule under `third_party/espeak-ng/`. The
+formant synth is small (~7 MB build artifact, voice data baked in)
+and gives the announcement a deliberately retro chess-computer
+voice. Web build: uses the browser's built-in
+`window.speechSynthesis` API — no model download, voice quality
+follows the platform's installed TTS engine.
+
+Spoken phrase to flip the toggle from voice: "speak moves" /
+"announce moves" / "toggle voice output".
+
 #### Voice UI commands
 
 In addition to chess moves, the same speech engine recognises spoken
@@ -181,7 +201,7 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "challenges", "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "cartoon outline", "continuous voice", "verbose log" (BLE diagnostic)
+- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "verbose log" (BLE diagnostic)
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other
@@ -613,6 +633,20 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               and finals directly into the same parser
                               as the desktop path.
 
+  # Voice output (TTS — move announcements)
+  voice_tts.h/cpp          -- Pure-logic SAN-to-spoken-English
+                              helper (`uci_to_speech` /
+                              `san_to_speech`). Shared between
+                              desktop and web; doctest-covered in
+                              tests/voice_tts_test.cpp.
+  voice_tts_native.cpp     -- Desktop only: espeak-ng synth
+                              callback + worker-thread queue.
+                              PCM samples come back via the synth
+                              callback and feed the existing
+                              audio.cpp 8-voice mixer.
+  web/voice_tts_web.cpp    -- Web only: EM_JS shim around
+                              `window.speechSynthesis.speak`.
+
   # Chessnut Move physical-board mirroring
   chessnut_encode.h        -- Header-only wire-format header.
                               Named opcodes (OPCODE_*, CMD_*),
@@ -664,6 +698,11 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   third_party/whisper-models/
                            -- distil-small.en GGML weights (downloaded by
                               `make fetch-whisper-model`, gitignored)
+  third_party/espeak-ng/   -- eSpeak NG TTS engine (git submodule,
+                              desktop only). Voice data ships in-tree
+                              under `espeak-ng-data/`; loaded at
+                              runtime via the ESPEAK_DATA_PATH define
+                              the Makefile bakes in.
   models/                  -- High-res STL piece models (desktop build)
   models-web/              -- Decimated STL pieces (~80k tris, intermediate)
   models-web-packed/       -- Gzipped indexed-mesh packed pieces (~4 MB total,

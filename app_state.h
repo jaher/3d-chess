@@ -238,6 +238,14 @@ struct AppState {
     // API (web/voice_web.cpp).
     bool voice_continuous_enabled = false;
 
+    // Voice-output (TTS): announce the AI's reply over the speaker
+    // after every move. Desktop drives espeak-ng; web drives the
+    // browser's speechSynthesis. Off by default. The user's own
+    // moves are NOT spoken — reading them back would be redundant
+    // noise; flip this on to hear what Stockfish (or the remote
+    // opponent) just played.
+    bool voice_tts_enabled = false;
+
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app
     // pushes the current FEN to the board on every state change.
@@ -503,6 +511,10 @@ void app_voice_toggle_continuous_request(AppState& a);
 // SpeechRecognition). Defined per-platform; lets the Options UI
 // hide the row when there's no chance of it working.
 bool app_voice_continuous_supported();
+
+// "Speak moves" toggle — flips the voice-output direction (TTS).
+// Lazy-initialises voice_tts on first enable; idempotent.
+void app_voice_toggle_speak_moves_request(AppState& a);
 
 // GUI-thread tail for continuous-mode utterances and live partial
 // transcripts. Both ungated so the web driver can call them too.

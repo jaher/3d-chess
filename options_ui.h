@@ -16,6 +16,7 @@ struct OptionsScannedDevice {
 //   4 = chessnut toggle, 5 = picker cancel/refresh button,
 //   6 = picker "forget cached device" button,
 //   7 = BLE verbose-log toggle,
+//   8 = "Speak moves" (TTS) toggle,
 //   100+i = picker row #i.
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
@@ -23,6 +24,7 @@ struct OptionsScannedDevice {
 void renderer_draw_options(bool cartoon_outline_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
+                           bool voice_tts_enabled,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,

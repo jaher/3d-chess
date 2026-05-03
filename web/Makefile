@@ -54,10 +54,11 @@ SHARED_SRCS := \
     ../shatter_transition.cpp \
     ../text_atlas.cpp \
     ../options_ui.cpp \
-    ../voice_input.cpp
+    ../voice_input.cpp \
+    ../voice_tts.cpp
 
 # Web-only sources.
-WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp chessnut_web.cpp
+WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp
 
 # Object files live in build/ so `make -jN` can compile each TU in
 # parallel. em++ is clang under the hood — -j20 actually parallelizes

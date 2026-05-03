@@ -44,6 +44,11 @@ struct Voice {
     Uint32 len = 0;
     Uint32 pos = 0;
     bool   active = false;
+    // Runtime-generated PCM (TTS): when non-empty, `buf` aliases
+    // its `.data()` pointer. Lifetime is tied to the voice slot,
+    // so the mixer never reads a freed buffer. Empty for static
+    // SFX clips that point at g_clips[].
+    std::vector<int16_t> owned_pcm;
 };
 
 struct MusicTrack {
@@ -206,6 +211,11 @@ void SDLCALL audio_callback(void* /*user*/, Uint8* stream, int len) {
         if (v.pos >= v.len) {
             v.active = false;
             v.buf = nullptr;
+            // Free the dynamic buffer if this voice owned one.
+            // Cheap deallocation under the audio lock — fine at
+            // 22050 Hz × 1024-sample frames.
+            v.owned_pcm.clear();
+            v.owned_pcm.shrink_to_fit();
         }
     }
 }
@@ -303,6 +313,34 @@ void audio_play(SoundEffect effect) {
     chosen->buf    = c.buf;
     chosen->len    = c.len;
     chosen->pos    = 0;
+    chosen->active = true;
+}
+
+void audio_play_pcm(std::vector<int16_t> samples) {
+    if (g_device == 0 || samples.empty()) return;
+
+    std::lock_guard<std::mutex> lk(g_audio_mu);
+    // Same slot allocation strategy as audio_play(): prefer a free
+    // slot, fall back to the one closest to finishing if all 8 are
+    // busy.
+    Voice* chosen = nullptr;
+    for (auto& v : g_voices) {
+        if (!v.active) { chosen = &v; break; }
+    }
+    if (!chosen) {
+        Uint32 best_remaining = UINT32_MAX;
+        for (auto& v : g_voices) {
+            Uint32 r = (v.pos < v.len) ? v.len - v.pos : 0;
+            if (r < best_remaining) { best_remaining = r; chosen = &v; }
+        }
+    }
+    if (!chosen) return;
+
+    chosen->owned_pcm = std::move(samples);
+    chosen->buf = reinterpret_cast<const Uint8*>(chosen->owned_pcm.data());
+    chosen->len = static_cast<Uint32>(chosen->owned_pcm.size() *
+                                       sizeof(int16_t));
+    chosen->pos = 0;
     chosen->active = true;
 }
 

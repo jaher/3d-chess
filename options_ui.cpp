@@ -44,6 +44,14 @@ constexpr float OPT_TOG4_H  =  0.10f;
 constexpr float OPT_TOG4_X  = -OPT_TOG4_W * 0.5f;
 constexpr float OPT_TOG4_Y  = -0.30f;
 
+// "Speak moves" — fifth row. Voice-output complement to the
+// Continuous voice toggle in row 2. Hidden when the picker is
+// open (its rect overlaps the first picker device row).
+constexpr float OPT_TOG5_W  =  0.60f;
+constexpr float OPT_TOG5_H  =  0.10f;
+constexpr float OPT_TOG5_X  = -OPT_TOG5_W * 0.5f;
+constexpr float OPT_TOG5_Y  = -0.44f;
+
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
 // each device is its own clickable row underneath. The
@@ -93,6 +101,11 @@ int options_hit_test(double mx, double my, int width, int height,
         ndc_x >= OPT_TOG4_X && ndc_x <= OPT_TOG4_X + OPT_TOG4_W &&
         ndc_y >= OPT_TOG4_Y - OPT_TOG4_H && ndc_y <= OPT_TOG4_Y)
         return 7;
+    // "Speak moves" — also hidden when the picker is open.
+    if (continuous_voice_supported && !picker_open &&
+        ndc_x >= OPT_TOG5_X && ndc_x <= OPT_TOG5_X + OPT_TOG5_W &&
+        ndc_y >= OPT_TOG5_Y - OPT_TOG5_H && ndc_y <= OPT_TOG5_Y)
+        return 8;
     if (picker_open) {
         // Header row: cancel/rescan.
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
@@ -120,6 +133,7 @@ int options_hit_test(double mx, double my, int width, int height,
 void renderer_draw_options(bool cartoon_outline_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
+                           bool voice_tts_enabled,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,
@@ -153,6 +167,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported && !picker_open) {
         add_quad(OPT_TOG4_X, OPT_TOG4_Y, OPT_TOG4_W, OPT_TOG4_H);
+    }
+    if (continuous_voice_supported && !picker_open) {
+        add_quad(OPT_TOG5_X, OPT_TOG5_Y, OPT_TOG5_W, OPT_TOG5_H);
     }
     int picker_visible = 0;
     if (picker_open) {
@@ -209,6 +226,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     if (chessnut_supported && !picker_open) {
         draw_toggle(ble_verbose_log_enabled, 7, next_offset);
+        next_offset += 6;
+    }
+    if (continuous_voice_supported && !picker_open) {
+        draw_toggle(voice_tts_enabled, 8, next_offset);
         next_offset += 6;
     }
     if (picker_open) {
@@ -287,8 +308,16 @@ void renderer_draw_options(bool cartoon_outline_enabled,
             OPT_TOG4_Y);
         toggle4_end = static_cast<int>(text_verts.size() / 5);
     }
-    int picker_text_start = toggle4_end;
-    int picker_text_end   = toggle4_end;
+    int toggle5_end = toggle4_end;
+    if (continuous_voice_supported && !picker_open) {
+        add_toggle_label(
+            std::string("Speak moves: ") +
+                (voice_tts_enabled ? "ON" : "OFF"),
+            OPT_TOG5_Y);
+        toggle5_end = static_cast<int>(text_verts.size() / 5);
+    }
+    int picker_text_start = toggle5_end;
+    int picker_text_end   = toggle5_end;
     if (picker_open) {
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
@@ -379,6 +408,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     li4, li4, li4, 1.0f);
         glDrawArrays(GL_TRIANGLES, toggle3_end, toggle4_end - toggle3_end);
+    }
+    if (continuous_voice_supported && !picker_open && toggle5_end > toggle4_end) {
+        float li5 = hover == 8 ? 1.0f : 0.92f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    li5, li5, li5, 1.0f);
+        glDrawArrays(GL_TRIANGLES, toggle4_end, toggle5_end - toggle4_end);
     }
     if (picker_open && picker_text_end > picker_text_start) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
