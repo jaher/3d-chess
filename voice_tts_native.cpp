@@ -59,6 +59,9 @@ int synth_callback(short* wav, int numsamples, espeak_EVENT* events) {
         for (espeak_EVENT* e = events;
              e->type != espeakEVENT_LIST_TERMINATED; ++e) {
             if (e->type == espeakEVENT_MSG_TERMINATED) {
+                std::fprintf(stderr,
+                    "[voice_tts] synth done — %zu samples queued for playback\n",
+                    g_synth_pcm.size());
                 if (!g_synth_pcm.empty()) {
                     audio_play_pcm(std::move(g_synth_pcm));
                     g_synth_pcm = {};  // reset, move() left it empty
@@ -84,6 +87,8 @@ void worker_loop() {
         }
         if (text.empty()) continue;
 
+        std::fprintf(stderr,
+            "[voice_tts] synth start: \"%s\"\n", text.c_str());
         unsigned int unique_id = 0;
         espeak_ERROR rc = espeak_Synth(
             text.c_str(),
@@ -128,7 +133,22 @@ bool voice_tts_init(std::string& err_out) {
         return false;
     }
     espeak_SetSynthCallback(synth_callback);
-    espeak_SetVoiceByName("en-us");
+    espeak_ERROR vrc = espeak_SetVoiceByName("en-us");
+    if (vrc != EE_OK) {
+        std::fprintf(stderr,
+            "voice_tts: warning — SetVoiceByName(\"en-us\") rc=%d "
+            "(falling back to whatever default voice loaded)\n", vrc);
+    }
+    std::fprintf(stderr,
+        "voice_tts: initialised — espeak rate=%d Hz "
+        "(device 22050 Hz; data path=%s)\n",
+        rate,
+#ifdef ESPEAK_DATA_PATH
+        ESPEAK_DATA_PATH
+#else
+        "(default)"
+#endif
+    );
     // espeak's en-us default sample rate is 22050, matching what
     // audio.cpp opens. If a future voice change drops to 16000, the
     // mismatch is audible but not fatal — we'd need to resample in

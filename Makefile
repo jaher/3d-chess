@@ -114,7 +114,12 @@ ESPEAK_LIB    := $(ESPEAK_BUILD)/src/libespeak-ng/libespeak-ng.a
 ESPEAK_AUX_LIBS := $(ESPEAK_BUILD)/src/ucd-tools/libucd.a \
                    $(ESPEAK_BUILD)/src/speechPlayer/libspeechPlayer.a
 ESPEAK_INC    := $(ESPEAK_DIR)/src/include
-ESPEAK_DATA   := $(abspath $(ESPEAK_DIR))
+# espeak-ng's runtime data (phontab / phondata / phonindex /
+# intonations + per-language *_dict files) is *generated* by the
+# CMake build, not committed to the source tree. Point at the
+# build dir's espeak-ng-data/ where the `data` target writes.
+ESPEAK_DATA   := $(abspath $(ESPEAK_BUILD))
+ESPEAK_DATA_MARKER := $(ESPEAK_BUILD)/espeak-ng-data/phontab
 ESPEAK_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
                      -DUSE_ASYNC=OFF -DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF \
                      -DUSE_LIBPCAUDIO=OFF -DUSE_KLATT=ON \
@@ -131,7 +136,7 @@ WHISPER_MODEL_SHA256 := ?
 
 all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL)
 
-$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) $(ESPEAK_LIB)
+$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) $(ESPEAK_LIB) $(ESPEAK_DATA_MARKER)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
 %.o: %.cpp $(HEADERS)
@@ -195,6 +200,15 @@ $(ESPEAK_LIB):
 	fi
 	cmake -B $(ESPEAK_BUILD) -S $(ESPEAK_DIR) $(ESPEAK_CMAKE_ARGS)
 	cmake --build $(ESPEAK_BUILD) --config Release -j --target espeak-ng
+
+# Generate the phoneme tables (phontab / phondata / phonindex /
+# intonations) and per-language *_dict files into
+# $(ESPEAK_BUILD)/espeak-ng-data/. espeak_Initialize at runtime
+# refuses to start without phontab (the user reported "No such
+# file or directory" right after a move because we'd previously
+# only built the static lib). The CMake `data` target writes them.
+$(ESPEAK_DATA_MARKER): $(ESPEAK_LIB)
+	cmake --build $(ESPEAK_BUILD) --config Release -j --target data
 
 clean:
 	rm -f $(OBJS) $(TARGET)

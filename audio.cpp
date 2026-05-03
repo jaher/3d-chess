@@ -317,7 +317,13 @@ void audio_play(SoundEffect effect) {
 }
 
 void audio_play_pcm(std::vector<int16_t> samples) {
-    if (g_device == 0 || samples.empty()) return;
+    if (g_device == 0) {
+        std::fprintf(stderr,
+            "audio_play_pcm: dropped — audio device not open "
+            "(call audio_init first; %zu samples lost)\n", samples.size());
+        return;
+    }
+    if (samples.empty()) return;
 
     std::lock_guard<std::mutex> lk(g_audio_mu);
     // Same slot allocation strategy as audio_play(): prefer a free
