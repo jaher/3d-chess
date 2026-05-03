@@ -11,7 +11,7 @@
 // web/chessnut_web.cpp behind the same `app_chessnut_*` API that
 // app_state.cpp calls into, so this header doesn't ship there.
 //
-// See PHANTOM.md for the protocol notes and phantom_encode.h for
+// See docs/PHANTOM.md for the protocol notes and phantom_encode.h for
 // the wire-format helpers.
 
 #ifndef __EMSCRIPTEN__

@@ -61,7 +61,7 @@ EM_JS(void, chessnut_web_start_js, (), {
     // (ASCII move strings, not 32-byte FEN frames). We let the
     // browser show both kinds in the picker; protocol selection
     // happens after connect based on which service the device
-    // actually exposes. See PHANTOM.md for the full RE notes.
+    // actually exposes. See docs/PHANTOM.md for the full RE notes.
     var PHANTOM_SVC   = "fd31a840-22e7-11eb-adc1-0242ac120002";
     var PHANTOM_WRITE = "7b204548-30c3-11eb-adc1-0242ac120002";
     var PHANTOM_NOTIFY = [
@@ -203,7 +203,7 @@ EM_JS(void, chessnut_web_start_js, (), {
                             // Phantom firmware doesn't expect any
                             // handshake — its Play-Mode loop polls
                             // sensors continuously. Just announce the
-                            // connection. Wire format: see PHANTOM.md.
+                            // connection. Wire format: see docs/PHANTOM.md.
                             emit("CONNECTED " + window.__chessnutBoard.name);
                             return;
                         }

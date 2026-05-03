@@ -300,7 +300,9 @@ Phantom variants OTA-updated past the protocol we reverse-
 engineered) without needing a terminal. Spoken phrase: "verbose
 log".
 
-See `PHANTOM.md` for the full reverse-engineering notes.
+See [`docs/PHANTOM.md`](docs/PHANTOM.md) for the full
+reverse-engineering notes and [`docs/PHANTOM_RE_FOLLOWUP.md`](docs/PHANTOM_RE_FOLLOWUP.md)
+for the prioritised list of next steps.
 
 Build dependency: `libdbus-1-dev` (required by SimpleBLE on Linux).
 On Debian/Ubuntu: `sudo apt-get install -y libdbus-1-dev`. The
@@ -354,7 +356,7 @@ browser can't open a second BLE connection — disconnect the phone
 first.
 
 The protocol details (GATT UUIDs, opcodes, piece encoding) live in
-the reverse-engineering notes at [`CHESSNUT.md`](CHESSNUT.md) in
+the reverse-engineering notes at [`docs/CHESSNUT.md`](docs/CHESSNUT.md) in
 this repo — extracted from the official Android app and cross-
 verified against the documented Chessnut Air community protocol. Move's wire format
 is a strict superset of Air's, with one extra opcode (`0x42`) for
@@ -632,7 +634,7 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               device speaks.
   phantom_encode.h         -- Pure-logic Phantom Chessboard wire-
                               format helpers (UUIDs, ASCII MOVE_CMD
-                              builder). See PHANTOM.md for the
+                              builder). See docs/PHANTOM.md for the
                               protocol notes.
   phantom_bridge.h         -- Desktop-only public PIMPL interface
                               for the Phantom driver.

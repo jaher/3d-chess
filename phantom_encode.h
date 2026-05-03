@@ -4,7 +4,7 @@
 // the desktop SimpleBLE impl (phantom_bridge.cpp) and the web
 // Web-Bluetooth impl (web/phantom_web.cpp) share one source of truth.
 //
-// See PHANTOM.md (project root) for the reverse-engineering notes.
+// See docs/PHANTOM.md for the reverse-engineering notes.
 // In short: Phantom is an ESP32 robotic chessboard. The app drives
 // motors by writing a short ASCII move string to characteristic
 // 7b204548-… (`MOVE_CMD_UUID` below); the firmware's Play-Mode loop

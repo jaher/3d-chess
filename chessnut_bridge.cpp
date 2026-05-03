@@ -4,8 +4,8 @@
 // write_request blocks); driving it from a worker keeps the GTK
 // main thread unblocked.
 //
-// See CHESSNUT.md (project root) for the wire format and
-// chessnut_encode.h for the named opcodes / pre-built command frames.
+// See docs/CHESSNUT.md for the wire format and chessnut_encode.h
+// for the named opcodes / pre-built command frames.
 
 #ifndef __EMSCRIPTEN__
 
@@ -39,7 +39,7 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// GATT — see CHESSNUT.md in the repo root. Same characteristic
+// GATT — see docs/CHESSNUT.md. Same characteristic
 // UUID family as the Chessnut Air community-RE'd protocol; Move
 // adds the 8261/8271 pair.
 //

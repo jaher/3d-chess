@@ -106,6 +106,6 @@ and `0x27 0x01 0x00`) live separately in each driver
 shim in the web impl, the Python `build_init_handshake` function).
 If those need to change, update all three.
 
-Cross-check against `CHESSNUT.md` (in this repo's root) and the
+Cross-check against `docs/CHESSNUT.md` and the
 decompiled Android app in `~/chessnutapp/decompiled/` — those are
 the source of truth for what the firmware expects.

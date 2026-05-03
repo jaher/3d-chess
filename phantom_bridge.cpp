@@ -7,7 +7,7 @@
 //
 // The Phantom protocol is partially verified — the motor-drive
 // channel and write framing are confirmed from the firmware
-// reverse-engineering documented in PHANTOM.md. The notify-frame
+// reverse-engineering documented in docs/PHANTOM.md. The notify-frame
 // formats are NOT confirmed; this driver subscribes to all
 // notify-capable characteristics and logs frames raw to stderr so
 // they can be captured the first time someone with a real Phantom
