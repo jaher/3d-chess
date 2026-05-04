@@ -13,15 +13,28 @@ Format of the written file mirrors challenges/*.md so the same
 parser shape applies (name + type + side + FEN, with the
 chess.com solution PGN appended as a comment block).
 
+When a new file IS written, the script also commits it as its own
+single-file commit and pushes to the configured origin via the
+local `git` binary. Authentication is whatever git is already
+configured to use on this machine (SSH key, credential helper,
+or the URL stored in `.git/config`). The script never reads or
+embeds any secret of its own — no environment variables are
+inspected, no tokens hardcoded, no stdout / stderr from git is
+re-emitted beyond a short summary line. Pass --no-push to skip
+the commit + push step (useful for local testing or for cloning
+the repo somewhere read-only).
+
 Suggested crontab line — run twice a day:
     0 */12 * * * /path/to/3d_chess/tools/fetch_daily_puzzle.py >> /tmp/fetch_daily_puzzle.log 2>&1
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.request
@@ -137,7 +150,63 @@ def write_archive(p: dict, today: str) -> str:
     return path
 
 
-def main() -> int:
+def _git(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Wrapper around `git -C PROJECT_ROOT ...` that captures output.
+
+    No secrets are passed in — git auth is handled by whatever
+    credential helper / SSH agent is already configured on this
+    host. We only log return codes and a short stderr excerpt so
+    push diagnostics don't drown cron mail in noise (and so we
+    don't accidentally surface anything sensitive that a custom
+    credential helper might choose to print). The caller decides
+    whether to treat non-zero rc as fatal."""
+    cmd = ["git", "-C", PROJECT_ROOT, *args]
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, text=True)
+
+
+def git_commit_and_push(path: str) -> None:
+    """Commit just `path` and push to origin. Best-effort.
+
+    We stage exactly one file with `git add <path>` so that any
+    other in-progress edits in the working tree don't piggyback
+    onto the puzzle commit. Errors are logged but never raised —
+    a push failure shouldn't block the next archive write."""
+    rel = os.path.relpath(path, PROJECT_ROOT)
+    try:
+        add = _git("add", "--", rel)
+        if add.returncode != 0:
+            log(f"git add failed (rc={add.returncode}): "
+                f"{(add.stderr or '').strip()[:200]}")
+            return
+        # The committer / author identity comes from the user's
+        # ~/.gitconfig — we do NOT inject one. If git is configured
+        # without a name + email it will refuse the commit and we
+        # log the failure cleanly.
+        msg = f"puzzles: archive {os.path.basename(path)}"
+        commit = _git("commit", "-m", msg)
+        if commit.returncode != 0:
+            log(f"git commit failed (rc={commit.returncode}): "
+                f"{(commit.stderr or '').strip()[:200]}")
+            return
+        push = _git("push", timeout=60)
+        if push.returncode != 0:
+            log(f"git push failed (rc={push.returncode}): "
+                f"{(push.stderr or '').strip()[:200]}")
+            return
+        log(f"committed + pushed {rel}")
+    except FileNotFoundError:
+        log("git binary not found in PATH — skip commit/push")
+    except subprocess.TimeoutExpired:
+        log("git step timed out — skip")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--no-push", action="store_true",
+        help="Write the archive file but skip the git commit + push step.")
+    args = parser.parse_args(argv)
+
     try:
         p = fetch_puzzle()
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
@@ -156,6 +225,8 @@ def main() -> int:
     today = time.strftime("%Y-%m-%d")
     path = write_archive(p, today)
     log(f"wrote {os.path.relpath(path, PROJECT_ROOT)}")
+    if not args.no_push:
+        git_commit_and_push(path)
     return 0
 
 
