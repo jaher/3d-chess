@@ -397,9 +397,12 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "toggle voice", "voice on", "voice off",
                           "voice"}))
             return VoiceCommand::ToggleContinuousVoice;
-        if (match_any(s, {"chessnut", "chessnut move", "robot board",
-                          "physical board", "toggle chessnut",
-                          "toggle move"}))
+        if (match_any(s, {"robotic board", "robot board", "robotic",
+                          "physical board",
+                          "chessnut", "chessnut move", "phantom",
+                          "phantom chessboard", "phantom board",
+                          "toggle robotic board", "toggle robot",
+                          "toggle chessnut", "toggle move"}))
             return VoiceCommand::ToggleChessnut;
         if (match_any(s, {"verbose log", "verbose", "ble verbose",
                           "ble log", "verbose ble", "toggle verbose",

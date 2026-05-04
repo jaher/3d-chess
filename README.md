@@ -260,13 +260,13 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "puzzles" (or "puzzle of the day"), "homework" (or "challenges"), "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "verbose log" (BLE diagnostic)
+- **Options**: "back", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "cartoon outline", "robotic board" / "robot board" (connect to a Chessnut Move or Phantom Chessboard over BLE), "verbose log" (BLE diagnostic)
 - **Live game (Move hints On Demand)**: "give me a hint", "hint", "best move", "what should I play"
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
 - **Resign confirmation modal**: "yes" / "no" — modal eats every other
   utterance until you decide
-- **Chessnut Move toggle (in Options)**: "chessnut" / "robot board"
+- **Robotic-board toggle (in Options)**: "robotic board" / "robot board" / "chessnut" / "phantom" — same toggle drives both Chessnut Move and Phantom Chessboard; the picker shows both families in one list
 - **Game over / analysis**: "back to menu", "continue playing", "new game"
 - **Challenge solved**: "next", "next puzzle"
 - **Challenge mistake**: "try again", "retry"

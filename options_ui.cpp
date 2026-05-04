@@ -15,49 +15,35 @@ constexpr float OPT_BACK_Y  =  0.93f;
 constexpr float OPT_BACK_W  =  0.20f;
 constexpr float OPT_BACK_H  =  0.07f;
 
-// Cartoon-outline toggle — a wide button that flips ON/OFF in place.
-constexpr float OPT_TOG_W   =  0.60f;
-constexpr float OPT_TOG_H   =  0.10f;
-constexpr float OPT_TOG_X   = -OPT_TOG_W * 0.5f;
-constexpr float OPT_TOG_Y   =  0.12f;
+// Toggle row geometry. Six rows of identical-shape buttons stacked
+// top-to-bottom. Order is fixed per design (voice / tts / hints /
+// outline / board / ble); each toggle keeps a stable hover-ID code
+// so the app_state dispatch doesn't need to know which row a given
+// toggle currently sits in.
+//
+// When the BLE picker is open it draws starting at row 4's Y
+// position and overlaps everything below — the renderer hides
+// rows 4..6 in that mode and the user cancels the picker via its
+// own header to get the toggles back.
+constexpr float OPT_TOG_W       =  0.60f;
+constexpr float OPT_TOG_H       =  0.10f;
+constexpr float OPT_TOG_X       = -OPT_TOG_W * 0.5f;
+constexpr float OPT_ROW1_Y      =  0.12f;   // Continuous voice
+constexpr float OPT_ROW2_Y      = -0.02f;   // Speak moves
+constexpr float OPT_ROW3_Y      = -0.16f;   // Move hints
+constexpr float OPT_ROW4_Y      = -0.30f;   // Cartoon outline
+constexpr float OPT_ROW5_Y      = -0.44f;   // Robotic board (Chessnut / Phantom)
+constexpr float OPT_ROW6_Y      = -0.58f;   // BLE verbose log
 
-// Continuous-voice toggle — same width, sits directly below with a
-// small vertical gap.
-constexpr float OPT_TOG2_W  =  0.60f;
-constexpr float OPT_TOG2_H  =  0.10f;
-constexpr float OPT_TOG2_X  = -OPT_TOG2_W * 0.5f;
-constexpr float OPT_TOG2_Y  = -0.02f;
-
-// Chessnut Move toggle — third row.
-constexpr float OPT_TOG3_W  =  0.60f;
-constexpr float OPT_TOG3_H  =  0.10f;
-constexpr float OPT_TOG3_X  = -OPT_TOG3_W * 0.5f;
-constexpr float OPT_TOG3_Y  = -0.16f;
-
-// BLE verbose-log toggle — fourth row. Co-located with the
-// chessnut/phantom row above because it's the same family of
-// "physical board debug" controls. Hidden together with the picker
-// when one is open so the verbose toggle doesn't visually overlap
-// the device list.
-constexpr float OPT_TOG4_W  =  0.60f;
-constexpr float OPT_TOG4_H  =  0.10f;
-constexpr float OPT_TOG4_X  = -OPT_TOG4_W * 0.5f;
-constexpr float OPT_TOG4_Y  = -0.30f;
-
-// "Speak moves" — fifth row. Voice-output complement to the
-// Continuous voice toggle in row 2. Hidden when the picker is
-// open (its rect overlaps the first picker device row).
-constexpr float OPT_TOG5_W  =  0.60f;
-constexpr float OPT_TOG5_H  =  0.10f;
-constexpr float OPT_TOG5_X  = -OPT_TOG5_W * 0.5f;
-constexpr float OPT_TOG5_Y  = -0.44f;
-
-// "Move hints" — sixth row. Off by default; opt-in coach mode.
-// Hidden when the picker is open (overlaps picker rows 2-3).
-constexpr float OPT_TOG6_W  =  0.60f;
-constexpr float OPT_TOG6_H  =  0.10f;
-constexpr float OPT_TOG6_X  = -OPT_TOG6_W * 0.5f;
-constexpr float OPT_TOG6_Y  = -0.58f;
+// Convenience aliases — name each row by its role so the rest of
+// the file reads as "the voice toggle" / "the outline toggle"
+// rather than "row N". Reorder = swap aliases, no behaviour drift.
+constexpr float OPT_TOG_VOICE_Y   = OPT_ROW1_Y;
+constexpr float OPT_TOG_TTS_Y     = OPT_ROW2_Y;
+constexpr float OPT_TOG_HINTS_Y   = OPT_ROW3_Y;
+constexpr float OPT_TOG_OUTLINE_Y = OPT_ROW4_Y;
+constexpr float OPT_TOG_BOARD_Y   = OPT_ROW5_Y;
+constexpr float OPT_TOG_BLE_Y     = OPT_ROW6_Y;
 
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
@@ -88,36 +74,26 @@ int options_hit_test(double mx, double my, int width, int height,
                      int picker_device_count) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
+    auto hit = [&](float top) {
+        return ndc_x >= OPT_TOG_X && ndc_x <= OPT_TOG_X + OPT_TOG_W &&
+               ndc_y >= top - OPT_TOG_H && ndc_y <= top;
+    };
     if (ndc_x >= OPT_BACK_X && ndc_x <= OPT_BACK_X + OPT_BACK_W &&
         ndc_y >= OPT_BACK_Y - OPT_BACK_H && ndc_y <= OPT_BACK_Y)
         return 1;
-    if (ndc_x >= OPT_TOG_X && ndc_x <= OPT_TOG_X + OPT_TOG_W &&
-        ndc_y >= OPT_TOG_Y - OPT_TOG_H && ndc_y <= OPT_TOG_Y)
-        return 2;
-    if (continuous_voice_supported &&
-        ndc_x >= OPT_TOG2_X && ndc_x <= OPT_TOG2_X + OPT_TOG2_W &&
-        ndc_y >= OPT_TOG2_Y - OPT_TOG2_H && ndc_y <= OPT_TOG2_Y)
-        return 3;
-    if (chessnut_supported &&
-        ndc_x >= OPT_TOG3_X && ndc_x <= OPT_TOG3_X + OPT_TOG3_W &&
-        ndc_y >= OPT_TOG3_Y - OPT_TOG3_H && ndc_y <= OPT_TOG3_Y)
-        return 4;
-    // BLE verbose-log toggle is hidden behind the picker when it's
-    // open (same vertical band) — this keeps the click target clean.
+    // Rows 1..3 sit above the picker header (Y=-0.30); always
+    // available for click. Rows 4..6 sit AT or below the picker
+    // header — hidden / non-clickable while it's open. The user
+    // dismisses the picker via its own cancel header to get them
+    // back.
+    if (continuous_voice_supported && hit(OPT_TOG_VOICE_Y))   return 3; // row 1
+    if (continuous_voice_supported && hit(OPT_TOG_TTS_Y))     return 8; // row 2
+    if (hit(OPT_TOG_HINTS_Y))                                 return 9; // row 3
+    if (!picker_open && hit(OPT_TOG_OUTLINE_Y))               return 2; // row 4
     if (chessnut_supported && !picker_open &&
-        ndc_x >= OPT_TOG4_X && ndc_x <= OPT_TOG4_X + OPT_TOG4_W &&
-        ndc_y >= OPT_TOG4_Y - OPT_TOG4_H && ndc_y <= OPT_TOG4_Y)
-        return 7;
-    // "Speak moves" — also hidden when the picker is open.
-    if (continuous_voice_supported && !picker_open &&
-        ndc_x >= OPT_TOG5_X && ndc_x <= OPT_TOG5_X + OPT_TOG5_W &&
-        ndc_y >= OPT_TOG5_Y - OPT_TOG5_H && ndc_y <= OPT_TOG5_Y)
-        return 8;
-    // "Move hints" — sixth row, hidden when the picker is open.
-    if (!picker_open &&
-        ndc_x >= OPT_TOG6_X && ndc_x <= OPT_TOG6_X + OPT_TOG6_W &&
-        ndc_y >= OPT_TOG6_Y - OPT_TOG6_H && ndc_y <= OPT_TOG6_Y)
-        return 9;
+        hit(OPT_TOG_BOARD_Y))                                 return 4; // row 5
+    if (chessnut_supported && !picker_open &&
+        hit(OPT_TOG_BLE_Y))                                   return 7; // row 6
     if (picker_open) {
         // Header row: cancel/rescan.
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
@@ -165,27 +141,25 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     Mat4 id = mat4_identity();
 
     // --- Button backgrounds ---
+    // Quads are appended in row 1..6 order so the per-toggle draw
+    // calls below can step through them sequentially.
     std::vector<float> bg;
     auto add_quad = [&](float x, float y, float w, float h) {
         bg.insert(bg.end(), {x, y-h, 0,  x+w, y-h, 0,  x+w, y, 0,
                               x, y-h, 0,  x+w, y, 0,  x, y, 0});
     };
     add_quad(OPT_BACK_X, OPT_BACK_Y, OPT_BACK_W, OPT_BACK_H);
-    add_quad(OPT_TOG_X,  OPT_TOG_Y,  OPT_TOG_W,  OPT_TOG_H);
     if (continuous_voice_supported) {
-        add_quad(OPT_TOG2_X, OPT_TOG2_Y, OPT_TOG2_W, OPT_TOG2_H);
+        add_quad(OPT_TOG_X, OPT_TOG_VOICE_Y, OPT_TOG_W, OPT_TOG_H); // row 1
+        add_quad(OPT_TOG_X, OPT_TOG_TTS_Y,   OPT_TOG_W, OPT_TOG_H); // row 2
     }
-    if (chessnut_supported) {
-        add_quad(OPT_TOG3_X, OPT_TOG3_Y, OPT_TOG3_W, OPT_TOG3_H);
+    add_quad(OPT_TOG_X, OPT_TOG_HINTS_Y, OPT_TOG_W, OPT_TOG_H);     // row 3
+    if (!picker_open) {
+        add_quad(OPT_TOG_X, OPT_TOG_OUTLINE_Y, OPT_TOG_W, OPT_TOG_H); // row 4
     }
     if (chessnut_supported && !picker_open) {
-        add_quad(OPT_TOG4_X, OPT_TOG4_Y, OPT_TOG4_W, OPT_TOG4_H);
-    }
-    if (continuous_voice_supported && !picker_open) {
-        add_quad(OPT_TOG5_X, OPT_TOG5_Y, OPT_TOG5_W, OPT_TOG5_H);
-    }
-    if (!picker_open) {
-        add_quad(OPT_TOG6_X, OPT_TOG6_Y, OPT_TOG6_W, OPT_TOG6_H);
+        add_quad(OPT_TOG_X, OPT_TOG_BOARD_Y, OPT_TOG_W, OPT_TOG_H); // row 5
+        add_quad(OPT_TOG_X, OPT_TOG_BLE_Y,   OPT_TOG_W, OPT_TOG_H); // row 6
     }
     int picker_visible = 0;
     if (picker_open) {
@@ -230,36 +204,34 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         }
         glDrawArrays(GL_TRIANGLES, vert_offset, 6);
     };
-    draw_toggle(cartoon_outline_enabled, 2, 6);
-    int next_offset = 12;
+    int next_offset = 6;
+    // Row 1 / 2: voice + speak moves (only when voice is supported).
     if (continuous_voice_supported) {
         draw_toggle(voice_continuous_enabled, 3, next_offset);
         next_offset += 6;
-    }
-    if (chessnut_supported) {
-        draw_toggle(chessnut_enabled, 4, next_offset);
-        next_offset += 6;
-    }
-    if (chessnut_supported && !picker_open) {
-        draw_toggle(ble_verbose_log_enabled, 7, next_offset);
-        next_offset += 6;
-    }
-    if (continuous_voice_supported && !picker_open) {
         draw_toggle(voice_tts_enabled, 8, next_offset);
         next_offset += 6;
     }
-    if (!picker_open) {
-        // Hint toggle is tri-state — paint a different colour for
-        // each so a glance at the row tells you the mode without
-        // reading the label. Off = grey (matches OFF toggles
-        // above), Auto = same green as binary-ON, OnDemand =
-        // amber so it's visually distinct from "always on".
-        float r = 0.28f, g = 0.30f, b = 0.36f;  // Off (grey)
-        if (hint_mode == 1) { r = 0.22f; g = 0.60f; b = 0.30f; }    // Auto (green)
-        else if (hint_mode == 2) { r = 0.85f; g = 0.55f; b = 0.10f; }  // OnDemand (amber)
+    // Row 3: tri-state hint toggle. Off=grey, Auto=green, OnDemand=amber.
+    {
+        float r = 0.28f, g = 0.30f, b = 0.36f;       // Off (grey)
+        if (hint_mode == 1)      { r = 0.22f; g = 0.60f; b = 0.30f; }   // Auto (green)
+        else if (hint_mode == 2) { r = 0.85f; g = 0.55f; b = 0.10f; }   // OnDemand (amber)
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
                     r, g, b, hover == 9 ? 0.75f : 0.55f);
         glDrawArrays(GL_TRIANGLES, next_offset, 6);
+        next_offset += 6;
+    }
+    // Row 4: cartoon outline (hidden behind picker).
+    if (!picker_open) {
+        draw_toggle(cartoon_outline_enabled, 2, next_offset);
+        next_offset += 6;
+    }
+    // Row 5 / 6: robotic board + BLE verbose log (hidden behind picker).
+    if (chessnut_supported && !picker_open) {
+        draw_toggle(chessnut_enabled, 4, next_offset);
+        next_offset += 6;
+        draw_toggle(ble_verbose_log_enabled, 7, next_offset);
         next_offset += 6;
     }
     if (picker_open) {
@@ -301,7 +273,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                       OPT_BACK_Y - 0.020f, bw_cw, bw_ch, back_text);
     int back_end = static_cast<int>(text_verts.size() / 5);
 
-    // Toggle labels. Same character metrics as the existing row.
+    // Toggle labels. Each row's text span is appended in sequence
+    // and the post-loop draw uses per-row hover IDs to tint the
+    // span. The row order matches the quad / draw_toggle order
+    // above so vertex offsets stay aligned.
     float lcw = 0.028f, lch = 0.042f;
     auto add_toggle_label = [&](const std::string& label, float row_y) {
         float lw = label.size() * lcw * 0.7f;
@@ -309,55 +284,63 @@ void renderer_draw_options(bool cartoon_outline_enabled,
                           row_y - (OPT_TOG_H - lch) * 0.5f - 0.005f,
                           lcw, lch, label);
     };
-    add_toggle_label(
-        std::string("Cartoon outline: ") +
-            (cartoon_outline_enabled ? "ON" : "OFF"),
-        OPT_TOG_Y);
-    int toggle_end = static_cast<int>(text_verts.size() / 5);
-    int toggle2_end = toggle_end;
+    // Row 1 — Continuous voice
+    int row1_end = back_end;
     if (continuous_voice_supported) {
         add_toggle_label(
             std::string("Continuous voice: ") +
                 (voice_continuous_enabled ? "ON" : "OFF"),
-            OPT_TOG2_Y);
-        toggle2_end = static_cast<int>(text_verts.size() / 5);
+            OPT_TOG_VOICE_Y);
+        row1_end = static_cast<int>(text_verts.size() / 5);
     }
-    int toggle3_end = toggle2_end;
-    if (chessnut_supported) {
-        add_toggle_label(
-            std::string("Chessnut Move: ") +
-                (chessnut_enabled ? "ON" : "OFF"),
-            OPT_TOG3_Y);
-        toggle3_end = static_cast<int>(text_verts.size() / 5);
-    }
-    int toggle4_end = toggle3_end;
-    if (chessnut_supported && !picker_open) {
-        add_toggle_label(
-            std::string("BLE verbose log: ") +
-                (ble_verbose_log_enabled ? "ON" : "OFF"),
-            OPT_TOG4_Y);
-        toggle4_end = static_cast<int>(text_verts.size() / 5);
-    }
-    int toggle5_end = toggle4_end;
-    if (continuous_voice_supported && !picker_open) {
+    // Row 2 — Speak moves
+    int row2_end = row1_end;
+    if (continuous_voice_supported) {
         add_toggle_label(
             std::string("Speak moves: ") +
                 (voice_tts_enabled ? "ON" : "OFF"),
-            OPT_TOG5_Y);
-        toggle5_end = static_cast<int>(text_verts.size() / 5);
+            OPT_TOG_TTS_Y);
+        row2_end = static_cast<int>(text_verts.size() / 5);
     }
-    int toggle6_end = toggle5_end;
-    if (!picker_open) {
+    // Row 3 — Move hints (always visible)
+    {
         const char* hint_label =
             hint_mode == 1 ? "AUTO" :
             hint_mode == 2 ? "ON DEMAND" : "OFF";
         add_toggle_label(
             std::string("Move hints: ") + hint_label,
-            OPT_TOG6_Y);
-        toggle6_end = static_cast<int>(text_verts.size() / 5);
+            OPT_TOG_HINTS_Y);
     }
-    int picker_text_start = toggle6_end;
-    int picker_text_end   = toggle6_end;
+    int row3_end = static_cast<int>(text_verts.size() / 5);
+    // Row 4 — Cartoon outline (hidden when picker open)
+    int row4_end = row3_end;
+    if (!picker_open) {
+        add_toggle_label(
+            std::string("Cartoon outline: ") +
+                (cartoon_outline_enabled ? "ON" : "OFF"),
+            OPT_TOG_OUTLINE_Y);
+        row4_end = static_cast<int>(text_verts.size() / 5);
+    }
+    // Row 5 — Robotic board (Chessnut / Phantom)
+    int row5_end = row4_end;
+    if (chessnut_supported && !picker_open) {
+        add_toggle_label(
+            std::string("Robotic board: ") +
+                (chessnut_enabled ? "ON" : "OFF"),
+            OPT_TOG_BOARD_Y);
+        row5_end = static_cast<int>(text_verts.size() / 5);
+    }
+    // Row 6 — BLE verbose log
+    int row6_end = row5_end;
+    if (chessnut_supported && !picker_open) {
+        add_toggle_label(
+            std::string("BLE verbose log: ") +
+                (ble_verbose_log_enabled ? "ON" : "OFF"),
+            OPT_TOG_BLE_Y);
+        row6_end = static_cast<int>(text_verts.size() / 5);
+    }
+    int picker_text_start = row6_end;
+    int picker_text_end   = row6_end;
     if (picker_open) {
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
@@ -427,40 +410,23 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
     glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
 
-    float li1 = hover == 2 ? 1.0f : 0.92f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), li1, li1, li1, 1.0f);
-    glDrawArrays(GL_TRIANGLES, back_end, toggle_end - back_end);
-
-    if (continuous_voice_supported && toggle2_end > toggle_end) {
-        float li2 = hover == 3 ? 1.0f : 0.92f;
+    auto draw_label_span = [&](int hover_id, int span_begin, int span_end) {
+        if (span_end <= span_begin) return;
+        float intensity = hover == hover_id ? 1.0f : 0.92f;
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    li2, li2, li2, 1.0f);
-        glDrawArrays(GL_TRIANGLES, toggle_end, toggle2_end - toggle_end);
-    }
-    if (chessnut_supported && toggle3_end > toggle2_end) {
-        float li3 = hover == 4 ? 1.0f : 0.92f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    li3, li3, li3, 1.0f);
-        glDrawArrays(GL_TRIANGLES, toggle2_end, toggle3_end - toggle2_end);
-    }
-    if (chessnut_supported && !picker_open && toggle4_end > toggle3_end) {
-        float li4 = hover == 7 ? 1.0f : 0.92f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    li4, li4, li4, 1.0f);
-        glDrawArrays(GL_TRIANGLES, toggle3_end, toggle4_end - toggle3_end);
-    }
-    if (continuous_voice_supported && !picker_open && toggle5_end > toggle4_end) {
-        float li5 = hover == 8 ? 1.0f : 0.92f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    li5, li5, li5, 1.0f);
-        glDrawArrays(GL_TRIANGLES, toggle4_end, toggle5_end - toggle4_end);
-    }
-    if (!picker_open && toggle6_end > toggle5_end) {
-        float li6 = hover == 9 ? 1.0f : 0.92f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    li6, li6, li6, 1.0f);
-        glDrawArrays(GL_TRIANGLES, toggle5_end, toggle6_end - toggle5_end);
-    }
+                    intensity, intensity, intensity, 1.0f);
+        glDrawArrays(GL_TRIANGLES, span_begin, span_end - span_begin);
+    };
+    // Row 1 voice (3) / row 2 tts (8) / row 3 hints (9) / row 4
+    // outline (2) / row 5 board (4) / row 6 ble (7). Hover IDs
+    // stay stable across the reordering so app_state.cpp's switch
+    // doesn't need updates.
+    draw_label_span(3, back_end,  row1_end);
+    draw_label_span(8, row1_end,  row2_end);
+    draw_label_span(9, row2_end,  row3_end);
+    draw_label_span(2, row3_end,  row4_end);
+    draw_label_span(4, row4_end,  row5_end);
+    draw_label_span(7, row5_end,  row6_end);
     if (picker_open && picker_text_end > picker_text_start) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     0.96f, 0.96f, 0.92f, 1.0f);
