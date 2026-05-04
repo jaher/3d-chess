@@ -61,16 +61,34 @@ bool puzzle_parse_json(const std::string& body, Puzzle& out);
 std::vector<std::string> puzzle_parse_solution_uci(const std::string& fen,
                                                    const std::string& pgn);
 
-// Persist a fetched puzzle to ``puzzles/YYYY-MM-DD.md`` (relative
-// to the current working directory) in a layout that mirrors the
-// challenges/*.md format: a `name:` header, a `# url`/`# saved`
+// Persist a fetched puzzle to ``puzzles/<title>_<url-date>.md``
+// (relative to the current working directory) in a layout that
+// mirrors the challenges/*.md format: a `name:` header, a `# url`
 // comment block, the FEN on its own line, and the original PGN
 // body inside a comment block so the file stays parseable as a
-// single-FEN challenge file. Idempotent: existing files are not
-// overwritten so the same daily puzzle visited twice in a session
-// only writes once. No-op on platforms without a writable working
-// directory (web build returns false unconditionally).
+// single-FEN challenge file. Idempotent: a file whose FEN already
+// appears anywhere in puzzles/*.md is skipped. No-op on platforms
+// without a writable working directory (web build returns false
+// unconditionally).
 //
-// Returns true when a file was created (or already existed for the
-// same date), false on directory / write failure.
+// Returns true when a file was created (or the FEN was already
+// archived under a different name), false on directory / write
+// failure.
 bool puzzle_archive_save(const Puzzle& p);
+
+// Read one of our archived puzzle .md files back into a Puzzle
+// struct. Picks `name:` (or the `# title:` comment) for the title,
+// the `# url:` comment for url, the first non-comment / non-key
+// line for fen, and the comment block under "--- Solution PGN ---"
+// for pgn. Returns false if the file can't be opened or doesn't
+// contain a FEN line. Web build always returns false.
+bool puzzle_load_from_md(const std::string& path, Puzzle& out);
+
+// Scan puzzles/*.md for a file whose `# url:` ends in
+// `/daily/<today>` and load it into `out`. Lets the puzzle screen
+// skip the network fetch when today's daily is already on disk.
+// `today` is expected to be a YYYY-MM-DD string in the local
+// time zone — chess.com's daily URL naming uses the same shape.
+// Returns false if no match is found. Web build always returns
+// false.
+bool puzzle_find_local_daily(const std::string& today, Puzzle& out);

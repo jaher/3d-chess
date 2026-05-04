@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <memory>
 #include <utility>
@@ -1114,6 +1115,79 @@ void app_enter_challenge(AppState& a, int index) {
 // and ends the puzzle after one move. The user has to actually
 // play the position out until the win lands on the board.
 
+// Apply a fully-populated Puzzle (from the network OR from a
+// previously-archived ./puzzles/*.md file) to the running game.
+// `from_network` distinguishes the two callers — only the network
+// path writes to the archive (loading from disk would otherwise
+// just rewrite the file we just read).
+static void apply_puzzle_to_state(AppState& a, const Puzzle& p,
+                                  bool daily, bool from_network) {
+    ParsedFEN parsed = parse_fen(p.fen);
+    if (!parsed.valid) {
+        a.puzzle_load_failed = true;
+        set_status(a, "Puzzle FEN was invalid.");
+        queue_redraw(a);
+        return;
+    }
+    // Archive when the puzzle came from the network. Skipped for
+    // /pub/puzzle/random — the auto-advance flow would otherwise
+    // spam the directory with one file per post-solve fetch.
+    if (from_network && daily) puzzle_archive_save(p);
+
+    a.games.assign(1, GameInstance{});
+    a.active_game = 0;
+    apply_fen_to_state(cur_gs(a), parsed);
+    a.human_plays_white = parsed.white_turn;
+    a.rot_x = 30.0f;
+    a.rot_y = a.human_plays_white ? 180.0f : 0.0f;
+    a.zoom  = 12.0f;
+    a.puzzle_title         = p.title;
+    a.puzzle_url           = p.url;
+    a.puzzle_starting_fen  = p.fen;
+    a.puzzle_solved        = false;
+    a.puzzle_load_failed   = false;
+    cur_gs(a).analysis_mode = false;
+
+    // Canonical solution from chess.com's PGN — parse once at load
+    // time. Non-empty → strict validation (mismatches shake + reset
+    // to starting FEN). Empty → free play with Stockfish picking
+    // the AI replies.
+    a.puzzle_solution_uci   = puzzle_parse_solution_uci(p.fen, p.pgn);
+    a.puzzle_solution_index = 0;
+
+    std::string status = daily ? "Puzzle of the Day"
+                               : "Puzzle";
+    if (!a.puzzle_title.empty()) {
+        status += " — ";
+        status += a.puzzle_title;
+    }
+    status += ". You play ";
+    status += parsed.white_turn ? "white" : "black";
+    status += ". Find the strongest move.";
+    set_status(a, status.c_str());
+    queue_redraw(a);
+}
+
+// "Today" in YYYY-MM-DD, local time. Used to find this date's
+// daily puzzle in the local archive before reaching for the
+// network. chess.com publishes daily on UTC midnight, so users
+// in TZs ahead of UTC may briefly see the previous day's local
+// file mismatch and pay one extra fetch — fine, the in-app
+// archiver dedups by FEN anyway.
+static std::string today_local_date_string() {
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    return buf;
+}
+
 void app_enter_puzzle(AppState& a) {
     a.mode = MODE_PUZZLE;
     audio_music_stop();
@@ -1129,6 +1203,19 @@ void app_enter_puzzle(AppState& a) {
     a.withdraw_hover = 0;
     a.endgame_menu_hover = false;
     a.continue_playing_hover = false;
+
+    // Local-first: if we already have today's daily archived under
+    // ./puzzles/, load it from disk and skip the network round-trip
+    // entirely. puzzle_find_local_daily matches by the URL's
+    // /daily/<today> segment; web build's stub always returns false
+    // so we fall through to the platform fetch.
+    Puzzle local;
+    if (puzzle_find_local_daily(today_local_date_string(), local)) {
+        apply_puzzle_to_state(a, local, /*daily=*/true,
+                              /*from_network=*/false);
+        return;
+    }
+
     set_status(a, "Loading puzzle of the day…");
     if (a.platform && a.platform->trigger_puzzle_fetch) {
         a.puzzle_loading = true;
@@ -1154,53 +1241,7 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
         queue_redraw(a);
         return;
     }
-    ParsedFEN parsed = parse_fen(p.fen);
-    if (!parsed.valid) {
-        a.puzzle_load_failed = true;
-        set_status(a, "Puzzle FEN was invalid.");
-        queue_redraw(a);
-        return;
-    }
-    // Archive the daily puzzle to ./puzzles/YYYY-MM-DD.md so the
-    // user builds up a replayable history (mirrors challenges/*.md
-    // format). Skipped for /pub/puzzle/random — the auto-advance
-    // flow would otherwise spam the directory with one file per
-    // post-solve fetch.
-    if (daily) puzzle_archive_save(p);
-
-    a.games.assign(1, GameInstance{});
-    a.active_game = 0;
-    apply_fen_to_state(cur_gs(a), parsed);
-    a.human_plays_white = parsed.white_turn;
-    a.rot_x = 30.0f;
-    a.rot_y = a.human_plays_white ? 180.0f : 0.0f;
-    a.zoom  = 12.0f;
-    a.puzzle_title         = p.title;
-    a.puzzle_url           = p.url;
-    a.puzzle_starting_fen  = p.fen;
-    a.puzzle_solved        = false;
-    a.puzzle_load_failed   = false;
-    cur_gs(a).analysis_mode = false;
-
-    // Canonical solution from chess.com's PGN — parse once at
-    // load time. If non-empty we validate every user move
-    // against it (mismatches → shake + reset to starting FEN);
-    // if empty (PGN missing or unparseable) we fall through to
-    // free play with Stockfish picking the AI replies.
-    a.puzzle_solution_uci   = puzzle_parse_solution_uci(p.fen, p.pgn);
-    a.puzzle_solution_index = 0;
-
-    std::string status = daily ? "Puzzle of the Day"
-                               : "Puzzle";
-    if (!a.puzzle_title.empty()) {
-        status += " — ";
-        status += a.puzzle_title;
-    }
-    status += ". You play ";
-    status += parsed.white_turn ? "white" : "black";
-    status += ". Find the strongest move.";
-    set_status(a, status.c_str());
-    queue_redraw(a);
+    apply_puzzle_to_state(a, p, daily, /*from_network=*/true);
 }
 
 // ===========================================================================
