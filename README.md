@@ -258,7 +258,7 @@ Stockfish only; ignored in two-player mode and during challenges.
 In addition to chess moves, the same speech engine recognises spoken
 button labels for the screen you're on. Examples:
 
-- **Main menu**: "play", "challenges", "puzzles" (or "puzzle of the day"), "options"
+- **Main menu**: "play", "puzzles" (or "puzzle of the day"), "homework" (or "challenges"), "options"
 - **Pregame**: "start", "white", "black", "back"
 - **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "verbose log" (BLE diagnostic)
 - **Live game (Move hints On Demand)**: "give me a hint", "hint", "best move", "what should I play"

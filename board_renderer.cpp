@@ -2425,9 +2425,14 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     add_screen_string(ui_verts, -stw*0.5f, start_y - 0.018f, bcw, bch, start_text);
     int start_end = static_cast<int>(ui_verts.size() / 5);
 
-    std::string ch_text = "Challenges";
-    float chw = ch_text.size() * bcw * 0.7f;
-    add_screen_string(ui_verts, -chw*0.5f, challenge_y - 0.018f, bcw, bch, ch_text);
+    std::string ch_text = "Homework (WIP)";
+    // Slightly smaller cell so "Homework (WIP)" fits comfortably
+    // inside BTN_W = 0.35 NDC without spilling past the rounded
+    // edges. Other buttons keep the regular bcw/bch.
+    float ch_cw = bcw * 0.85f, ch_ch = bch * 0.95f;
+    float chw = ch_text.size() * ch_cw * 0.7f;
+    add_screen_string(ui_verts, -chw*0.5f, challenge_y - 0.018f,
+                      ch_cw, ch_ch, ch_text);
     int ch_end = static_cast<int>(ui_verts.size() / 5);
 
     std::string puz_text = "Puzzles";

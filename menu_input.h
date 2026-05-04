@@ -15,9 +15,9 @@
 //   ─────────────────────────         ─────────────────────────
 //   "Play against stockfish"          (subtitle suppressed)
 //   SLOT_1: Start Game                SLOT_1: Multiplayer
-//   SLOT_2: Challenges                SLOT_2: Start Game
-//   SLOT_3: Puzzles                   SLOT_3: Challenges
-//   SLOT_4: Options                   SLOT_4: Puzzles
+//   SLOT_2: Puzzles                   SLOT_2: Start Game
+//   SLOT_3: Homework (WIP)            SLOT_3: Puzzles
+//   SLOT_4: Options                   SLOT_4: Homework (WIP)
 //   SLOT_5: Quit                      SLOT_5: Options
 //   (SLOT_6 unused)                   SLOT_6: Quit
 //
@@ -39,14 +39,17 @@ constexpr float BTN_SLOT_6  = -0.73f;
 // Multiplayer button is on screen, all other buttons shift down).
 constexpr float btn_multiplayer_y()              { return BTN_SLOT_1; }
 constexpr float btn_start_y(bool mp)     { return mp ? BTN_SLOT_2 : BTN_SLOT_1; }
-constexpr float btn_challenge_y(bool mp) { return mp ? BTN_SLOT_3 : BTN_SLOT_2; }
-constexpr float btn_puzzle_y(bool mp)    { return mp ? BTN_SLOT_4 : BTN_SLOT_3; }
+constexpr float btn_puzzle_y(bool mp)    { return mp ? BTN_SLOT_3 : BTN_SLOT_2; }
+constexpr float btn_challenge_y(bool mp) { return mp ? BTN_SLOT_4 : BTN_SLOT_3; }
 constexpr float btn_options_y(bool mp)   { return mp ? BTN_SLOT_5 : BTN_SLOT_4; }
 constexpr float btn_quit_y(bool mp)      { return mp ? BTN_SLOT_6 : BTN_SLOT_5; }
 }  // namespace menu_ui
 
 // Returns 0=none, 1=start, 2=quit, 3=challenges, 4=options,
 // 5=multiplayer (only when chessnut_connected is true), 6=puzzles.
+// (Code 3 is labelled "Homework (WIP)" in the UI but kept its
+// internal name to avoid churning the dispatch + voice-command
+// wiring for what is just a renamed button.)
 int menu_hit_test(double mx, double my, int width, int height,
                   bool chessnut_connected);
 
