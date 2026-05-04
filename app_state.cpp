@@ -658,16 +658,20 @@ static void handle_board_click(AppState& a, double mx, double my,
                         audio_play(SoundEffect::Mistake);
                     }
                 } else if (is_puzzle) {
-                    // Three flows depending on whether we have a
-                    // parsed solution to validate against:
-                    //   * Solution available + user matches → play
-                    //     the canned next move from the PGN line.
-                    //   * Solution available + user diverges →
-                    //     shake the board and reset to the
-                    //     starting FEN so the user can retry from
-                    //     scratch.
-                    //   * No solution parsed → free play, AI
-                    //     picks via Stockfish.
+                    // Solution-driven flow when we successfully
+                    // parsed the chess.com PGN at load time:
+                    //   * User matches expected → advance index.
+                    //   * User diverges            → shake + reset.
+                    //   * Index reaches end of line → SOLVED.
+                    //   * Otherwise → AI plays the next canned
+                    //     entry. Stockfish is NEVER called along
+                    //     this path; the canned line is the
+                    //     authoritative answer.
+                    //
+                    // Stockfish-driven flow only when we couldn't
+                    // parse a solution (puzzle_solution_uci empty):
+                    // free play, AI picks bestmove, solved on
+                    // game_over only.
                     const bool have_solution = !a.puzzle_solution_uci.empty();
                     std::string user_uci = gs.move_history.empty()
                         ? std::string()
@@ -676,25 +680,18 @@ static void handle_board_click(AppState& a, double mx, double my,
                         return s.size() >= 4 ? s.substr(0, 4) : s;
                     };
                     bool diverged = false;
-                    if (have_solution) {
-                        if (a.puzzle_solution_index >=
-                                a.puzzle_solution_uci.size()) {
-                            // Past the end of the line. Treat as
-                            // off-script: shake-and-reset rather
-                            // than letting the user keep playing
-                            // an unmoored position against
-                            // Stockfish.
-                            diverged = true;
+                    if (have_solution &&
+                        a.puzzle_solution_index < a.puzzle_solution_uci.size()) {
+                        const std::string& expected =
+                            a.puzzle_solution_uci[a.puzzle_solution_index];
+                        if (trim4(user_uci) == trim4(expected)) {
+                            a.puzzle_solution_index++;
                         } else {
-                            const std::string& expected =
-                                a.puzzle_solution_uci[a.puzzle_solution_index];
-                            if (trim4(user_uci) == trim4(expected)) {
-                                a.puzzle_solution_index++;
-                            } else {
-                                diverged = true;
-                            }
+                            diverged = true;
                         }
                     }
+                    const bool solution_complete = have_solution &&
+                        a.puzzle_solution_index >= a.puzzle_solution_uci.size();
 
                     if (diverged) {
                         // Reset the position to the puzzle's
@@ -713,27 +710,28 @@ static void handle_board_click(AppState& a, double mx, double my,
                         set_status(a,
                             "Wrong move — board reset, try the line again.");
                         queue_redraw(a);
-                    } else if (gs.game_over) {
+                    } else if (gs.game_over || solution_complete) {
                         a.puzzle_solved = true;
                         bool user_won = a.human_plays_white
                             ? gs.game_result.find("White wins") !=
                                   std::string::npos
                             : gs.game_result.find("Black wins") !=
                                   std::string::npos;
-                        set_status(a, user_won
+                        const char* msg = solution_complete && !gs.game_over
                             ? "Puzzle solved! Loading next puzzle…"
-                            : "Game ended. Loading next puzzle…");
+                            : (user_won
+                                 ? "Puzzle solved! Loading next puzzle…"
+                                 : "Game ended. Loading next puzzle…");
+                        set_status(a, msg);
                         if (a.platform &&
                             a.platform->trigger_puzzle_fetch) {
                             a.puzzle_loading = true;
                             a.platform->trigger_puzzle_fetch(
                                 /*daily=*/false);
                         }
-                    } else if (have_solution &&
-                               a.puzzle_solution_index <
-                                   a.puzzle_solution_uci.size()) {
-                        // Play the next canned move from the PGN
-                        // line — bypasses Stockfish entirely.
+                    } else if (have_solution) {
+                        // index < size and not complete — play the
+                        // next canned move from the line.
                         const std::string& canned =
                             a.puzzle_solution_uci[a.puzzle_solution_index];
                         int fc, fr, tc, tr;
@@ -743,14 +741,26 @@ static void handle_board_click(AppState& a, double mx, double my,
                             set_status(a, "Following the solution line.");
                             start_ai_animation(a, fc, fr, tc, tr);
                         } else {
-                            // Canned move no longer legal at this
-                            // position (shouldn't happen with the
-                            // reset-on-divergence flow, but be
-                            // defensive). Fall back to Stockfish.
-                            set_status(a, "Stockfish is thinking…");
-                            trigger_ai(a);
+                            // Canned move turned illegal — defensive
+                            // path that shouldn't fire under normal
+                            // operation. Treat the line as broken and
+                            // mark solved so we move on rather than
+                            // silently call Stockfish (the user said
+                            // never use Stockfish when we have a
+                            // parsed solution).
+                            a.puzzle_solved = true;
+                            set_status(a,
+                                "Solution drifted off the line — "
+                                "loading next puzzle.");
+                            if (a.platform &&
+                                a.platform->trigger_puzzle_fetch) {
+                                a.puzzle_loading = true;
+                                a.platform->trigger_puzzle_fetch(
+                                    /*daily=*/false);
+                            }
                         }
                     } else {
+                        // No parsed solution — Stockfish picks.
                         set_status(a, "Stockfish is thinking…");
                         trigger_ai(a);
                     }
@@ -2410,14 +2420,20 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         // until the position resolves on the board — there's no
         // cp-threshold shortcut.
         if (a.mode == MODE_PUZZLE && !a.puzzle_solved) {
-            if (gs.game_over) {
+            const bool solution_complete =
+                !a.puzzle_solution_uci.empty() &&
+                a.puzzle_solution_index >= a.puzzle_solution_uci.size();
+            if (gs.game_over || solution_complete) {
                 a.puzzle_solved = true;
                 bool user_won = a.human_plays_white
                     ? gs.game_result.find("White wins") != std::string::npos
                     : gs.game_result.find("Black wins") != std::string::npos;
-                set_status(a, user_won
+                const char* msg = solution_complete && !gs.game_over
                     ? "Puzzle solved! Loading next puzzle…"
-                    : "Game ended. Loading next puzzle…");
+                    : (user_won
+                         ? "Puzzle solved! Loading next puzzle…"
+                         : "Game ended. Loading next puzzle…");
+                set_status(a, msg);
                 if (a.platform && a.platform->trigger_puzzle_fetch) {
                     a.puzzle_loading = true;
                     a.platform->trigger_puzzle_fetch(/*daily=*/false);
@@ -2945,6 +2961,11 @@ void app_render(AppState& a, int width, int height) {
     // Live game + in-progress challenge share the 3D board path,
     // then challenge layers its overlay + transition on top.
     render_board(a, width, height);
+    if (a.mode == MODE_PUZZLE && a.puzzle_solved) {
+        // Brief "Solved!" popup shown between the user finishing
+        // the puzzle line and the next random puzzle landing.
+        renderer_draw_puzzle_solved_popup();
+    }
     if (a.mode != MODE_CHALLENGE) return;
     render_challenge_overlay_and_buttons(a, width, height);
     render_challenge_transition_trigger(a, width, height, now);

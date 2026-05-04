@@ -1799,6 +1799,112 @@ static void draw_game_over_overlay(const GameState& gs,
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
 
+void renderer_draw_puzzle_solved_popup() {
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+    auto draw_quad_rgba = [&](float x0, float y0, float x1, float y1,
+                              float r, float g, float b, float a) {
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    r, g, b, a);
+        std::vector<float> v;
+        push_quad(v, x0, y0, x1, y1);
+        GLuint vao = 0, vbo = 0;
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size() / 3));
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+    };
+
+    // Dim the background a touch so the popup pops without
+    // completely hiding the final position.
+    draw_quad_rgba(-1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.45f);
+
+    // Centered panel — a slightly-inset border + a darker inner
+    // fill, with a green accent reading "Solved" semantically.
+    constexpr float PX0 = -0.42f, PY0 = -0.16f;
+    constexpr float PX1 =  0.42f, PY1 =  0.20f;
+    draw_quad_rgba(PX0 - 0.008f, PY0 - 0.012f,
+                   PX1 + 0.008f, PY1 + 0.012f,
+                   0.30f, 0.65f, 0.40f, 0.95f);
+    draw_quad_rgba(PX0, PY0, PX1, PY1, 0.10f, 0.18f, 0.13f, 0.97f);
+
+    // Text.
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    std::vector<float> tv;
+    {
+        // Big "Solved!" centered.
+        float cw = 0.080f, ch = 0.120f;
+        std::string title = "Solved!";
+        float tw = title.size() * cw * 0.7f;
+        add_screen_string(tv, -tw * 0.5f, 0.13f, cw, ch, title);
+    }
+    int title_count = static_cast<int>(tv.size() / 5);
+    {
+        // Smaller subtitle.
+        float cw = 0.022f, ch = 0.034f;
+        std::string sub = "Loading next puzzle…";
+        float tw = sub.size() * cw * 0.7f;
+        add_screen_string(tv, -tw * 0.5f, -0.08f, cw, ch, sub);
+    }
+    int total = static_cast<int>(tv.size() / 5);
+
+    GLuint tvao = 0, tvbo = 0;
+    glGenVertexArrays(1, &tvao);
+    glGenBuffers(1, &tvbo);
+    glBindVertexArray(tvao);
+    glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
+                 tv.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // "Solved!" in bright green.
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.55f, 0.95f, 0.65f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_count);
+    // Subtitle in soft white.
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.85f, 0.88f, 0.85f, 0.9f);
+    glDrawArrays(GL_TRIANGLES, title_count, total - title_count);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &tvbo);
+    glDeleteVertexArrays(1, &tvao);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void renderer_draw_active_frame(int sub_w, int sub_h) {
     // 3 px thick border, drawn as four quads. Slightly inset so
     // the lines don't bleed outside the sub-viewport when the

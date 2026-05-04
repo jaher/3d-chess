@@ -74,6 +74,13 @@ void renderer_draw(GameState& gs,
 // size.
 void renderer_draw_active_frame(int sub_w, int sub_h);
 
+// Draws a centered "Puzzle solved!" popup over a dim backdrop —
+// shown briefly between the user completing the puzzle's solution
+// line and the next random puzzle finishing its network fetch.
+// No buttons; the puzzle screen auto-advances when the new puzzle
+// arrives.
+void renderer_draw_puzzle_solved_popup();
+
 // Splits the window into sub-rects per game count.
 //   N=1 → full screen.
 //   N=2 → side-by-side halves (game 0 left, game 1 right).
