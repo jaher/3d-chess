@@ -106,6 +106,55 @@ static void plat_request_quit() {
     gtk_main_quit();
 }
 
+// --- Puzzle fetch dispatch ---
+// Same idiom as AI move / eval: spawn a worker thread that runs the
+// blocking HTTP fetch (via `curl -s`), marshal the JSON body back to
+// the GTK main thread via g_idle_add. Curl is a hard runtime dep on
+// desktop; if it's missing or the fetch fails, app_puzzle_ready is
+// called with an empty body and the UI surfaces a "couldn't load
+// puzzle" hint.
+struct PuzzleArrived {
+    std::string body;
+    bool        daily;
+};
+
+static gboolean on_puzzle_ready(gpointer data) {
+    auto* r = static_cast<PuzzleArrived*>(data);
+    app_puzzle_ready(g_app, r->body.c_str(), r->daily);
+    delete r;
+    return G_SOURCE_REMOVE;
+}
+
+static std::string fetch_url_via_curl(const char* url) {
+    // -s silent, -L follow redirects, --max-time 10 hard-cap so a
+    // hung connection can't wedge the worker thread for the whole
+    // session, --fail return non-zero on HTTP errors so popen sees
+    // an empty body.
+    char cmd[512];
+    std::snprintf(cmd, sizeof(cmd),
+                  "curl -s -L --max-time 10 --fail '%s' 2>/dev/null", url);
+    FILE* f = popen(cmd, "r");
+    if (!f) return std::string();
+    std::string out;
+    char buf[4096];
+    while (size_t n = std::fread(buf, 1, sizeof(buf), f)) {
+        out.append(buf, n);
+    }
+    pclose(f);
+    return out;
+}
+
+static void plat_trigger_puzzle_fetch(bool daily) {
+    std::thread([daily]() {
+        const char* url = daily
+            ? "https://api.chess.com/pub/puzzle"
+            : "https://api.chess.com/pub/puzzle/random";
+        std::string body = fetch_url_via_curl(url);
+        auto* r = new PuzzleArrived{std::move(body), daily};
+        g_idle_add(on_puzzle_ready, r);
+    }).detach();
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
@@ -114,6 +163,7 @@ static const AppPlatform g_platform = {
     plat_trigger_eval,
     plat_set_ai_elo,
     plat_request_quit,
+    plat_trigger_puzzle_fetch,
 };
 
 // ---------------------------------------------------------------------------

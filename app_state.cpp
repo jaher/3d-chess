@@ -9,6 +9,7 @@
 #include "voice_tts.h"
 #include "chessnut_encode.h"
 #include "phantom_encode.h"
+#include "puzzle.h"
 #ifndef __EMSCRIPTEN__
 #  include "chessnut_bridge.h"
 #  include "phantom_bridge.h"
@@ -400,11 +401,18 @@ static int pick_piece(const AppState& a, double mx, double my,
 // ===========================================================================
 // Board click handling
 // ===========================================================================
+// Forward declarations for puzzle helpers used inside
+// handle_board_click — implementations live next to app_enter_puzzle
+// further down to keep all puzzle code in one place.
+static void reset_puzzle_position(AppState& a);
+static void trigger_puzzle_eval(AppState& a);
+
 static void handle_board_click(AppState& a, double mx, double my,
                                int width, int height) {
     GameState& gs = cur_gs(a);
     bool is_challenge = (a.mode == MODE_CHALLENGE);
     bool is_normal_game = (a.mode == MODE_PLAYING);
+    bool is_puzzle = (a.mode == MODE_PUZZLE);
 
     if (is_normal_game) {
         if (gs.ai_thinking || gs.ai_animating || gs.analysis_mode ||
@@ -424,6 +432,20 @@ static void handle_board_click(AppState& a, double mx, double my,
                 (gs.white_turn == a.current_challenge.starts_white);
             if (starter_to_move && a.challenge_moves_made >= max_moves) return;
         }
+    } else if (is_puzzle) {
+        // Reject input while a fetch is in flight or the puzzle is
+        // already over (just-solved → next puzzle is loading).
+        if (a.puzzle_loading || a.puzzle_solved || a.puzzle_load_failed) return;
+        if (gs.ai_thinking || gs.ai_animating || gs.game_over) return;
+        // The user plays whichever side has the move per the FEN —
+        // that side is mirrored into a.human_plays_white at load
+        // time. Reject clicks for the opposite side.
+        if (gs.white_turn != a.human_plays_white) return;
+        // Until Stockfish has produced the expected move for this
+        // position we don't have anything to validate against, so
+        // suppress input. Eval is kicked from app_puzzle_ready /
+        // post-AI-animation — typically <2 s.
+        if (a.puzzle_eval_pending || a.puzzle_expected_uci.empty()) return;
     }
 
     // Ray-vs-mesh pick first: if the cursor ray hits an actual
@@ -636,6 +658,52 @@ static void handle_board_click(AppState& a, double mx, double my,
                         a.challenge_mistake_start_us = now_us(a);
                         a.challenge_try_again_hover = false;
                         audio_play(SoundEffect::Mistake);
+                    }
+                } else if (is_puzzle) {
+                    // Validate the user's move against the
+                    // expected best-move from Stockfish. A 4-char-
+                    // prefix match accepts either-with-or-without
+                    // a promotion suffix (the executor auto-queens
+                    // so user moves never carry the trailing char).
+                    std::string user_uci = gs.move_history.empty()
+                        ? std::string()
+                        : gs.move_history.back();
+                    auto trim4 = [](const std::string& s) {
+                        return s.size() >= 4 ? s.substr(0, 4) : s;
+                    };
+                    bool correct =
+                        !user_uci.empty() && !a.puzzle_expected_uci.empty() &&
+                        trim4(user_uci) == trim4(a.puzzle_expected_uci);
+                    if (correct) {
+                        a.puzzle_correct_moves++;
+                        a.puzzle_expected_uci.clear();
+                        if (gs.game_over) {
+                            a.puzzle_solved = true;
+                            set_status(a,
+                                "Puzzle solved! Loading next puzzle…");
+                            if (a.platform &&
+                                a.platform->trigger_puzzle_fetch) {
+                                a.puzzle_loading = true;
+                                a.platform->trigger_puzzle_fetch(
+                                    /*daily=*/false);
+                            }
+                        } else {
+                            set_status(a,
+                                "Correct! Watching the response…");
+                            // AI plays the puzzle's response. After
+                            // its animation finishes, tick_ai_animation
+                            // kicks the next puzzle eval for the
+                            // following ply.
+                            trigger_ai(a);
+                        }
+                    } else {
+                        a.puzzle_mistake = true;
+                        a.puzzle_mistake_start_us = now_us(a);
+                        a.board_shake_start_us = a.puzzle_mistake_start_us;
+                        audio_play(SoundEffect::Mistake);
+                        set_status(a,
+                            "Wrong move — restarting the puzzle.");
+                        reset_puzzle_position(a);
                     }
                 } else {
                     app_refresh_status(a);
@@ -990,6 +1058,128 @@ void app_enter_challenge(AppState& a, int index) {
 }
 
 // ===========================================================================
+// chess.com Daily / Random Puzzle (MODE_PUZZLE)
+// ===========================================================================
+// Sentinel score_index for trigger_eval calls that are servicing the
+// puzzle "what does Stockfish think the best move is here?" query.
+// app_eval_ready routes responses with this index into the puzzle
+// expected-move slot rather than the regular score graph.
+static constexpr int PUZZLE_EVAL_SCORE_INDEX = -2;
+
+static void trigger_puzzle_eval(AppState& a) {
+    if (!a.platform || !a.platform->trigger_eval) return;
+    std::string fen = current_fen(cur_gs(a), cur_gs(a).white_turn);
+    a.puzzle_eval_pending = true;
+    a.puzzle_expected_uci.clear();
+    // 2 s movetime — generous so Stockfish converges on the
+    // tactical solution even when the user has set a low ELO for
+    // regular play (the engine instance is shared with the AI
+    // dispatch, but a long search dominates the strength cap).
+    a.platform->trigger_eval(fen.c_str(), 2000,
+                             PUZZLE_EVAL_SCORE_INDEX, 0);
+}
+
+void app_enter_puzzle(AppState& a) {
+    a.mode = MODE_PUZZLE;
+    audio_music_stop();
+    a.games.assign(1, GameInstance{});
+    a.active_game = 0;
+    a.puzzle_title.clear();
+    a.puzzle_url.clear();
+    a.puzzle_starting_fen.clear();
+    a.puzzle_expected_uci.clear();
+    a.puzzle_eval_pending = false;
+    a.puzzle_correct_moves = 0;
+    a.puzzle_solved = false;
+    a.puzzle_load_failed = false;
+    a.puzzle_mistake = false;
+    a.puzzle_mistake_start_us = 0;
+    a.clock_enabled = false;
+    a.withdraw_confirm_open = false;
+    a.withdraw_hover = 0;
+    a.endgame_menu_hover = false;
+    a.continue_playing_hover = false;
+    set_status(a, "Loading puzzle of the day…");
+    if (a.platform && a.platform->trigger_puzzle_fetch) {
+        a.puzzle_loading = true;
+        a.platform->trigger_puzzle_fetch(/*daily=*/true);
+    } else {
+        a.puzzle_loading = false;
+        a.puzzle_load_failed = true;
+        set_status(a, "Puzzles are unavailable on this platform.");
+    }
+    queue_redraw(a);
+}
+
+// Reset the on-screen position back to the puzzle's starting FEN,
+// e.g. after the user plays a wrong move. Preserves the active
+// puzzle's title / URL / expected_uci pipeline; just rolls game
+// state and the correct-move counter.
+static void reset_puzzle_position(AppState& a) {
+    if (a.puzzle_starting_fen.empty()) return;
+    ParsedFEN parsed = parse_fen(a.puzzle_starting_fen);
+    if (!parsed.valid) return;
+    apply_fen_to_state(cur_gs(a), parsed);
+    a.human_plays_white = parsed.white_turn;
+    a.puzzle_correct_moves = 0;
+    a.puzzle_solved = false;
+    trigger_puzzle_eval(a);
+    queue_redraw(a);
+}
+
+void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
+    a.puzzle_loading = false;
+    if (a.mode != MODE_PUZZLE) return;  // user navigated away mid-fetch
+
+    Puzzle p;
+    if (!json_body || !*json_body || !puzzle_parse_json(json_body, p)) {
+        a.puzzle_load_failed = true;
+        set_status(a, daily
+            ? "Couldn't load the Puzzle of the Day. Press ESC to go back."
+            : "Couldn't load the next puzzle. Press ESC to go back.");
+        queue_redraw(a);
+        return;
+    }
+    ParsedFEN parsed = parse_fen(p.fen);
+    if (!parsed.valid) {
+        a.puzzle_load_failed = true;
+        set_status(a, "Puzzle FEN was invalid.");
+        queue_redraw(a);
+        return;
+    }
+    a.games.assign(1, GameInstance{});
+    a.active_game = 0;
+    apply_fen_to_state(cur_gs(a), parsed);
+    a.human_plays_white = parsed.white_turn;
+    a.rot_x = 30.0f;
+    a.rot_y = a.human_plays_white ? 180.0f : 0.0f;
+    a.zoom  = 12.0f;
+    a.puzzle_title         = p.title;
+    a.puzzle_url           = p.url;
+    a.puzzle_starting_fen  = p.fen;
+    a.puzzle_expected_uci.clear();
+    a.puzzle_correct_moves = 0;
+    a.puzzle_solved        = false;
+    a.puzzle_load_failed   = false;
+    a.puzzle_mistake       = false;
+    a.puzzle_mistake_start_us = 0;
+    cur_gs(a).analysis_mode = false;
+
+    std::string status = daily ? "Puzzle of the Day"
+                               : "Puzzle";
+    if (!a.puzzle_title.empty()) {
+        status += " — ";
+        status += a.puzzle_title;
+    }
+    status += ". You play ";
+    status += parsed.white_turn ? "white" : "black";
+    status += ".";
+    set_status(a, status.c_str());
+    trigger_puzzle_eval(a);
+    queue_redraw(a);
+}
+
+// ===========================================================================
 // Input
 // ===========================================================================
 void app_press(AppState& a, double mx, double my) {
@@ -1047,6 +1237,7 @@ static void release_menu(AppState& a, double mx, double my,
         else if (press_btn == 3) app_enter_challenge_select(a);
         else if (press_btn == 4) app_enter_options(a);
         else if (press_btn == 5) { a.two_player_mode = true;  app_enter_pregame(a); }
+        else if (press_btn == 6) app_enter_puzzle(a);
 #ifndef __EMSCRIPTEN__
         else if (press_btn == 2) {
             // Quit button — go through the platform hook so main()
@@ -1256,6 +1447,15 @@ static void release_challenge(AppState& a, double mx, double my,
     if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
 }
 
+static void release_puzzle(AppState& a, double mx, double my,
+                           int width, int height) {
+    // Puzzle screen has no overlay buttons (no Try-Again / Next
+    // here — wrong moves auto-reset, solved auto-advances). Just
+    // forward small clicks to the board move handler.
+    double dx = mx - a.press_x, dy = my - a.press_y;
+    if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
+}
+
 static void release_playing(AppState& a, double mx, double my,
                             int width, int height) {
     // Pieces-missing modal eats every click while open. Drawn over
@@ -1372,6 +1572,7 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
         case MODE_OPTIONS:          release_options(a, mx, my, width, height); return;
         case MODE_CHALLENGE:        release_challenge(a, mx, my, width, height); return;
         case MODE_PLAYING:          release_playing(a, mx, my, width, height); return;
+        case MODE_PUZZLE:           release_puzzle(a, mx, my, width, height); return;
     }
 }
 
@@ -1515,6 +1716,13 @@ static void motion_challenge(AppState& a, double mx, double my,
     apply_camera_drag(a, mx, my);
 }
 
+static void motion_puzzle(AppState& a, double mx, double my,
+                          int /*width*/, int /*height*/) {
+    // Puzzle has no overlay buttons to hover-test; only camera
+    // drag is meaningful here.
+    apply_camera_drag(a, mx, my);
+}
+
 static void motion_playing(AppState& a, double mx, double my,
                            int width, int height) {
     if (a.chessnut_missing_modal_open) {
@@ -1588,6 +1796,7 @@ void app_motion(AppState& a, double mx, double my, int width, int height) {
         case MODE_OPTIONS:          motion_options(a, mx, my, width, height); return;
         case MODE_CHALLENGE:        motion_challenge(a, mx, my, width, height); return;
         case MODE_PLAYING:          motion_playing(a, mx, my, width, height); return;
+        case MODE_PUZZLE:           motion_puzzle(a, mx, my, width, height); return;
     }
 }
 
@@ -1653,6 +1862,10 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
     if (a.mode == MODE_CHALLENGE_SELECT) {
+        if (key == KEY_ESCAPE) app_enter_menu(a);
+        return;
+    }
+    if (a.mode == MODE_PUZZLE) {
         if (key == KEY_ESCAPE) app_enter_menu(a);
         return;
     }
@@ -1785,6 +1998,36 @@ void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
 
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci, int game_id) {
+    // Puzzle expected-move query: routed via the same trigger_eval
+    // hook as the regular score-graph eval but with a sentinel index.
+    // Capture best_uci as the move we'll accept on the user's next
+    // attempt, and check whether the position has converged to a
+    // decisive eval that ends the puzzle. cp is white-relative —
+    // flip for black-side puzzles.
+    if (score_index == PUZZLE_EVAL_SCORE_INDEX) {
+        a.puzzle_eval_pending = false;
+        if (a.mode != MODE_PUZZLE) return;
+        if (!best_uci.empty()) a.puzzle_expected_uci = best_uci;
+        // Decisive-eval shortcut. Any cp magnitude past 500 cp in
+        // the user's favour after at least one correct move counts
+        // as solved (matches "won the tactical material / mating
+        // attack" feel of chess.com puzzles). Mate scores collapsed
+        // by ai_player land here as cp ≥ 30000-100, well past the
+        // threshold. Game-over (checkmate) is handled separately
+        // in tick_ai_animation.
+        int cp_for_user = a.human_plays_white ? cp : -cp;
+        if (a.puzzle_correct_moves >= 1 && cp_for_user >= 500 &&
+            !a.puzzle_solved) {
+            a.puzzle_solved = true;
+            set_status(a, "Puzzle solved! Loading next…");
+            if (a.platform && a.platform->trigger_puzzle_fetch) {
+                a.puzzle_loading = true;
+                a.platform->trigger_puzzle_fetch(/*daily=*/false);
+            }
+        }
+        queue_redraw(a);
+        return;
+    }
     // Validate the response is for a real game. For N=1 game_id is
     // always 0; for N>1 a stale response (from before a reset)
     // gets dropped. The body still mutates cur(a) — fine because
@@ -2123,6 +2366,24 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         if (trigger_ai_after && a.mode == MODE_PLAYING && !gs.game_over &&
             gs.white_turn != a.human_plays_white) {
             trigger_ai(a);
+        }
+
+        // Puzzle mode: the just-finished animation was the AI's
+        // reply to the user's correct move. Decide if the puzzle
+        // is done (mate landed) or kick the next expected-move
+        // eval so the user can play their next ply.
+        if (a.mode == MODE_PUZZLE && !a.puzzle_solved) {
+            if (gs.game_over) {
+                a.puzzle_solved = true;
+                set_status(a, "Puzzle solved! Loading next puzzle…");
+                if (a.platform && a.platform->trigger_puzzle_fetch) {
+                    a.puzzle_loading = true;
+                    a.platform->trigger_puzzle_fetch(/*daily=*/false);
+                }
+            } else {
+                set_status(a, "Your move.");
+                trigger_puzzle_eval(a);
+            }
         }
 
         // Multi-game sequential rotation. Fires only at the end of an
@@ -2694,6 +2955,9 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         break;
     case VoiceCommand::OpenChallenges:
         app_enter_challenge_select(a);
+        break;
+    case VoiceCommand::OpenPuzzles:
+        if (a.mode == MODE_MENU) app_enter_puzzle(a);
         break;
     case VoiceCommand::ContinuePlaying:
         if (cur_gs(a).analysis_mode) {

@@ -8,7 +8,7 @@
 // overlay drawing in renderer_draw_menu share these so the click
 // regions and the rendered backgrounds never drift apart.
 //
-// Five vertical slots are reserved (BTN_SLOT_1 = topmost). Layout
+// Six vertical slots are reserved (BTN_SLOT_1 = topmost). Layout
 // depends on whether a Chessnut Move board is connected:
 //
 //   chessnut_connected = false        chessnut_connected = true
@@ -16,9 +16,10 @@
 //   "Play against stockfish"          (subtitle suppressed)
 //   SLOT_1: Start Game                SLOT_1: Multiplayer
 //   SLOT_2: Challenges                SLOT_2: Start Game
-//   SLOT_3: Options                   SLOT_3: Challenges
-//   SLOT_4: Quit                      SLOT_4: Options
-//   (SLOT_5 unused)                   SLOT_5: Quit
+//   SLOT_3: Puzzles                   SLOT_3: Challenges
+//   SLOT_4: Options                   SLOT_4: Puzzles
+//   SLOT_5: Quit                      SLOT_5: Options
+//   (SLOT_6 unused)                   SLOT_6: Quit
 //
 // i.e. when Multiplayer is shown it takes the *Start Game* slot and
 // every button below shifts one slot down — the buttons never crowd
@@ -32,18 +33,20 @@ constexpr float BTN_SLOT_2  = -0.05f;
 constexpr float BTN_SLOT_3  = -0.22f;
 constexpr float BTN_SLOT_4  = -0.39f;
 constexpr float BTN_SLOT_5  = -0.56f;
+constexpr float BTN_SLOT_6  = -0.73f;
 
 // Per-button Y resolvers. `mp` = chessnut_connected (true → the
 // Multiplayer button is on screen, all other buttons shift down).
 constexpr float btn_multiplayer_y()              { return BTN_SLOT_1; }
 constexpr float btn_start_y(bool mp)     { return mp ? BTN_SLOT_2 : BTN_SLOT_1; }
 constexpr float btn_challenge_y(bool mp) { return mp ? BTN_SLOT_3 : BTN_SLOT_2; }
-constexpr float btn_options_y(bool mp)   { return mp ? BTN_SLOT_4 : BTN_SLOT_3; }
-constexpr float btn_quit_y(bool mp)      { return mp ? BTN_SLOT_5 : BTN_SLOT_4; }
+constexpr float btn_puzzle_y(bool mp)    { return mp ? BTN_SLOT_4 : BTN_SLOT_3; }
+constexpr float btn_options_y(bool mp)   { return mp ? BTN_SLOT_5 : BTN_SLOT_4; }
+constexpr float btn_quit_y(bool mp)      { return mp ? BTN_SLOT_6 : BTN_SLOT_5; }
 }  // namespace menu_ui
 
 // Returns 0=none, 1=start, 2=quit, 3=challenges, 4=options,
-// 5=multiplayer (only when chessnut_connected is true).
+// 5=multiplayer (only when chessnut_connected is true), 6=puzzles.
 int menu_hit_test(double mx, double my, int width, int height,
                   bool chessnut_connected);
 

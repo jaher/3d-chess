@@ -75,6 +75,15 @@ struct AppPlatform {
     // Must be safe to call from a UI event handler (the GTK click
     // path); it just signals — no blocking work.
     void (*request_quit)(void);
+
+    // Kick off an async chess.com puzzle fetch. daily=true → the
+    // /pub/puzzle "Puzzle of the Day" endpoint, false → /pub/puzzle/
+    // random for the next-puzzle flow. Must return immediately. The
+    // platform calls app_puzzle_ready() with the parsed JSON body
+    // when the fetch completes (or with an empty body on failure).
+    // May be nullptr on platforms that don't support outbound HTTP
+    // (e.g. tests) — callers must null-check before invoking.
+    void (*trigger_puzzle_fetch)(bool daily);
 };
 
 // ===========================================================================
@@ -216,6 +225,41 @@ struct AppState {
     bool  transition_active = false;
     int   transition_pending_next = -1;
     int64_t transition_start_time_us = 0;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Chess.com Daily / Random puzzle (MODE_PUZZLE) state.
+    //
+    // The starter FEN is loaded into games[0]; player input flows
+    // through the same handle_board_click path as MODE_PLAYING but
+    // each user move is validated against `puzzle_expected_uci`
+    // (Stockfish's bestmove at the position we asked for an eval
+    // on). A correct move kicks the AI for the puzzle's response;
+    // a wrong move triggers the existing mistake shake + a reset
+    // back to puzzle_starting_fen.
+    // ─────────────────────────────────────────────────────────────────────
+    std::string puzzle_title;            // displayed at the top of the screen
+    std::string puzzle_url;              // chess.com URL (informational)
+    std::string puzzle_starting_fen;     // FEN for the current puzzle
+    // Stockfish's best-move at the position the user is currently
+    // looking at. Empty while we wait for the eval result; non-empty
+    // = the move we'll accept as "solved this ply". The eval_index
+    // tracks which score_history entry the in-flight eval will
+    // populate, so app_eval_ready knows it's filling the puzzle slot
+    // (we don't drive the regular score graph from puzzle evals).
+    std::string puzzle_expected_uci;
+    bool        puzzle_eval_pending = false;
+    // Counter — # of correct user moves made this puzzle. Used as a
+    // heuristic to decide when the puzzle is "solved" (game over OR
+    // 1+ correct moves and the position has converged to a winning
+    // eval). Reset to 0 on each fresh fetch.
+    int  puzzle_correct_moves = 0;
+    bool puzzle_solved = false;
+    bool puzzle_loading = false;         // request in flight
+    bool puzzle_load_failed = false;     // last fetch returned no FEN
+    // Set when the user plays a move that doesn't match the
+    // expected UCI. Drives the existing board-shake mistake feedback.
+    bool puzzle_mistake = false;
+    int64_t puzzle_mistake_start_us = 0;
 
     // AI animation — start time stored in microseconds, mirrors what the
     // renderer reads from gs.ai_anim_start. Separate from gs.ai_anim_start
@@ -478,6 +522,11 @@ void app_enter_options(AppState& a);
 void app_enter_challenge(AppState& a, int index);
 void app_load_challenge_puzzle(AppState& a, int puzzle_index);
 void app_reset_challenge_puzzle(AppState& a);
+// Enter the chess.com puzzle screen and request the daily puzzle.
+// On the first solve we auto-fetch /pub/puzzle/random for an
+// indefinite session; ESC / "Back" from the screen returns to the
+// menu.
+void app_enter_puzzle(AppState& a);
 
 // Re-emit the current title/status to the platform. Idempotent.
 void app_refresh_status(AppState& a);
@@ -512,6 +561,12 @@ void app_ai_move_ready(AppState& a, const char* uci, int game_id);
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci = std::string(),
                     int game_id = 0);
+
+// Platform calls this with the JSON body returned by the chess.com
+// /pub/puzzle endpoint (daily=true) or /pub/puzzle/random
+// (daily=false). On parse failure a status hint is shown and the
+// flow falls back to letting the user retry from the menu.
+void app_puzzle_ready(AppState& a, const char* json_body, bool daily);
 
 #ifndef __EMSCRIPTEN__
 // Voice push-to-talk (desktop only — SDL2 + whisper.cpp). The

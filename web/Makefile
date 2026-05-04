@@ -23,7 +23,7 @@ LDFLAGS   := \
     -s MINIFY_HTML=0 \
     -s USE_ZLIB=1 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
-    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js \
+    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js \
     --preload-file ../models-web-packed@/models \
     --preload-file ../challenges@/challenges \
     --preload-file ../sounds@/sounds \
@@ -55,7 +55,8 @@ SHARED_SRCS := \
     ../text_atlas.cpp \
     ../options_ui.cpp \
     ../voice_input.cpp \
-    ../voice_tts.cpp
+    ../voice_tts.cpp \
+    ../puzzle.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp

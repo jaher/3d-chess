@@ -165,6 +165,7 @@ int menu_hit_test(double mx, double my, int width, int height,
     if (chessnut_connected && hit(btn_multiplayer_y()))      return 5;
     if (hit(btn_start_y(chessnut_connected)))                return 1;
     if (hit(btn_challenge_y(chessnut_connected)))            return 3;
+    if (hit(btn_puzzle_y(chessnut_connected)))               return 6;
     if (hit(btn_options_y(chessnut_connected)))              return 4;
 #ifndef __EMSCRIPTEN__
     // No "Quit" button in the browser build — closing a tab from

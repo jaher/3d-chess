@@ -25,6 +25,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Analysis mode**: step through the game move-by-move with left/right arrows (keyboard `A` to enter). "Continue Playing" and "Back to Menu" buttons in the overlay for mouse users
 - **Withdraw flag**: a small wavy white cloth flag on a brown stick in the bottom-right corner. Click it to open a confirmation dialog and surrender to the main menu. Uses a 14×9 verlet cloth simulation with normal-based half-Lambert lighting (inspired by [shadertoy MldXWX](https://www.shadertoy.com/view/MldXWX))
 - **Mate-in-N challenge puzzles** loaded from `challenges/*.md`, with a glass-shatter transition between puzzles and a summary page at the end. Wrong-line attempts trigger a "Mistake!" sound + board shake + Try Again button that resets the puzzle
+- **Chess.com puzzle of the day** — main-menu **Puzzles** button fetches the current Daily Puzzle from [api.chess.com](https://www.chess.com/news/view/published-data-api), sets up the position, and lets you solve it. Each user move is validated against Stockfish's best-move at the position; correct → AI plays the response, mistake → board shake + auto-reset to the puzzle's starting FEN. After solving, a fresh random puzzle loads automatically. Desktop fetches via `curl`; the web build uses `fetch()` (no auth, no API key — public read-only data)
 - **Find-all-forks / Pin-to-win** tactic puzzles cap each exercise at three candidates (or fewer if the position has fewer legal motif moves) — find any three to solve. Already-banked candidates are filtered out of the move dots so the user can't waste clicks on a fork they've already found, and wrong (or repeated) attempts fire the shake + Try-Again flow but **keep** the banked correct moves. The end-of-challenge summary lists every fork/pin found grouped by exercise number
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
@@ -254,7 +255,7 @@ Stockfish only; ignored in two-player mode and during challenges.
 In addition to chess moves, the same speech engine recognises spoken
 button labels for the screen you're on. Examples:
 
-- **Main menu**: "play", "challenges", "options"
+- **Main menu**: "play", "challenges", "puzzles" (or "puzzle of the day"), "options"
 - **Pregame**: "start", "white", "black", "back"
 - **Options**: "back", "cartoon outline", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "verbose log" (BLE diagnostic)
 - **Live game (Move hints On Demand)**: "give me a hint", "hint", "best move", "what should I play"
@@ -661,6 +662,9 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   challenge_ui.h/cpp       -- Challenge select / overlay / next / try-again
                               / summary table
   options_ui.h/cpp         -- Options screen (cartoon-outline toggle)
+  puzzle.h/cpp             -- chess.com puzzle JSON parser (FEN/title/url)
+                              extractor — networking lives in main.cpp
+                              (desktop curl) / web/main_web.cpp (fetch())
   shatter_transition.h/cpp -- Voronoi glass-break puzzle transition
   text_atlas.h/cpp         -- Font atlas (Cairo/Pango | stb_truetype) +
                               NDC glyph quad helpers

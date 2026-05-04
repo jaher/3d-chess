@@ -129,6 +129,47 @@ static void plat_request_quit() {
     // platforms.
 }
 
+// chess.com Daily / Random puzzle. Async fetch from the browser via
+// fetch(); the response body is delivered back to C++ through
+// on_puzzle_from_js below (Module.ccall). On any failure (network
+// error, non-2xx status, CORS) we bomb back an empty body so the
+// shared layer's app_puzzle_ready can show a "couldn't load" hint
+// rather than wedge the screen.
+EM_JS(void, js_request_puzzle, (int daily), {
+    var url = daily
+        ? 'https://api.chess.com/pub/puzzle'
+        : 'https://api.chess.com/pub/puzzle/random';
+    fetch(url, { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (body) {
+            try {
+                Module.ccall('on_puzzle_from_js', null,
+                             ['string', 'number'],
+                             [body || '', daily ? 1 : 0]);
+            } catch (e) {
+                console.error('[puzzle] ccall failed:', e);
+            }
+        })
+        .catch(function (e) {
+            console.warn('[puzzle] fetch failed:', e);
+            try {
+                Module.ccall('on_puzzle_from_js', null,
+                             ['string', 'number'], ['', daily ? 1 : 0]);
+            } catch (_) {}
+        });
+});
+
+static void plat_trigger_puzzle_fetch(bool daily) {
+    js_request_puzzle(daily ? 1 : 0);
+}
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE
+void on_puzzle_from_js(const char* body, int daily) {
+    app_puzzle_ready(g_app, body ? body : "", daily != 0);
+}
+}  // extern "C"
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
@@ -137,6 +178,7 @@ static const AppPlatform g_platform = {
     plat_trigger_eval,
     plat_set_ai_elo,
     plat_request_quit,
+    plat_trigger_puzzle_fetch,
 };
 
 // ---------------------------------------------------------------------------

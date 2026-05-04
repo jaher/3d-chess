@@ -98,6 +98,7 @@ enum class VoiceCommand {
     NewGame,              // Game-over → start a fresh game
     OpenOptions,
     OpenChallenges,
+    OpenPuzzles,          // Menu "Puzzles" — chess.com daily / random
     ContinuePlaying,      // Analysis-mode "Continue Playing"
     Resign,               // Mid-game "Resign" — opens withdraw modal
     ConfirmYes,           // Withdraw modal "Yes"

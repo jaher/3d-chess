@@ -2408,6 +2408,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float bcw = 0.028f, bch = 0.042f;
     const float start_y     = btn_start_y(chessnut_connected);
     const float challenge_y = btn_challenge_y(chessnut_connected);
+    const float puzzle_y    = btn_puzzle_y(chessnut_connected);
     const float options_y   = btn_options_y(chessnut_connected);
     const float quit_y      = btn_quit_y(chessnut_connected);
     int multi_end = subtitle_end;
@@ -2428,6 +2429,11 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float chw = ch_text.size() * bcw * 0.7f;
     add_screen_string(ui_verts, -chw*0.5f, challenge_y - 0.018f, bcw, bch, ch_text);
     int ch_end = static_cast<int>(ui_verts.size() / 5);
+
+    std::string puz_text = "Puzzles";
+    float pzw = puz_text.size() * bcw * 0.7f;
+    add_screen_string(ui_verts, -pzw*0.5f, puzzle_y - 0.018f, bcw, bch, puz_text);
+    int puz_end = static_cast<int>(ui_verts.size() / 5);
 
     std::string opt_text = "Options";
     float otw = opt_text.size() * bcw * 0.7f;
@@ -2468,6 +2474,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         };
         push_quad(start_y);
         push_quad(challenge_y);
+        push_quad(puzzle_y);
         push_quad(options_y);
         push_quad(quit_y);
         if (chessnut_connected) push_quad(btn_multiplayer_y());
@@ -2483,18 +2490,28 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.6f,0.3f, hover_button==3?0.5f:0.3f);
         glDrawArrays(GL_TRIANGLES, 6, 6);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.4f,0.7f, hover_button==4?0.5f:0.3f);
+        // Puzzles — teal so it sits between Challenges (green) and
+        // Options (purple) without clashing.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.20f,0.55f,0.60f, hover_button==6?0.55f:0.30f);
         glDrawArrays(GL_TRIANGLES, 12, 6);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.4f,0.7f, hover_button==4?0.5f:0.3f);
+        glDrawArrays(GL_TRIANGLES, 18, 6);
 #ifndef __EMSCRIPTEN__
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 18, 6);
+        glDrawArrays(GL_TRIANGLES, 24, 6);
 #endif
         if (chessnut_connected) {
             // Multiplayer button — warm amber so it stands out
             // visually as the "physical board involved" option.
             glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
                         0.85f, 0.55f, 0.20f, hover_button == 5 ? 0.55f : 0.35f);
+            // Index varies: with quit (desktop) we're at offset 30,
+            // without (web) at offset 24.
+#ifdef __EMSCRIPTEN__
             glDrawArrays(GL_TRIANGLES, 24, 6);
+#else
+            glDrawArrays(GL_TRIANGLES, 30, 6);
+#endif
         }
         glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
     }
@@ -2522,9 +2539,12 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float ci = hover_button==3 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), ci,ci,ci,1);
     glDrawArrays(GL_TRIANGLES, start_end, ch_end - start_end);
+    float pi = hover_button==6 ? 1.0f : 0.85f;
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), pi,pi,pi,1);
+    glDrawArrays(GL_TRIANGLES, ch_end, puz_end - ch_end);
     float oi = hover_button==4 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), oi,oi,oi,1);
-    glDrawArrays(GL_TRIANGLES, ch_end, opt_end - ch_end);
+    glDrawArrays(GL_TRIANGLES, puz_end, opt_end - puz_end);
 #ifndef __EMSCRIPTEN__
     float qi = hover_button==2 ? 1.0f : 0.85f;
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), qi,qi,qi,1);

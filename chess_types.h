@@ -18,6 +18,7 @@ enum GameMode {
     MODE_CHALLENGE_SELECT,
     MODE_CHALLENGE,
     MODE_OPTIONS,          // options panel accessed from the main menu
+    MODE_PUZZLE,           // chess.com puzzle of the day / random puzzle
 };
 
 extern const char* piece_filenames[PIECE_COUNT];
