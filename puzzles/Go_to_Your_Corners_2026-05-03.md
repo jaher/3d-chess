@@ -1,7 +1,6 @@
 # Chess.com Daily Puzzle archive
 #
-# Fetched on 2026-05-03. Format mirrors challenges/*.md so this
-# file is greppable / replayable as a single-page challenge.
+# Fetched on 2026-05-03.
 # title: Go to Your Corners!
 # url:   https://www.chess.com/daily/2026-05-03
 

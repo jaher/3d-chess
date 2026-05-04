@@ -137,8 +137,6 @@ def write_archive(p: dict, kind: str, today: str) -> str:
     lines.append(f"# Chess.com {label} Puzzle archive")
     lines.append("#")
     lines.append(f"# Fetched on {today} by tools/fetch_daily_puzzle.py")
-    lines.append("# Format mirrors challenges/*.md so this file is greppable")
-    lines.append("# / replayable as a single-page challenge.")
     if title:
         lines.append(f"# title: {title}")
     if url:

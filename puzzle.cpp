@@ -392,8 +392,7 @@ bool puzzle_archive_save(const Puzzle& p) {
     std::fprintf(f,
         "# Chess.com Daily Puzzle archive\n"
         "#\n"
-        "# Fetched on %s. Format mirrors challenges/*.md so this\n"
-        "# file is greppable / replayable as a single-page challenge.\n",
+        "# Fetched on %s.\n",
         today.c_str());
     if (!p.title.empty()) std::fprintf(f, "# title: %s\n", p.title.c_str());
     if (!p.url.empty())   std::fprintf(f, "# url:   %s\n", p.url.c_str());

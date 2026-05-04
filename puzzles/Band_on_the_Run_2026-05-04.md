@@ -1,8 +1,6 @@
 # Chess.com Random Puzzle archive
 #
 # Fetched on 2026-05-04 by tools/fetch_daily_puzzle.py
-# Format mirrors challenges/*.md so this file is greppable
-# / replayable as a single-page challenge.
 # title: Band on the Run
 # url:   https://www.chess.com/daily/2019-12-09
 
