@@ -2611,13 +2611,12 @@ static void render_board(AppState& a, int width, int height) {
                   ? static_cast<int>(a.games.size())
                   : 1;
 
-    // For multi-game frames the per-board renderer_draw uses scissor
-    // to constrain its clear / blits to its own quadrant. We also
-    // need a one-shot full-FB clear so the gaps between boards
-    // (when w/h aren't evenly divisible) don't show garbage from
-    // last frame.
+    // One-shot full-FB clear at the top of a multi-game frame so
+    // any pixel that isn't covered by a sub-viewport (gaps from
+    // non-divisible window dims, or the empty quadrant in the
+    // N=2 / N=3 layouts) reads as a neutral dark rather than
+    // last frame's leftover.
     if (N > 1) {
-        glDisable(GL_SCISSOR_TEST);
         glViewport(0, 0, width, height);
         glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2632,10 +2631,17 @@ static void render_board(AppState& a, int width, int height) {
         int sub_x, sub_y, sub_w, sub_h;
         viewport_for_game(i, N, width, height, sub_x, sub_y, sub_w, sub_h);
 
-        if (N > 1) {
-            glScissor(sub_x, sub_y, sub_w, sub_h);
-            glEnable(GL_SCISSOR_TEST);
-        }
+        // No scissor here on purpose: each renderer_draw binds its
+        // own offscreen FBO sized exactly to (sub_w, sub_h), and
+        // the scissor box (which is in the bound FB's pixel space)
+        // would be reinterpreted in the offscreen FBO's coords —
+        // for any non-(0,0)-offset sub-rect that lands wholly
+        // outside the offscreen FBO and silently kills the clear
+        // and the 3D draws, leaving the right-side / bottom-side
+        // boards dark after a window resize triggers FBO realloc.
+        // glViewport on its own (set by renderer_draw, the
+        // resolve, and the post-process) constrains every relevant
+        // draw to the sub-rect already.
 
         const bool is_active = (i == a.active_game);
         const bool draw_flag =
@@ -2663,14 +2669,13 @@ static void render_board(AppState& a, int width, int height) {
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock
         // is ticking. renderer_draw left glViewport set to the
-        // sub-rect already; scissor is still on for this iteration.
+        // sub-rect already.
         if (N > 1 && is_active) {
             renderer_draw_active_frame(sub_w, sub_h);
         }
     }
 
     if (N > 1) {
-        glDisable(GL_SCISSOR_TEST);
         glViewport(0, 0, width, height);
     }
 
