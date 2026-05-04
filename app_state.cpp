@@ -480,9 +480,15 @@ static void handle_board_click(AppState& a, double mx, double my,
                 gs.hint_to_col   = gs.hint_to_row   = -1;
                 a.hint_confirm_pending = false;
                 play_move_sfx(gs, sfx_capture);
+                // Stash the move announcement for app_eval_ready
+                // to speak alongside the classification — single
+                // utterance avoids the move + label overlap that
+                // happens when the audio mixer plays two queued
+                // PCM buffers in parallel.
                 if (a.voice_tts_enabled && !gs.move_history.empty()) {
-                    voice_tts_speak(uci_to_speech(
-                        tts_before, gs.move_history.back()));
+                    a.pending_move_speech = uci_to_speech(
+                        tts_before, gs.move_history.back());
+                    a.pending_move_speech_was_human = true;
                 }
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
@@ -1641,9 +1647,26 @@ void app_ai_move_ready(AppState& a, const char* uci_c) {
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci) {
     GameState& gs = a.game;
-    if (cp == INT_MIN) return;
+    // Drain any pending move announcement even if the eval failed
+    // — the user expects to hear what the AI just played
+    // regardless of whether Stockfish managed to score it.
+    auto drain_pending_speech_no_classify = [&]() {
+        if (a.voice_tts_enabled && !a.pending_move_speech.empty()) {
+            voice_tts_speak(a.pending_move_speech);
+            a.pending_move_speech.clear();
+            a.pending_move_classification.clear();
+            a.pending_move_speech_was_human = false;
+        }
+    };
+    if (cp == INT_MIN) {
+        drain_pending_speech_no_classify();
+        return;
+    }
     if (score_index < 0 ||
-        score_index >= static_cast<int>(gs.score_history.size())) return;
+        score_index >= static_cast<int>(gs.score_history.size())) {
+        drain_pending_speech_no_classify();
+        return;
+    }
 
     // Collapse mate scores to a bounded ±100 spike for display.
     int mate_threshold = 30000 - 100;
@@ -1755,18 +1778,42 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         else if (cp_loss <= 200)                phrase = "Mistake";
         else                                    phrase = "Blunder";
 
+        std::fprintf(stderr,
+            "[classify] %s (cp_loss=%d, was_best=%d, "
+            "before=%.2f after=%.2f cat=%d→%d ply=%zu "
+            "white_moved=%d)\n",
+            phrase ? phrase : "<none>", cp_loss, was_best ? 1 : 0,
+            eval_before, eval_after,
+            cat_before, cat_after,
+            gs.move_history.size(),
+            white_just_moved ? 1 : 0);
+        // The classification is announced only when we have a
+        // pending move to combine it with — see the unified
+        // speak block below. Cache the phrase for now.
         if (phrase && !both_mate_same_side) {
-            voice_tts_speak(phrase);
-            std::fprintf(stderr,
-                "[classify] %s (cp_loss=%d, was_best=%d, "
-                "before=%.2f after=%.2f cat=%d→%d ply=%zu "
-                "white_moved=%d)\n",
-                phrase, cp_loss, was_best ? 1 : 0,
-                eval_before, eval_after,
-                cat_before, cat_after,
-                gs.move_history.size(),
-                white_just_moved ? 1 : 0);
+            a.pending_move_classification = phrase;
+        } else {
+            a.pending_move_classification.clear();
         }
+    }
+
+    // Speak the move + optional classification as a single
+    // utterance. Classification appended ONLY for human moves
+    // (single-player AI moves get the move text but not the
+    // quality label, per user preference). Combining keeps the
+    // two phrases in one PCM buffer so the audio mixer can't
+    // overlap them with each other or with the next move.
+    if (a.voice_tts_enabled && !a.pending_move_speech.empty()) {
+        std::string utterance = a.pending_move_speech;
+        if (a.pending_move_speech_was_human &&
+            !a.pending_move_classification.empty()) {
+            utterance += ". ";
+            utterance += a.pending_move_classification;
+        }
+        voice_tts_speak(utterance);
+        a.pending_move_speech.clear();
+        a.pending_move_classification.clear();
+        a.pending_move_speech_was_human = false;
     }
 
     // Decide whether to surface the hint NOW: Auto fires every
@@ -1889,11 +1936,21 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         gs.hint_to_col   = gs.hint_to_row   = -1;
         a.hint_confirm_pending = false;
         play_move_sfx(gs, sfx_capture);
-        // Speak the AI's reply over the speaker. Skipped when the
-        // toggle is off; the user's own moves are never announced
-        // (reading them back is redundant noise).
+        // Defer the announcement so app_eval_ready can speak it as
+        // one utterance with the optional move-quality label. AI
+        // moves don't get classified (per user preference), but the
+        // move text itself is still announced.
         if (a.voice_tts_enabled && !gs.move_history.empty()) {
-            voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));
+            a.pending_move_speech = uci_to_speech(
+                tts_before, gs.move_history.back());
+            // The animation pipeline is reused for both AI moves
+            // (single-player) and sensor-driven moves (which are
+            // human plays on the physical board). The
+            // ai_anim_trigger_ai_after flag is set when the
+            // animation we're finishing was a human sensor move.
+            // 2P mode is always human-vs-human.
+            a.pending_move_speech_was_human =
+                a.two_player_mode || gs.ai_anim_trigger_ai_after;
         }
         gs.ai_thinking = false;
         app_refresh_status(a);
@@ -2461,8 +2518,9 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             gs.hint_to_col   = gs.hint_to_row   = -1;
             play_move_sfx(gs, sfx_capture);
             if (a.voice_tts_enabled && !gs.move_history.empty()) {
-                voice_tts_speak(uci_to_speech(
-                    tts_before, gs.move_history.back()));
+                a.pending_move_speech = uci_to_speech(
+                    tts_before, gs.move_history.back());
+                a.pending_move_speech_was_human = true;
             }
             app_chessnut_sync_board(a, /*force=*/false);
             app_refresh_status(a);
@@ -2693,7 +2751,9 @@ void apply_voice_utterance(AppState& a,
     a.hint_confirm_pending = false;
     play_move_sfx(gs, sfx_capture);
     if (a.voice_tts_enabled && !gs.move_history.empty()) {
-        voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));
+        a.pending_move_speech = uci_to_speech(
+            tts_before, gs.move_history.back());
+        a.pending_move_speech_was_human = true;
     }
     app_chessnut_sync_board(a, /*force=*/false);
 

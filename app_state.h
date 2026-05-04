@@ -284,6 +284,24 @@ struct AppState {
     // Shifted from last_eval_best_uci every time a new eval lands,
     // so it's always one position behind.
     std::string prev_eval_best_uci;
+    // Move announcement deferred until the eval for the move lands
+    // — that way the move text + the classification phrase ("Best
+    // move", "Inaccuracy", ...) are spoken as one combined
+    // utterance instead of two queued ones that the audio mixer
+    // would play in parallel and overlap. Set at execute_move
+    // time, drained in app_eval_ready.
+    std::string pending_move_speech;
+    // True when the move stored in pending_move_speech was made
+    // by the human (single-player) or by either player (2P).
+    // Drives whether app_eval_ready appends a classification: AI
+    // moves get the move text spoken but no quality label.
+    bool        pending_move_speech_was_human = false;
+    // Classification phrase ("Best move", "Inaccuracy", ...) for
+    // the just-played move. Set inside app_eval_ready's
+    // classifier; consumed by the same function's combined-
+    // utterance speak block. Empty when no classification applies
+    // (mate noise, off the board, etc.).
+    std::string pending_move_classification;
     // True after a hint has been surfaced via "give me a hint" and
     // the app has spoken "Do you want to play this?". The next
     // yes/no utterance plays the hint move ("yes") or dismisses it
