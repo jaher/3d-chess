@@ -1195,9 +1195,9 @@ static void release_challenge(AppState& a, double mx, double my,
 
 static void release_playing(AppState& a, double mx, double my,
                             int width, int height) {
-    // Pieces-missing modal eats every click while open. Only the
-    // Exit-to-Menu button does anything; everywhere else the
-    // click is swallowed.
+    // Pieces-missing modal eats every click while open. Drawn over
+    // the full window even in multi-game mode, so the hit-test runs
+    // against the full window dims.
     if (a.chessnut_missing_modal_open) {
         double dx_m = mx - a.press_x, dy_m = my - a.press_y;
         if (dx_m*dx_m + dy_m*dy_m < 25.0 &&
@@ -1207,13 +1207,35 @@ static void release_playing(AppState& a, double mx, double my,
         return;
     }
 
+    // Multi-game routing: the active board's overlays are drawn
+    // inside its sub-viewport in NDC. Translate the window-coord
+    // click to "active sub-viewport local" coords, then run the
+    // existing hit tests against (sub_w, sub_h). Clicks that fall
+    // outside the active sub-viewport are silently ignored — for
+    // v1 the player can only act on the active board.
+    int sub_x, sub_y, sub_w, sub_h;
+    const int N = static_cast<int>(a.games.size());
+    viewport_for_game(a.active_game, N, width, height,
+                      sub_x, sub_y, sub_w, sub_h);
+    // GL's sub_y is bottom-up; mx/my are top-down.
+    int sub_top_y = height - sub_y - sub_h;
+    double active_mx = mx - sub_x;
+    double active_my = my - sub_top_y;
+    if (N > 1 &&
+        (active_mx < 0 || active_mx >= sub_w ||
+         active_my < 0 || active_my >= sub_h)) {
+        return;
+    }
+
     // Withdraw confirmation modal is modal — it eats every click
-    // while open, whether it hits a button or not.
+    // while open, whether it hits a button or not. Drawn inside
+    // the active sub-viewport.
     if (a.withdraw_confirm_open) {
         double dx_m = mx - a.press_x, dy_m = my - a.press_y;
         if (dx_m*dx_m + dy_m*dy_m < 25.0) {
             int which = 0;
-            withdraw_confirm_hit_test(mx, my, width, height, &which);
+            withdraw_confirm_hit_test(active_mx, active_my,
+                                      sub_w, sub_h, &which);
             if (which == 1) {            // Yes → back to main menu
                 a.withdraw_confirm_open = false;
                 a.withdraw_hover = 0;
@@ -1236,12 +1258,14 @@ static void release_playing(AppState& a, double mx, double my,
     if (cur_gs(a).game_over || cur_gs(a).analysis_mode) {
         double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
         if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0) {
-            if (endgame_menu_button_hit_test(mx, my, width, height)) {
+            if (endgame_menu_button_hit_test(active_mx, active_my,
+                                             sub_w, sub_h)) {
                 app_enter_menu(a);
                 return;
             }
             if (cur_gs(a).analysis_mode &&
-                analysis_continue_button_hit_test(mx, my, width, height)) {
+                analysis_continue_button_hit_test(active_mx, active_my,
+                                                  sub_w, sub_h)) {
                 game_exit_analysis(cur_gs(a));
                 a.continue_playing_hover = false;
                 a.endgame_menu_hover = false;
@@ -1260,7 +1284,7 @@ static void release_playing(AppState& a, double mx, double my,
     if (!cur_gs(a).game_over && !cur_gs(a).analysis_mode) {
         double dx_f = mx - a.press_x, dy_f = my - a.press_y;
         if (dx_f*dx_f + dy_f*dy_f < 25.0 &&
-            flag_hit_test(a.flag, mx, my, width, height)) {
+            flag_hit_test(a.flag, active_mx, active_my, sub_w, sub_h)) {
             a.withdraw_confirm_open = true;
             a.withdraw_hover = 0;
             queue_redraw(a);
@@ -1271,7 +1295,9 @@ static void release_playing(AppState& a, double mx, double my,
     // Board interaction: only treat as a click if the pointer
     // didn't move much between press and release.
     double dx = mx - a.press_x, dy = my - a.press_y;
-    if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
+    if (dx*dx + dy*dy < 25.0) {
+        handle_board_click(a, active_mx, active_my, sub_w, sub_h);
+    }
 }
 
 void app_release(AppState& a, double mx, double my, int width, int height) {
@@ -1429,9 +1455,27 @@ static void motion_playing(AppState& a, double mx, double my,
         // camera drag, no hover on board widgets.
         return;
     }
+
+    // Multi-game: same active-sub-rect translation as in
+    // release_playing so hover hit-tests fire only when the cursor
+    // is over the active board.
+    int sub_x, sub_y, sub_w, sub_h;
+    const int N = static_cast<int>(a.games.size());
+    viewport_for_game(a.active_game, N, width, height,
+                      sub_x, sub_y, sub_w, sub_h);
+    int sub_top_y = height - sub_y - sub_h;
+    double active_mx = mx - sub_x;
+    double active_my = my - sub_top_y;
+    bool inside_active =
+        active_mx >= 0 && active_mx < sub_w &&
+        active_my >= 0 && active_my < sub_h;
+
     if (a.withdraw_confirm_open) {
         int which = 0;
-        withdraw_confirm_hit_test(mx, my, width, height, &which);
+        if (inside_active) {
+            withdraw_confirm_hit_test(active_mx, active_my,
+                                      sub_w, sub_h, &which);
+        }
         if (which != a.withdraw_hover) {
             a.withdraw_hover = which;
             queue_redraw(a);
@@ -1441,13 +1485,17 @@ static void motion_playing(AppState& a, double mx, double my,
         return;
     }
     if (cur_gs(a).game_over || cur_gs(a).analysis_mode) {
-        bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
+        bool h_now = inside_active &&
+                     endgame_menu_button_hit_test(active_mx, active_my,
+                                                  sub_w, sub_h);
         if (h_now != a.endgame_menu_hover) {
             a.endgame_menu_hover = h_now;
             queue_redraw(a);
         }
         if (cur_gs(a).analysis_mode) {
-            bool c_now = analysis_continue_button_hit_test(mx, my, width, height);
+            bool c_now = inside_active &&
+                         analysis_continue_button_hit_test(active_mx, active_my,
+                                                           sub_w, sub_h);
             if (c_now != a.continue_playing_hover) {
                 a.continue_playing_hover = c_now;
                 queue_redraw(a);
@@ -2260,14 +2308,17 @@ static void render_challenge_summary(AppState& a, int width, int height) {
 // (the Next button replaces it); we save/restore the GameState's
 // game_over fields around the call to keep the rules layer pure.
 static void render_board(AppState& a, int width, int height) {
-    GameState& gs = cur_gs(a);
+    // Challenge mode always runs single-board (forced N=1) — keep
+    // its existing pre/post game_over scrub. For PLAYING it loops
+    // over a.games (1..4 boards in a 1×1, 1×2, or 2×2 layout).
+    GameState& gs0 = cur_gs(a);
     bool save_game_over = false;
     std::string save_result;
     if (a.mode == MODE_CHALLENGE) {
-        save_game_over = gs.game_over;
-        save_result    = gs.game_result;
-        gs.game_over = false;
-        gs.game_result.clear();
+        save_game_over = gs0.game_over;
+        save_result    = gs0.game_result;
+        gs0.game_over = false;
+        gs0.game_result.clear();
     }
 
     // (Re)initialise the withdraw flag when the window size changes
@@ -2279,27 +2330,64 @@ static void render_board(AppState& a, int width, int height) {
         a.flag_last_update_us = 0;
     }
 
-    const bool draw_flag =
-        a.mode == MODE_PLAYING &&
-        !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
+    const int N = (a.mode == MODE_PLAYING)
+                  ? static_cast<int>(a.games.size())
+                  : 1;
 
-    // Clock widget: same visibility gate as the flag, plus the time
-    // control must be non-Unlimited. The side shown is whoever is
-    // on move.
-    const bool draw_clock =
-        a.mode == MODE_PLAYING && a.clock_enabled &&
-        !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
-    int64_t clock_ms = gs.white_turn ? cur(a).white_ms_left : cur(a).black_ms_left;
-    bool clock_side_is_white = gs.white_turn;
+    // For multi-game frames the per-board renderer_draw uses scissor
+    // to constrain its clear / blits to its own quadrant. We also
+    // need a one-shot full-FB clear so the gaps between boards
+    // (when w/h aren't evenly divisible) don't show garbage from
+    // last frame.
+    if (N > 1) {
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, width, height);
+        glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
 
-    renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
-                  a.human_plays_white,
-                  a.endgame_menu_hover, a.continue_playing_hover,
-                  &a.flag, draw_flag,
-                  a.withdraw_confirm_open, a.withdraw_hover,
-                  draw_clock, clock_ms, clock_side_is_white,
-                  a.cartoon_outline,
-                  a.board_shake_x);
+    for (int i = 0; i < N; ++i) {
+        GameInstance& gi = (a.mode == MODE_PLAYING)
+                           ? a.games[i]
+                           : a.games[a.active_game];
+        GameState& gs = gi.game;
+
+        int sub_x, sub_y, sub_w, sub_h;
+        viewport_for_game(i, N, width, height, sub_x, sub_y, sub_w, sub_h);
+
+        if (N > 1) {
+            glScissor(sub_x, sub_y, sub_w, sub_h);
+            glEnable(GL_SCISSOR_TEST);
+        }
+
+        const bool is_active = (i == a.active_game);
+        const bool draw_flag =
+            a.mode == MODE_PLAYING && is_active &&
+            !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
+
+        // Clock widget: visible on the active board only when its
+        // side is on move. Time control must be non-Unlimited.
+        const bool draw_clock =
+            a.mode == MODE_PLAYING && a.clock_enabled && is_active &&
+            !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
+        int64_t clock_ms = gs.white_turn ? gi.white_ms_left : gi.black_ms_left;
+        bool clock_side_is_white = gs.white_turn;
+
+        renderer_draw(gs, sub_x, sub_y, sub_w, sub_h,
+                      a.rot_x, a.rot_y, a.zoom,
+                      a.human_plays_white,
+                      a.endgame_menu_hover, a.continue_playing_hover,
+                      &a.flag, draw_flag,
+                      a.withdraw_confirm_open && is_active, a.withdraw_hover,
+                      draw_clock, clock_ms, clock_side_is_white,
+                      a.cartoon_outline,
+                      is_active ? a.board_shake_x : 0.0f);
+    }
+
+    if (N > 1) {
+        glDisable(GL_SCISSOR_TEST);
+        glViewport(0, 0, width, height);
+    }
 
     // Pieces-missing modal sits on top of everything else in the
     // playing scene. Drawn after renderer_draw so it overlays the
@@ -2321,8 +2409,8 @@ static void render_board(AppState& a, int width, int height) {
     }
 
     if (a.mode == MODE_CHALLENGE) {
-        gs.game_over   = save_game_over;
-        gs.game_result = save_result;
+        gs0.game_over   = save_game_over;
+        gs0.game_result = save_result;
     }
 }
 
@@ -2374,7 +2462,9 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
     // Challenge mode never wants the withdraw flag, modal, or clock.
     // Reuse the session cartoon_outline so toggling survives the
     // transition.
-    renderer_draw(cur_gs(a), width, height, a.rot_x, a.rot_y, a.zoom,
+    renderer_draw(cur_gs(a),
+                  /*sub_x=*/0, /*sub_y=*/0, width, height,
+                  a.rot_x, a.rot_y, a.zoom,
                   a.human_plays_white,
                   a.endgame_menu_hover, false,
                   nullptr, false, false, 0,

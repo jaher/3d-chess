@@ -45,7 +45,14 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // draw_clock/clock_ms_remaining/clock_side_is_white drive the top-
 // centre clock widget (drawn only while a timed live game is in
 // progress).
-void renderer_draw(GameState& gs, int width, int height,
+// Multi-game flow: (sub_x, sub_y) is the lower-left corner of the
+// sub-viewport in default-FB pixel coords; (width, height) are the
+// sub-viewport dims. For single-game (N=1) callers pass (0, 0, w, h)
+// — identical to the previous behaviour. For 2x2 grid callers pass
+// per-quadrant rects from viewport_for_game().
+void renderer_draw(GameState& gs,
+                   int sub_x, int sub_y,
+                   int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
@@ -57,6 +64,17 @@ void renderer_draw(GameState& gs, int width, int height,
                    bool clock_side_is_white,
                    bool cartoon_outline,
                    float shake_x = 0.0f);
+
+// Splits the window into sub-rects per game count.
+//   N=1 → full screen.
+//   N=2 → side-by-side halves (game 0 left, game 1 right).
+//   N=3 → 2x2 grid, bottom-right empty (game 0 TL, 1 TR, 2 BL).
+//   N=4 → full 2x2 grid (TL, TR, BL, BR in index order).
+// Coordinates use the GL convention: (sub_x, sub_y) is the
+// lower-left corner of the sub-rect in default-FB pixel coords.
+void viewport_for_game(int game_idx, int N, int win_w, int win_h,
+                       int& sub_x, int& sub_y,
+                       int& sub_w, int& sub_h);
 
 // Hit-test for the "Back to Menu" button drawn in renderer_draw's
 // game-over / analysis overlay. Returns true when (mx, my) falls

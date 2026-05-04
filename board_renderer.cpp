@@ -172,13 +172,23 @@ static void ensure_scene_ms_fbo(int w, int h) {
 // (single-sample depth is fine for the outline shader, which only
 // looks for discontinuities at pixel boundaries). Use GL_NEAREST
 // — required for the depth bit and lossless for the color resolve.
-static void resolve_scene_ms_to(GLuint dst_fbo, int w, int h,
+//
+// (dst_x, dst_y) lets callers blit into a sub-rectangle of the
+// destination FB (default FB = window pixel coords). The src is
+// always the full MS FBO content [0, w] × [0, h] since the MS FBO
+// is sized to (w, h) for this draw — see the multi-game flow
+// where each board renders into its own quadrant of the window.
+static void resolve_scene_ms_to(GLuint dst_fbo,
+                                int dst_x, int dst_y,
+                                int w, int h,
                                 bool include_depth) {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_scene_ms_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst_fbo);
     GLbitfield mask = GL_COLOR_BUFFER_BIT;
     if (include_depth) mask |= GL_DEPTH_BUFFER_BIT;
-    glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, mask, GL_NEAREST);
+    glBlitFramebuffer(0, 0, w, h,
+                      dst_x, dst_y, dst_x + w, dst_y + h,
+                      mask, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
 }
 
@@ -187,12 +197,18 @@ static void resolve_scene_ms_to(GLuint dst_fbo, int w, int h,
 // default framebuffer, samples the scene's colour + depth textures,
 // and writes the darkened-edge result. Leaves depth testing re-enabled
 // so subsequent UI passes behave the same as in the no-outline path.
-static void run_outline_post_process(GLuint default_fbo, int width, int height) {
+static void run_outline_post_process(GLuint default_fbo,
+                                     int sub_x, int sub_y,
+                                     int width, int height) {
     glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
-    glViewport(0, 0, width, height);
+    glViewport(sub_x, sub_y, width, height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // Don't clear here when sub-rendering — would wipe other
+    // sub-viewports already drawn this frame. Caller is expected
+    // to have done a full-FB clear once per frame before the
+    // game-loop. Even for the single-game path the clear was
+    // redundant with the main pass clear, so dropping it is fine.
 
     glUseProgram(g_outline_program);
     glUniform1i(glGetUniformLocation(g_outline_program, "uColorTex"), 0);
@@ -1772,7 +1788,37 @@ static void draw_game_over_overlay(const GameState& gs,
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
 
-void renderer_draw(GameState& gs, int width, int height,
+void viewport_for_game(int game_idx, int N, int win_w, int win_h,
+                       int& sub_x, int& sub_y,
+                       int& sub_w, int& sub_h) {
+    if (N <= 1) {
+        sub_x = 0; sub_y = 0; sub_w = win_w; sub_h = win_h;
+        return;
+    }
+    if (N == 2) {
+        // Side-by-side halves; game 0 = left, game 1 = right.
+        int half = win_w / 2;
+        if (game_idx == 0) { sub_x = 0;    sub_y = 0; sub_w = half;        sub_h = win_h; }
+        else               { sub_x = half; sub_y = 0; sub_w = win_w - half; sub_h = win_h; }
+        return;
+    }
+    // N == 3 or 4: 2x2 grid. Indexing top-left, top-right, bottom-left,
+    // bottom-right. GL y goes bottom-up, so the top row sits at sub_y =
+    // win_h/2 and the bottom row at sub_y = 0.
+    int half_w = win_w / 2;
+    int half_h = win_h / 2;
+    int idx = game_idx;
+    bool right  = (idx == 1) || (idx == 3);
+    bool bottom = (idx == 2) || (idx == 3);
+    sub_x = right  ? half_w : 0;
+    sub_y = bottom ? 0      : half_h;
+    sub_w = right  ? (win_w - half_w) : half_w;
+    sub_h = bottom ? (win_h - half_h) : half_h;
+}
+
+void renderer_draw(GameState& gs,
+                   int sub_x, int sub_y,
+                   int width, int height,
                    float rot_x, float rot_y, float zoom,
                    bool human_plays_white,
                    bool endgame_menu_hover,
@@ -1880,7 +1926,17 @@ void renderer_draw(GameState& gs, int width, int height,
     glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);
 
     // --- Main pass ---
-    glViewport(0, 0, width, height);
+    // If main_pass_fbo is an offscreen FBO sized exactly (width,
+    // height) the viewport origin is (0, 0). Otherwise (web no-
+    // outline path → main_pass_fbo == default_fbo) we draw inside
+    // the sub-rect directly, so origin is (sub_x, sub_y). The
+    // outer multi-game loop has glScissor on the default FB
+    // already, so the clear and draws stay confined to the sub-rect.
+    const bool main_pass_is_default =
+        (main_pass_fbo == static_cast<GLuint>(default_fbo));
+    const int mp_x = main_pass_is_default ? sub_x : 0;
+    const int mp_y = main_pass_is_default ? sub_y : 0;
+    glViewport(mp_x, mp_y, width, height);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glUseProgram(g_program);
@@ -2112,20 +2168,31 @@ void renderer_draw(GameState& gs, int width, int height,
     // single-sample scene FBO (outline) or default FB (no outline).
     // Web: 3D wrote directly to scene_fbo / default FB, just run
     // the post-process if needed (no resolve).
+    //
+    // Multi-game flow: the offscreen FBOs are sized to (width, height)
+    // — the sub-viewport's dims — but the destination is the default
+    // FB at sub-rect (sub_x, sub_y, width, height).
 #ifdef __EMSCRIPTEN__
     if (cartoon_outline) {
-        run_outline_post_process(default_fbo, width, height);
+        run_outline_post_process(default_fbo, sub_x, sub_y, width, height);
     }
+    // No-outline path on web wrote straight into the default FB at
+    // (sub_x, sub_y, width, height) — nothing to resolve.
 #else
     if (cartoon_outline) {
-        resolve_scene_ms_to(g_scene_fbo, width, height,
-                            /*include_depth=*/true);
-        run_outline_post_process(default_fbo, width, height);
+        resolve_scene_ms_to(g_scene_fbo, /*dst_x=*/0, /*dst_y=*/0,
+                            width, height, /*include_depth=*/true);
+        run_outline_post_process(default_fbo, sub_x, sub_y, width, height);
     } else {
         resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
+                            sub_x, sub_y,
                             width, height, /*include_depth=*/false);
     }
 #endif
+
+    // After the resolve / post-process, all subsequent NDC overlay
+    // draws should land inside the sub-viewport on the default FB.
+    glViewport(sub_x, sub_y, width, height);
 
     draw_score_graph(gs, human_plays_white);
     draw_move_list(gs);
@@ -2232,16 +2299,16 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 
 #ifdef __EMSCRIPTEN__
     if (cartoon_outline) {
-        run_outline_post_process(default_fbo, width, height);
+        run_outline_post_process(default_fbo, 0, 0, width, height);
     }
 #else
     if (cartoon_outline) {
-        resolve_scene_ms_to(g_scene_fbo, width, height,
+        resolve_scene_ms_to(g_scene_fbo, 0, 0, width, height,
                             /*include_depth=*/true);
-        run_outline_post_process(default_fbo, width, height);
+        run_outline_post_process(default_fbo, 0, 0, width, height);
     } else {
         resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
-                            width, height, /*include_depth=*/false);
+                            0, 0, width, height, /*include_depth=*/false);
     }
 #endif
 
