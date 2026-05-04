@@ -246,18 +246,19 @@ struct AppState {
     bool puzzle_load_failed = false;     // last fetch returned no FEN
 
     // Canonical solution line parsed from the chess.com PGN at
-    // load time. The puzzle play flow walks this list as long as
-    // the user follows it: a matching user move advances the
-    // index and the AI's reply is the next entry, played as a
-    // canned animation that bypasses Stockfish entirely. The
-    // moment the user diverges, `puzzle_on_book` flips to false
-    // and we fall back to a regular Stockfish bestmove for every
-    // subsequent AI reply (the rest of the solution line is no
-    // longer applicable). Empty list = PGN missing or unparseable
-    // — in that case we go straight to Stockfish from move 1.
+    // load time.
+    //
+    // - Non-empty: the puzzle is "validated". A matching user
+    //   move advances `puzzle_solution_index` and the AI replies
+    //   with the next entry as a canned animation (no Stockfish
+    //   call). A non-matching move shakes the board and resets
+    //   the position to puzzle_starting_fen so the user can
+    //   retry the line from scratch.
+    // - Empty (PGN missing or unparseable): no validation —
+    //   user plays freely and Stockfish picks the AI replies
+    //   from whatever position results.
     std::vector<std::string> puzzle_solution_uci;
     size_t puzzle_solution_index = 0;
-    bool   puzzle_on_book        = false;
 
     // AI animation — start time stored in microseconds, mirrors what the
     // renderer reads from gs.ai_anim_start. Separate from gs.ai_anim_start

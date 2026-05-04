@@ -657,29 +657,62 @@ static void handle_board_click(AppState& a, double mx, double my,
                         audio_play(SoundEffect::Mistake);
                     }
                 } else if (is_puzzle) {
-                    // First, see whether the user followed the
-                    // canonical solution line. A 4-char-prefix
-                    // match accepts user moves that lack the
-                    // promotion suffix (the executor auto-queens).
+                    // Three flows depending on whether we have a
+                    // parsed solution to validate against:
+                    //   * Solution available + user matches → play
+                    //     the canned next move from the PGN line.
+                    //   * Solution available + user diverges →
+                    //     shake the board and reset to the
+                    //     starting FEN so the user can retry from
+                    //     scratch.
+                    //   * No solution parsed → free play, AI
+                    //     picks via Stockfish.
+                    const bool have_solution = !a.puzzle_solution_uci.empty();
                     std::string user_uci = gs.move_history.empty()
                         ? std::string()
                         : gs.move_history.back();
                     auto trim4 = [](const std::string& s) {
                         return s.size() >= 4 ? s.substr(0, 4) : s;
                     };
-                    if (a.puzzle_on_book &&
-                        a.puzzle_solution_index < a.puzzle_solution_uci.size()) {
-                        const std::string& expected =
-                            a.puzzle_solution_uci[a.puzzle_solution_index];
-                        if (trim4(user_uci) == trim4(expected)) {
-                            a.puzzle_solution_index++;
+                    bool diverged = false;
+                    if (have_solution) {
+                        if (a.puzzle_solution_index >=
+                                a.puzzle_solution_uci.size()) {
+                            // Past the end of the line. Treat as
+                            // off-script: shake-and-reset rather
+                            // than letting the user keep playing
+                            // an unmoored position against
+                            // Stockfish.
+                            diverged = true;
                         } else {
-                            // Off-line — fall back to Stockfish for
-                            // every remaining AI reply this puzzle.
-                            a.puzzle_on_book = false;
+                            const std::string& expected =
+                                a.puzzle_solution_uci[a.puzzle_solution_index];
+                            if (trim4(user_uci) == trim4(expected)) {
+                                a.puzzle_solution_index++;
+                            } else {
+                                diverged = true;
+                            }
                         }
                     }
-                    if (gs.game_over) {
+
+                    if (diverged) {
+                        // Reset the position to the puzzle's
+                        // starting FEN, fire the shake/sfx
+                        // mistake feedback, leave it to the user
+                        // to play the next move. No AI animation
+                        // — they're back at the start.
+                        ParsedFEN parsed = parse_fen(a.puzzle_starting_fen);
+                        if (parsed.valid) {
+                            apply_fen_to_state(cur_gs(a), parsed);
+                            a.human_plays_white = parsed.white_turn;
+                        }
+                        a.puzzle_solution_index = 0;
+                        a.board_shake_start_us = now_us(a);
+                        audio_play(SoundEffect::Mistake);
+                        set_status(a,
+                            "Wrong move — board reset, try the line again.");
+                        queue_redraw(a);
+                    } else if (gs.game_over) {
                         a.puzzle_solved = true;
                         bool user_won = a.human_plays_white
                             ? gs.game_result.find("White wins") !=
@@ -695,15 +728,11 @@ static void handle_board_click(AppState& a, double mx, double my,
                             a.platform->trigger_puzzle_fetch(
                                 /*daily=*/false);
                         }
-                    } else if (a.puzzle_on_book &&
+                    } else if (have_solution &&
                                a.puzzle_solution_index <
                                    a.puzzle_solution_uci.size()) {
                         // Play the next canned move from the PGN
-                        // line — bypasses Stockfish entirely. The
-                        // animation pipeline handles game-over
-                        // detection at completion in
-                        // tick_ai_animation, same as a Stockfish
-                        // move would.
+                        // line — bypasses Stockfish entirely.
                         const std::string& canned =
                             a.puzzle_solution_uci[a.puzzle_solution_index];
                         int fc, fr, tc, tr;
@@ -713,11 +742,10 @@ static void handle_board_click(AppState& a, double mx, double my,
                             set_status(a, "Following the solution line.");
                             start_ai_animation(a, fc, fr, tc, tr);
                         } else {
-                            // Solution UCI no longer applies (e.g.
-                            // an earlier mismatch took us off-book
-                            // and the position drifted): give up
-                            // on the canned line and ask Stockfish.
-                            a.puzzle_on_book = false;
+                            // Canned move no longer legal at this
+                            // position (shouldn't happen with the
+                            // reset-on-divergence flow, but be
+                            // defensive). Fall back to Stockfish.
                             set_status(a, "Stockfish is thinking…");
                             trigger_ai(a);
                         }
@@ -1155,12 +1183,12 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
     cur_gs(a).analysis_mode = false;
 
     // Canonical solution from chess.com's PGN — parse once at
-    // load time. If parsing fails or the body is empty,
-    // puzzle_on_book stays false and the AI flow goes straight
-    // to Stockfish bestmoves.
+    // load time. If non-empty we validate every user move
+    // against it (mismatches → shake + reset to starting FEN);
+    // if empty (PGN missing or unparseable) we fall through to
+    // free play with Stockfish picking the AI replies.
     a.puzzle_solution_uci   = puzzle_parse_solution_uci(p.fen, p.pgn);
     a.puzzle_solution_index = 0;
-    a.puzzle_on_book        = !a.puzzle_solution_uci.empty();
 
     std::string status = daily ? "Puzzle of the Day"
                                : "Puzzle";
