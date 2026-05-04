@@ -401,11 +401,6 @@ static int pick_piece(const AppState& a, double mx, double my,
 // ===========================================================================
 // Board click handling
 // ===========================================================================
-// Forward declaration for the puzzle helper used inside
-// handle_board_click — implementation lives next to app_enter_puzzle
-// further down to keep all puzzle code in one place.
-static void trigger_puzzle_eval(AppState& a);
-
 static void handle_board_click(AppState& a, double mx, double my,
                                int width, int height) {
     GameState& gs = cur_gs(a);
@@ -1034,22 +1029,11 @@ void app_enter_challenge(AppState& a, int index) {
 // ===========================================================================
 // chess.com Daily / Random Puzzle (MODE_PUZZLE)
 // ===========================================================================
-// Sentinel score_index for trigger_eval calls that are servicing
-// the puzzle "did the position become decisively winning?" query.
-// app_eval_ready routes responses with this index to the puzzle
-// solve-detector and away from the regular score-graph plumbing.
-static constexpr int PUZZLE_EVAL_SCORE_INDEX = -2;
-
-static void trigger_puzzle_eval(AppState& a) {
-    if (!a.platform || !a.platform->trigger_eval) return;
-    std::string fen = current_fen(cur_gs(a), cur_gs(a).white_turn);
-    // 2 s movetime — generous so the cp readout converges even
-    // when the user has dialled a low ELO (the engine instance is
-    // shared with AI dispatch but the long search dominates the
-    // strength cap).
-    a.platform->trigger_eval(fen.c_str(), 2000,
-                             PUZZLE_EVAL_SCORE_INDEX, 0);
-}
+// Solve detection is purely "user side wins by checkmate" —
+// chess.com puzzles often start with the solver already several
+// pawns up tactically, so a cp-threshold check fires immediately
+// and ends the puzzle after one move. The user has to actually
+// play the position out until the win lands on the board.
 
 void app_enter_puzzle(AppState& a) {
     a.mode = MODE_PUZZLE;
@@ -1944,32 +1928,6 @@ void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
 
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci, int game_id) {
-    // Puzzle solve-detection query — routed via the same trigger_
-    // eval hook as the regular score-graph eval but with a
-    // sentinel index. cp is white-relative; flip for black-side
-    // puzzles. We don't write the result into score_history
-    // (puzzle mode doesn't show the score graph).
-    if (score_index == PUZZLE_EVAL_SCORE_INDEX) {
-        if (a.mode != MODE_PUZZLE) return;
-        // Decisive-eval shortcut. cp ≥ 500 in the user's favour
-        // after they've played at least one move counts as solved
-        // (matches "won the tactic" feel of chess.com puzzles).
-        // Mate scores from ai_player land at cp ≥ 30000-100, well
-        // past the threshold. Game-over (checkmate) is handled
-        // separately at the end of tick_ai_animation.
-        int cp_for_user = a.human_plays_white ? cp : -cp;
-        bool user_has_moved = !cur_gs(a).move_history.empty();
-        if (user_has_moved && cp_for_user >= 500 && !a.puzzle_solved) {
-            a.puzzle_solved = true;
-            set_status(a, "Puzzle solved! Loading next…");
-            if (a.platform && a.platform->trigger_puzzle_fetch) {
-                a.puzzle_loading = true;
-                a.platform->trigger_puzzle_fetch(/*daily=*/false);
-            }
-        }
-        queue_redraw(a);
-        return;
-    }
     // Validate the response is for a real game. For N=1 game_id is
     // always 0; for N>1 a stale response (from before a reset)
     // gets dropped. The body still mutates cur(a) — fine because
@@ -2310,11 +2268,12 @@ static void tick_ai_animation(AppState& a, int64_t now) {
             trigger_ai(a);
         }
 
-        // Puzzle mode: the just-finished animation was Stockfish
-        // playing its best reply to the user's last move. Decide
-        // if the puzzle is done (mate landed either way) or kick
-        // a fresh eval so the post-AI position can be checked
-        // against the "puzzle is decisively won" threshold.
+        // Puzzle mode: the just-finished animation was Stockfish's
+        // reply. If the AI just delivered checkmate, the puzzle
+        // ends regardless of who won (we still advance to a fresh
+        // random next puzzle). Otherwise the user keeps playing
+        // until the position resolves on the board — there's no
+        // cp-threshold shortcut.
         if (a.mode == MODE_PUZZLE && !a.puzzle_solved) {
             if (gs.game_over) {
                 a.puzzle_solved = true;
@@ -2330,7 +2289,6 @@ static void tick_ai_animation(AppState& a, int64_t now) {
                 }
             } else {
                 set_status(a, "Your move.");
-                trigger_puzzle_eval(a);
             }
         }
 
