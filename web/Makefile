@@ -26,6 +26,7 @@ LDFLAGS   := \
     -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js \
     --preload-file ../models-web-packed@/models \
     --preload-file ../challenges@/challenges \
+    --preload-file ../puzzles@/puzzles \
     --preload-file ../sounds@/sounds \
     --preload-file DejaVuSans-Bold.ttf@/DejaVuSans-Bold.ttf \
     --shell-file index.html

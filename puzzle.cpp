@@ -448,25 +448,47 @@ bool puzzle_archive_save(const Puzzle& p) {
     return true;
 }
 
+#else  // __EMSCRIPTEN__
+
+bool puzzle_archive_save(const Puzzle& /*p*/) {
+    // Web build runs in a browser sandbox with no writable working
+    // directory, so we just no-op. The shared layer's caller does
+    // not branch on this — it just gets `false` back.
+    return false;
+}
+
+#endif
+
+// ---------------------------------------------------------------------------
+// Read-only helpers — built for both desktop AND web. Emscripten's
+// POSIX shim supports <fstream> and <dirent.h> against the preload
+// FS, so the same code that scans ./puzzles/ on disk on desktop
+// also scans the bundled puzzles/ tree the web build ships in
+// chess.data.
+// ---------------------------------------------------------------------------
+#include <dirent.h>
+#include <cstring>
+#include <fstream>
+
 namespace {
 
 // Strip a leading "# " / "#" from a comment line. Returns the
 // remainder, or the original line if it didn't start with '#'.
-std::string strip_hash(const std::string& line) {
+std::string md_strip_hash(const std::string& line) {
     if (line.empty() || line[0] != '#') return line;
     if (line.size() >= 2 && line[1] == ' ') return line.substr(2);
     return line.substr(1);
 }
 
 // Trim ASCII whitespace from both ends.
-std::string trim(const std::string& s) {
+std::string md_trim(const std::string& s) {
     size_t a = s.find_first_not_of(" \t");
     if (a == std::string::npos) return std::string();
     size_t b = s.find_last_not_of(" \t");
     return s.substr(a, b - a + 1);
 }
 
-bool starts_with(const std::string& s, const char* prefix) {
+bool md_starts_with(const std::string& s, const char* prefix) {
     size_t n = std::strlen(prefix);
     return s.size() >= n && s.compare(0, n, prefix) == 0;
 }
@@ -483,31 +505,28 @@ bool puzzle_load_from_md(const std::string& path, Puzzle& out) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         if (line[0] == '#') {
-            // Comment block. Pick out url / title comments and the
-            // PGN section that lives under "--- Solution PGN ---".
-            std::string s = strip_hash(line);
+            std::string s = md_strip_hash(line);
             if (in_pgn) {
                 if (!out.pgn.empty()) out.pgn += '\n';
                 out.pgn += s;
                 continue;
             }
-            if (starts_with(s, "url:")) {
-                out.url = trim(s.substr(4));
-            } else if (starts_with(s, "title:") && out.title.empty()) {
-                out.title = trim(s.substr(6));
+            if (md_starts_with(s, "url:")) {
+                out.url = md_trim(s.substr(4));
+            } else if (md_starts_with(s, "title:") && out.title.empty()) {
+                out.title = md_trim(s.substr(6));
             } else if (s.find("Solution PGN") != std::string::npos) {
                 in_pgn = true;
             }
             continue;
         }
-        // Non-comment line: name:, type:, side:, or the FEN itself.
-        if (starts_with(line, "name:")) {
-            out.title = trim(line.substr(5));
-        } else if (starts_with(line, "type:") ||
-                   starts_with(line, "side:")) {
+        if (md_starts_with(line, "name:")) {
+            out.title = md_trim(line.substr(5));
+        } else if (md_starts_with(line, "type:") ||
+                   md_starts_with(line, "side:")) {
             // Derivable from FEN — ignore.
         } else if (out.fen.empty()) {
-            out.fen = trim(line);
+            out.fen = md_trim(line);
         }
     }
     return !out.fen.empty();
@@ -535,23 +554,3 @@ bool puzzle_find_local_daily(const std::string& today, Puzzle& out) {
     closedir(d);
     return found;
 }
-
-#else  // __EMSCRIPTEN__
-
-bool puzzle_archive_save(const Puzzle& /*p*/) {
-    // Web build runs in a browser sandbox with no writable working
-    // directory, so we just no-op. The shared layer's caller does
-    // not branch on this — it just gets `false` back.
-    return false;
-}
-
-bool puzzle_load_from_md(const std::string& /*path*/, Puzzle& /*out*/) {
-    return false;
-}
-
-bool puzzle_find_local_daily(const std::string& /*today*/,
-                             Puzzle& /*out*/) {
-    return false;
-}
-
-#endif
