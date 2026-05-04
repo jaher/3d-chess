@@ -233,20 +233,17 @@ std::vector<std::string> puzzle_parse_solution_uci(const std::string& fen,
 }
 
 #ifndef __EMSCRIPTEN__
+#include <dirent.h>
 #include <sys/stat.h>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
+#include <fstream>
 
 namespace {
 
-// Rewrite characters that aren't safe in a filename so the saved
-// path doesn't accidentally escape the puzzles directory.
-char sanitize_path_char(char c) {
-    if (c == '/' || c == '\\' || c == '\0') return '_';
-    return c;
-}
-
-// Returns "YYYY-MM-DD" for the current local date.
+// Returns "YYYY-MM-DD" for the current local date — fallback name
+// when a puzzle has no title.
 std::string today_yyyy_mm_dd() {
     std::time_t now = std::time(nullptr);
     std::tm tm{};
@@ -255,15 +252,39 @@ std::string today_yyyy_mm_dd() {
 #else
     localtime_r(&now, &tm);
 #endif
-    // 32 bytes is more than enough for "YYYY-MM-DD\0" (11 bytes)
-    // even at GCC's worst-case format-truncation analysis, where
-    // tm_year is treated as a full int and could in theory overflow
-    // the %04d field. Using 16 trips -Wformat-truncation; 32 keeps
-    // the compiler quiet without playing tricks with format specs.
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
     return buf;
+}
+
+// Convert an arbitrary puzzle title into a safe POSIX filename.
+// Anything outside [A-Za-z0-9._-] becomes '_', runs collapse, and
+// leading/trailing '_' are stripped. Returns the empty string if
+// the title sanitises away to nothing — caller picks a fallback.
+std::string sanitize_title_to_filename(const std::string& title) {
+    std::string out;
+    out.reserve(title.size());
+    bool prev_under = false;
+    for (char c : title) {
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '.' || c == '-' || c == '_';
+        if (ok) {
+            out += c;
+            prev_under = false;
+        } else if (!out.empty() && !prev_under) {
+            out += '_';
+            prev_under = true;
+        }
+    }
+    while (!out.empty() && out.back() == '_') out.pop_back();
+    constexpr size_t kMaxLen = 80;
+    if (out.size() > kMaxLen) {
+        out.resize(kMaxLen);
+        while (!out.empty() && out.back() == '_') out.pop_back();
+    }
+    return out;
 }
 
 bool ensure_dir(const char* path) {
@@ -277,6 +298,54 @@ bool file_exists(const char* path) {
     return stat(path, &st) == 0 && (st.st_mode & S_IFREG) != 0;
 }
 
+// Walk a single directory level, scanning every .md file for `fen`
+// as a standalone line. The in-app archiver writes the FEN on its
+// own line so the literal-string match is reliable.
+bool dir_contains_fen(const std::string& dir, const std::string& fen) {
+    DIR* d = opendir(dir.c_str());
+    if (!d) return false;
+    bool found = false;
+    while (struct dirent* e = readdir(d)) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        if (name.size() < 3 || name.substr(name.size() - 3) != ".md") continue;
+        std::string path = dir + "/" + name;
+        std::ifstream f(path);
+        if (!f.is_open()) continue;
+        std::string line;
+        while (std::getline(f, line)) {
+            // Strip a trailing '\r' so files saved with CRLF line
+            // endings still match.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line == fen) { found = true; break; }
+        }
+        if (found) break;
+    }
+    closedir(d);
+    return found;
+}
+
+// True if `fen` appears anywhere under puzzles/ (recursing into
+// subdirectories like daily/ and random/). Used as the dedup
+// gate for the in-app archive write.
+bool fen_already_archived(const std::string& fen) {
+    if (dir_contains_fen("puzzles", fen)) return true;
+    DIR* d = opendir("puzzles");
+    if (!d) return false;
+    bool found = false;
+    while (struct dirent* e = readdir(d)) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        std::string path = std::string("puzzles/") + name;
+        struct stat st{};
+        if (stat(path.c_str(), &st) != 0) continue;
+        if ((st.st_mode & S_IFDIR) == 0) continue;
+        if (dir_contains_fen(path, fen)) { found = true; break; }
+    }
+    closedir(d);
+    return found;
+}
+
 // Indent every line of `body` with "# " so it becomes a comment
 // block in the saved .md file. Empty lines stay empty (no trailing
 // space).
@@ -286,9 +355,7 @@ std::string indent_as_comment(const std::string& body) {
     bool at_line_start = true;
     for (char c : body) {
         if (at_line_start) {
-            if (c != '\n') {
-                out += "# ";
-            }
+            if (c != '\n') out += "# ";
             at_line_start = false;
         }
         out += c;
@@ -297,8 +364,6 @@ std::string indent_as_comment(const std::string& body) {
     return out;
 }
 
-// Side-to-move parsed from the FEN's second token. Returns "white"
-// / "black" / "white" (default fallback).
 std::string fen_side(const std::string& fen) {
     size_t sp = fen.find(' ');
     if (sp == std::string::npos || sp + 1 >= fen.size()) return "white";
@@ -309,37 +374,29 @@ std::string fen_side(const std::string& fen) {
 
 bool puzzle_archive_save(const Puzzle& p) {
     if (p.fen.empty()) return false;
-    if (!ensure_dir("puzzles")) {
+    if (!ensure_dir("puzzles") || !ensure_dir("puzzles/daily")) {
         std::fprintf(stderr,
-            "[puzzle] couldn't create ./puzzles/ — archive write skipped\n");
+            "[puzzle] couldn't create ./puzzles/daily/ — archive skipped\n");
         return false;
     }
 
-    // Filename is the local date plus a sanitised slug from the
-    // chess.com URL's last path segment, so two same-day fetches
-    // (daily + a manually-fetched one later) don't clobber each
-    // other. The first daily of the day always wins via
-    // file_exists short-circuit below.
-    std::string slug;
-    if (!p.url.empty()) {
-        size_t cut = p.url.find_last_of('/');
-        slug = (cut == std::string::npos) ? p.url : p.url.substr(cut + 1);
+    // Dedup against everything already in puzzles/**/*.md so a
+    // daily that chess.com later reposts (or that random surfaces
+    // by chance) doesn't get a second copy.
+    if (fen_already_archived(p.fen)) {
+        return true;  // benign — we already have this puzzle.
     }
-    for (char& c : slug) c = sanitize_path_char(c);
-    if (slug.size() > 60) slug.resize(60);
 
-    std::string base = today_yyyy_mm_dd();
-    std::string path = std::string("puzzles/") + base;
-    if (!slug.empty()) {
-        path += "_";
-        path += slug;
-    }
-    path += ".md";
-
-    if (file_exists(path.c_str())) {
-        // Already saved earlier today (re-entry to the puzzle screen
-        // shouldn't write again).
-        return true;
+    // Filename = sanitised title (or today's date if title empty).
+    // If the path collides with an existing file (same title, different
+    // FEN) we suffix _2, _3, ... so neither file is clobbered.
+    std::string base = sanitize_title_to_filename(p.title);
+    if (base.empty()) base = today_yyyy_mm_dd();
+    std::string path = "puzzles/daily/" + base + ".md";
+    int suffix = 2;
+    while (file_exists(path.c_str())) {
+        path = "puzzles/daily/" + base + "_" + std::to_string(suffix) + ".md";
+        ++suffix;
     }
 
     FILE* f = std::fopen(path.c_str(), "w");
@@ -348,12 +405,13 @@ bool puzzle_archive_save(const Puzzle& p) {
                      path.c_str());
         return false;
     }
+    std::string today = today_yyyy_mm_dd();
     std::fprintf(f,
         "# Chess.com Daily Puzzle archive\n"
         "#\n"
         "# Fetched on %s. Format mirrors challenges/*.md so this\n"
         "# file is greppable / replayable as a single-page challenge.\n",
-        base.c_str());
+        today.c_str());
     if (!p.title.empty()) std::fprintf(f, "# title: %s\n", p.title.c_str());
     if (!p.url.empty())   std::fprintf(f, "# url:   %s\n", p.url.c_str());
     std::fprintf(f, "\n");

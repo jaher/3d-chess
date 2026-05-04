@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
 """
-Fetch the chess.com Puzzle of the Day and archive it to ../puzzles/.
+Fetch chess.com puzzles and archive them under ../puzzles/.
 
-Designed to be run from cron every few hours (the daily puzzle
-rotates around 00:00 UTC, so 12 h cadence catches it within ~12 h
-of publication). Dedup is by FEN: if any existing file in
-puzzles/*.md already contains today's FEN as a literal line, we
-skip the write — same puzzle reposted, or this script firing
-twice within a single day.
+Each run hits two endpoints:
+    * /pub/puzzle           → ../puzzles/daily/<title>.md
+    * /pub/puzzle/random    → ../puzzles/random/<title>.md
 
-Format of the written file mirrors challenges/*.md so the same
-parser shape applies (name + type + side + FEN, with the
-chess.com solution PGN appended as a comment block).
+The filename is derived from the puzzle's `title` (sanitised to
+[A-Za-z0-9._-]_); if the title is empty we fall back to today's
+date or a FEN-derived slug. Dedup is by FEN — if any existing
+file under puzzles/**/*.md already contains the response's FEN
+as a standalone line, that fetch is skipped. Same puzzle never
+gets two files even when chess.com reposts it later or random
+happens to surface the day's daily.
 
-When a new file IS written, the script also commits it as its own
-single-file commit and pushes to the configured origin via the
-local `git` binary. Authentication is whatever git is already
-configured to use on this machine (SSH key, credential helper,
-or the URL stored in `.git/config`). The script never reads or
-embeds any secret of its own — no environment variables are
-inspected, no tokens hardcoded, no stdout / stderr from git is
-re-emitted beyond a short summary line. Pass --no-push to skip
-the commit + push step (useful for local testing or for cloning
-the repo somewhere read-only).
+The written file mirrors challenges/*.md (name + type + side +
+FEN, with the chess.com solution PGN appended as a comment
+block) so it stays parseable as a single-page challenge.
 
-Suggested crontab line — run twice a day:
-    0 */12 * * * /path/to/3d_chess/tools/fetch_daily_puzzle.py >> /tmp/fetch_daily_puzzle.log 2>&1
+When a new file IS written, the script also commits it as its
+own single-file commit and pushes to the configured origin via
+the local `git` binary. Authentication is whatever git is
+already configured to use on this machine (SSH key, credential
+helper, or the URL stored in .git/config). The script never
+reads or embeds any secret of its own — no environment variables
+are inspected, no tokens hardcoded, no stdout / stderr from git
+is re-emitted beyond a short summary line. Pass --no-push to
+skip the commit + push step (useful for local testing or for
+clones in read-only environments).
+
+Suggested crontab line — run every 3 h, offset by 1 h so the
+first fire of the day is 01:00 local:
+    0 1-23/3 * * * /path/to/3d_chess/tools/fetch_daily_puzzle.py >> /tmp/fetch_daily_puzzle.log 2>&1
 """
 
 from __future__ import annotations
@@ -43,7 +49,12 @@ import urllib.error
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 PUZZLES_DIR = os.path.join(PROJECT_ROOT, "puzzles")
-ENDPOINT = "https://api.chess.com/pub/puzzle"
+DAILY_DIR  = os.path.join(PUZZLES_DIR, "daily")
+RANDOM_DIR = os.path.join(PUZZLES_DIR, "random")
+ENDPOINTS = {
+    "daily":  "https://api.chess.com/pub/puzzle",
+    "random": "https://api.chess.com/pub/puzzle/random",
+}
 USER_AGENT = "3d-chess fetch_daily_puzzle.py (cron)"
 TIMEOUT_S = 15
 
@@ -54,40 +65,44 @@ def log(msg: str) -> None:
     print(f"[{ts}] {msg}", file=sys.stderr)
 
 
-def fetch_puzzle() -> dict:
-    req = urllib.request.Request(ENDPOINT, headers={"User-Agent": USER_AGENT})
+def fetch_puzzle(endpoint: str) -> dict:
+    req = urllib.request.Request(endpoint, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
         if r.status != 200:
-            raise RuntimeError(f"HTTP {r.status} from {ENDPOINT}")
+            raise RuntimeError(f"HTTP {r.status} from {endpoint}")
         body = r.read().decode("utf-8", errors="replace")
     return json.loads(body)
 
 
 def fen_already_archived(fen: str) -> bool:
-    """True if any *.md in puzzles/ contains the FEN as a standalone line.
+    """True if any *.md anywhere under puzzles/ contains the FEN as
+    a standalone line.
 
-    The in-app archiver writes the FEN on its own line, so a literal-
-    string match against any line is enough to catch dupes regardless
-    of which slug variant the file was saved under."""
+    Walks `daily/`, `random/`, and any other future subfolder under
+    `puzzles/`, plus loose .md files at the puzzles/ root (legacy).
+    The archive writer always emits the FEN on its own line, so a
+    literal-string match is reliable regardless of which subfolder
+    the existing file lives in."""
     if not os.path.isdir(PUZZLES_DIR):
         return False
     fen_line = fen.strip()
-    for name in os.listdir(PUZZLES_DIR):
-        if not name.endswith(".md"):
-            continue
-        path = os.path.join(PUZZLES_DIR, name)
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if line.strip() == fen_line:
-                        return True
-        except OSError:
-            continue
+    for dirpath, _dirs, files in os.walk(PUZZLES_DIR):
+        for name in files:
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if line.strip() == fen_line:
+                            return True
+            except OSError:
+                continue
     return False
 
 
 def slugify(s: str) -> str:
-    """URL-tail to filename slug. Drop everything that isn't safe in a path."""
+    """Title / URL-tail → safe POSIX filename component."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_")
 
 
@@ -96,34 +111,36 @@ def side_from_fen(fen: str) -> str:
     return "black" if len(parts) >= 2 and parts[1] == "b" else "white"
 
 
-def archive_path_for(today: str, url: str) -> str:
-    """Pick a non-clobbering path under PUZZLES_DIR/."""
-    slug = slugify(os.path.basename(url)) if url else ""
-    # If the slug duplicates the date prefix (chess.com daily URLs
-    # are .../daily/YYYY-MM-DD), drop it so the filename reads as
-    # plain "YYYY-MM-DD.md".
-    if slug == today:
-        slug = ""
-    base = today if not slug else f"{today}_{slug}"
-    path = os.path.join(PUZZLES_DIR, base + ".md")
+def archive_path_for(out_dir: str, title: str, fen: str, today: str) -> str:
+    """Pick a non-clobbering path under `out_dir`. Filename is the
+    sanitised title; if the title is empty we fall back to today's
+    date plus a FEN hash (so different positions never collide on
+    the same date)."""
+    base = slugify(title)[:80].rstrip("_") if title else ""
+    if not base:
+        h = abs(hash(fen)) % 0x10000
+        base = f"{today}_{h:04x}"
+    path = os.path.join(out_dir, base + ".md")
     suffix = 2
     while os.path.exists(path):
-        path = os.path.join(PUZZLES_DIR, f"{base}_v{suffix}.md")
+        path = os.path.join(out_dir, f"{base}_{suffix}.md")
         suffix += 1
     return path
 
 
-def write_archive(p: dict, today: str) -> str:
-    fen = p["fen"]
+def write_archive(p: dict, kind: str, today: str) -> str:
+    fen   = p["fen"]
     title = p.get("title") or ""
-    url = p.get("url") or ""
-    pgn = p.get("pgn") or ""
+    url   = p.get("url")   or ""
+    pgn   = p.get("pgn")   or ""
 
-    os.makedirs(PUZZLES_DIR, exist_ok=True)
-    path = archive_path_for(today, url)
+    out_dir = DAILY_DIR if kind == "daily" else RANDOM_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    path = archive_path_for(out_dir, title, fen, today)
 
+    label = "Daily" if kind == "daily" else "Random"
     lines: list[str] = []
-    lines.append("# Chess.com Daily Puzzle archive")
+    lines.append(f"# Chess.com {label} Puzzle archive")
     lines.append("#")
     lines.append(f"# Fetched on {today} by tools/fetch_daily_puzzle.py")
     lines.append("# Format mirrors challenges/*.md so this file is greppable")
@@ -200,34 +217,51 @@ def git_commit_and_push(path: str) -> None:
         log("git step timed out — skip")
 
 
+def fetch_one(kind: str, today: str, push: bool) -> int:
+    """Fetch a single endpoint, dedup, write + commit if new. Returns
+    a process-style exit code (0 = ok, 1 = transient failure that
+    shouldn't poison the other endpoint's run)."""
+    endpoint = ENDPOINTS[kind]
+    try:
+        p = fetch_puzzle(endpoint)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        log(f"[{kind}] fetch failed: {e}")
+        return 1
+
+    fen = (p.get("fen") or "").strip()
+    if not fen:
+        log(f"[{kind}] response had no FEN; skipping")
+        return 1
+
+    if fen_already_archived(fen):
+        log(f"[{kind}] already archived (FEN match) — skip: {fen}")
+        return 0
+
+    path = write_archive(p, kind, today)
+    log(f"[{kind}] wrote {os.path.relpath(path, PROJECT_ROOT)}")
+    if push:
+        git_commit_and_push(path)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--no-push", action="store_true",
         help="Write the archive file but skip the git commit + push step.")
+    parser.add_argument("--only", choices=("daily", "random"),
+        help="Only hit one endpoint instead of both.")
     args = parser.parse_args(argv)
 
-    try:
-        p = fetch_puzzle()
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        log(f"fetch failed: {e}")
-        return 1
-
-    fen = (p.get("fen") or "").strip()
-    if not fen:
-        log("response had no FEN; skipping")
-        return 1
-
-    if fen_already_archived(fen):
-        log(f"already archived (FEN match) — skip: {fen}")
-        return 0
-
     today = time.strftime("%Y-%m-%d")
-    path = write_archive(p, today)
-    log(f"wrote {os.path.relpath(path, PROJECT_ROOT)}")
-    if not args.no_push:
-        git_commit_and_push(path)
-    return 0
+    push = not args.no_push
+
+    kinds = (args.only,) if args.only else ("daily", "random")
+    rc = 0
+    for k in kinds:
+        if fetch_one(k, today, push) != 0:
+            rc = 1
+    return rc
 
 
 if __name__ == "__main__":
