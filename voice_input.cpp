@@ -346,10 +346,11 @@ VoiceCommand parse_voice_command(const std::string& utterance,
     // withdraw modal eats every mouse click. Only yes/no register;
     // anything else returns None and the caller short-circuits the
     // chess-move parser so we don't surface "no destination square".
-    if (ctx.withdraw_confirm_open) {
+    if (ctx.withdraw_confirm_open || ctx.hint_confirm_open) {
         if (match_any(s, {"yes", "yeah", "yep", "yup",
                           "confirm", "ok", "okay", "sure",
-                          "do it", "go ahead"}))
+                          "do it", "go ahead", "play it",
+                          "play that"}))
             return VoiceCommand::ConfirmYes;
         if (match_any(s, {"no", "nope", "nah",
                           "cancel", "never mind", "nevermind",

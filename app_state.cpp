@@ -478,6 +478,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                 gs.valid_moves.clear();
                 gs.hint_from_col = gs.hint_from_row = -1;
                 gs.hint_to_col   = gs.hint_to_row   = -1;
+                a.hint_confirm_pending = false;
                 play_move_sfx(gs, sfx_capture);
                 if (a.voice_tts_enabled && !gs.move_history.empty()) {
                     voice_tts_speak(uci_to_speech(
@@ -1139,6 +1140,7 @@ static void release_options(AppState& a, double mx, double my,
         a.game.hint_last_spoken_uci.clear();
         a.game.hint_last_spoken_ply = -1;
         a.hint_request_pending = false;
+        a.hint_confirm_pending = false;
         queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
@@ -1692,6 +1694,9 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             // explicitly asking, so reset dedup so the next request
             // re-speaks even if the position hasn't changed.
             int ply = static_cast<int>(gs.move_history.size());
+            bool was_on_demand_request =
+                (a.hint_mode == AppState::HintMode::OnDemand &&
+                 a.hint_request_pending);
             if (gs.hint_last_spoken_uci != best_uci ||
                 gs.hint_last_spoken_ply != ply) {
                 gs.hint_last_spoken_uci = best_uci;
@@ -1699,7 +1704,21 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 if (!gs.snapshots.empty()) {
                     std::string spoken = uci_to_speech(
                         gs.snapshots.back(), best_uci);
-                    voice_tts_speak("Hint: " + spoken);
+                    // OnDemand path follows the spoken hint with
+                    // a "Do you want to play this?" prompt and
+                    // arms hint_confirm_pending so yes/no plays
+                    // the move or dismisses. Auto path just
+                    // announces.
+                    if (was_on_demand_request) {
+                        voice_tts_speak("Hint: " + spoken +
+                            ". Do you want to play this?");
+                        a.hint_confirm_pending = true;
+                        set_status(a,
+                            "Hint shown — say \"yes\" to play it "
+                            "or \"no\" to dismiss");
+                    } else {
+                        voice_tts_speak("Hint: " + spoken);
+                    }
                 }
             }
             a.hint_request_pending = false;  // consume
@@ -1764,6 +1783,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
                      gs.ai_to_col,   gs.ai_to_row);
         gs.hint_from_col = gs.hint_from_row = -1;
         gs.hint_to_col   = gs.hint_to_row   = -1;
+        a.hint_confirm_pending = false;
         play_move_sfx(gs, sfx_capture);
         // Speak the AI's reply over the speaker. Skipped when the
         // toggle is off; the user's own moves are never announced
@@ -2249,6 +2269,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
     ctx.challenge_mistake_ready  = mistake_reveal_ready(a);
     ctx.challenge_show_summary   = a.challenge_show_summary;
     ctx.withdraw_confirm_open    = a.withdraw_confirm_open;
+    ctx.hint_confirm_open        = a.hint_confirm_pending;
 
     VoiceCommand cmd = parse_voice_command(utterance, ctx);
     if (cmd == VoiceCommand::None) return false;
@@ -2293,12 +2314,74 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
             app_enter_menu(a);
+        } else if (a.hint_confirm_pending) {
+            // User accepted the hint — play it. Mirror the voice
+            // move-execution path (capture detection, sfx, TTS,
+            // chessnut sync, eval kick, AI trigger).
+            a.hint_confirm_pending = false;
+            const std::string uci = a.last_eval_best_uci;
+            int fc, fr, tc, tr;
+            if (uci.empty() || !parse_uci_move(uci, fc, fr, tc, tr)) {
+                set_status(a, "Hint move expired — try again");
+                queue_redraw(a);
+                break;
+            }
+            // Sanity: the hint must still match the user's turn /
+            // single-player constraints. If anything's drifted
+            // (the AI may have already moved, etc.), refuse rather
+            // than play the wrong side's move.
+            if (a.two_player_mode || a.mode != MODE_PLAYING ||
+                a.game.game_over || a.game.ai_animating ||
+                a.game.ai_thinking ||
+                a.game.white_turn != a.human_plays_white) {
+                set_status(a, "Hint move expired — try again");
+                a.game.hint_from_col = a.game.hint_from_row = -1;
+                a.game.hint_to_col   = a.game.hint_to_row   = -1;
+                queue_redraw(a);
+                break;
+            }
+            GameState& gs = a.game;
+            bool sfx_capture = gs.grid[tr][tc] >= 0;
+            BoardSnapshot tts_before;
+            if (a.voice_tts_enabled) {
+                tts_before.pieces        = gs.pieces;
+                tts_before.white_turn    = gs.white_turn;
+                tts_before.castling      = gs.castling;
+                tts_before.ep_target_col = gs.ep_target_col;
+                tts_before.ep_target_row = gs.ep_target_row;
+            }
+            execute_move(gs, fc, fr, tc, tr);
+            gs.selected_col = gs.selected_row = -1;
+            gs.valid_moves.clear();
+            gs.hint_from_col = gs.hint_from_row = -1;
+            gs.hint_to_col   = gs.hint_to_row   = -1;
+            play_move_sfx(gs, sfx_capture);
+            if (a.voice_tts_enabled && !gs.move_history.empty()) {
+                voice_tts_speak(uci_to_speech(
+                    tts_before, gs.move_history.back()));
+            }
+            app_chessnut_sync_board(a, /*force=*/false);
+            app_refresh_status(a);
+            trigger_eval(a, static_cast<int>(gs.score_history.size()) - 1);
+            if (!a.two_player_mode &&
+                gs.white_turn != a.human_plays_white && !gs.game_over)
+                trigger_ai(a);
+            queue_redraw(a);
         }
         break;
     case VoiceCommand::ConfirmNo:
         if (a.withdraw_confirm_open) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
+        } else if (a.hint_confirm_pending) {
+            // User declined — wipe the hint rings and the prompt.
+            a.hint_confirm_pending = false;
+            a.game.hint_from_col = a.game.hint_from_row = -1;
+            a.game.hint_to_col   = a.game.hint_to_row   = -1;
+            a.game.hint_last_spoken_uci.clear();
+            a.game.hint_last_spoken_ply = -1;
+            set_status(a, "Hint dismissed");
+            queue_redraw(a);
         }
         break;
     case VoiceCommand::NextPuzzle: {
@@ -2355,6 +2438,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         a.game.hint_last_spoken_uci.clear();
         a.game.hint_last_spoken_ply = -1;
         a.hint_request_pending = false;
+        a.hint_confirm_pending = false;
         break;
     case VoiceCommand::RequestHint: {
         // One-shot hint request from voice. Three sub-cases:
@@ -2393,10 +2477,22 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
                 a.game.hint_to_col   = tc;
                 a.game.hint_to_row   = tr;
                 if (!a.game.snapshots.empty()) {
-                    voice_tts_speak("Hint: " + uci_to_speech(
+                    // Speak the move + ask for confirmation in
+                    // one utterance so the prompt arrives on the
+                    // same voice channel without the user
+                    // wondering whether the hint is finished. The
+                    // dispatcher routes the next yes/no through
+                    // the hint_confirm_pending branch above.
+                    std::string move_speech = uci_to_speech(
                         a.game.snapshots.back(),
-                        a.last_eval_best_uci));
+                        a.last_eval_best_uci);
+                    voice_tts_speak("Hint: " + move_speech +
+                                    ". Do you want to play this?");
                 }
+                a.hint_confirm_pending = true;
+                set_status(a,
+                    "Hint shown — say \"yes\" to play it or \"no\" "
+                    "to dismiss");
                 queue_redraw(a);
             }
         } else {
@@ -2490,6 +2586,7 @@ void apply_voice_utterance(AppState& a,
     gs.valid_moves.clear();
     gs.hint_from_col = gs.hint_from_row = -1;
     gs.hint_to_col   = gs.hint_to_row   = -1;
+    a.hint_confirm_pending = false;
     play_move_sfx(gs, sfx_capture);
     if (a.voice_tts_enabled && !gs.move_history.empty()) {
         voice_tts_speak(uci_to_speech(tts_before, gs.move_history.back()));

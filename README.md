@@ -209,8 +209,10 @@ The next Options row, **Move hints**, is a tri-state cycle:
   squares plus a TTS announcement ("Hint: Knight to f three").
 - **ON DEMAND** — silent until you ask. Click the toggle once
   more to reach this mode; then say "give me a hint" (or
-  "hint" / "best move") and the cached bestmove from the most
-  recent eval surfaces as a one-shot.
+  "hint" / "best move"). The cached bestmove from the most
+  recent eval surfaces with yellow rings, the move is announced,
+  and the app follows up with **"Do you want to play this?"** —
+  say **"yes"** to play it, **"no"** to dismiss the rings.
 
 Click the row to cycle Off → Auto → On Demand → Off. Voice
 phrases:

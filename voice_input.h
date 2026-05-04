@@ -127,6 +127,13 @@ struct VoiceCommandContext {
     bool challenge_mistake_ready = false;
     bool challenge_show_summary  = false;
     bool withdraw_confirm_open   = false;
+    // After a "give me a hint" request in OnDemand mode, the
+    // dispatcher follows up with "Do you want to play this?" and
+    // waits for yes/no. While this is true, the parser routes
+    // yes/no phrases to ConfirmYes/ConfirmNo (same enum the
+    // withdraw modal uses) and the dispatcher branches on whichever
+    // confirm flag is set in AppState.
+    bool hint_confirm_open       = false;
 };
 
 // Match `utterance` against the buttons currently on screen. Returns

@@ -278,6 +278,12 @@ struct AppState {
     // on-demand path can surface it instantly without waiting for
     // a fresh eval round trip.
     std::string last_eval_best_uci;
+    // True after a hint has been surfaced via "give me a hint" and
+    // the app has spoken "Do you want to play this?". The next
+    // yes/no utterance plays the hint move ("yes") or dismisses it
+    // ("no"). Cleared when the user makes any move (click / voice
+    // / sensor), the hint mode changes, or the game ends.
+    bool hint_confirm_pending = false;
 
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app
