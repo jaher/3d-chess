@@ -182,6 +182,26 @@ speakers ("Knight to f three", "Pawn takes d five", "Castles
 kingside, check"). Flip the toggle off in Options if you'd rather
 play silently.
 
+The same toggle drives a brief **move-quality classification**
+spoken right after each move announcement, derived from the
+centipawn delta between the eval before and after the move:
+
+| Spoken phrase    | CP loss | Notes |
+| ---------------- | ------: | ----- |
+| Best move        |     ≤10 | Exact match for Stockfish's bestmove |
+| Excellent move   |     ≤15 | Within a sliver of best |
+| Good move        |     ≤50 | Solid, doesn't move the eval much |
+| Inaccuracy       |    ≤100 | Small but real concession |
+| Mistake          |    ≤200 | Noticeable advantage given up |
+| Blunder          |    >200 | Massive eval swing |
+
+Suppressed when the position is in mate-search territory
+(scores pegged at ±100 pawn units) — the centipawn delta is
+dominated by mate-distance noise there, so the classification
+isn't meaningful. Brilliant / Great / Missed-win / Book-move
+classifications aren't computed (they need sacrifice detection,
+opening-database lookup, etc.) and may show up in a follow-up.
+
 Native build: powered by [Piper](https://github.com/rhasspy/piper)
 neural-TTS. The Makefile fetches the prebuilt linux x86_64 binary
 (~26 MB tarball, ONNX runtime bundled in) and a single voice

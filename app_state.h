@@ -278,6 +278,12 @@ struct AppState {
     // on-demand path can surface it instantly without waiting for
     // a fresh eval round trip.
     std::string last_eval_best_uci;
+    // Bestmove from the previous eval round — i.e. what the
+    // player who just moved *should* have played. Used by the
+    // post-move classifier to brand exact-match moves as "Best".
+    // Shifted from last_eval_best_uci every time a new eval lands,
+    // so it's always one position behind.
+    std::string prev_eval_best_uci;
     // True after a hint has been surfaced via "give me a hint" and
     // the app has spoken "Do you want to play this?". The next
     // yes/no utterance plays the hint move ("yes") or dismisses it

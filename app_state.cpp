@@ -1662,8 +1662,67 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // cache to surface a hint instantly instead of waiting for a
     // fresh eval round trip. Updated unconditionally so a mode
     // flip from Off → OnDemand mid-turn has the right value
-    // ready.
-    if (!best_uci.empty()) a.last_eval_best_uci = best_uci;
+    // ready. Shift the previous one to prev_eval_best_uci so the
+    // classifier below has the bestmove for the position the
+    // player JUST moved out of (i.e. what they should have
+    // played).
+    if (!best_uci.empty()) {
+        a.prev_eval_best_uci = a.last_eval_best_uci;
+        a.last_eval_best_uci = best_uci;
+    }
+
+    // Move-quality classification — speak a category ("Best move",
+    // "Inaccuracy", "Blunder", ...) right after the eval for the
+    // just-played move lands. CP loss is computed from white's
+    // perspective by score_history; flip the sign for whichever
+    // side just moved. Skipped on the very first eval (no move
+    // played yet) and when speak-moves is off.
+    if (a.voice_tts_enabled &&
+        a.mode == MODE_PLAYING && !gs.game_over &&
+        !gs.move_history.empty() && score_index >= 1) {
+        // After execute_move, gs.white_turn flipped — so the
+        // player who just moved is the opposite colour.
+        bool white_just_moved = !gs.white_turn;
+        float eval_before = gs.score_history[score_index - 1];
+        float eval_after  = gs.score_history[score_index];
+        // Convert pawn units → centipawns and flip for player.
+        int cp_before = static_cast<int>(eval_before * 100.0f);
+        int cp_after  = static_cast<int>(eval_after  * 100.0f);
+        int cp_loss = white_just_moved
+            ? (cp_before - cp_after)
+            : (cp_after - cp_before);
+        if (cp_loss < 0) cp_loss = 0;  // can't help yourself by moving
+
+        bool was_best = !a.prev_eval_best_uci.empty() &&
+                        gs.move_history.back() == a.prev_eval_best_uci;
+
+        const char* phrase = nullptr;
+        if (was_best && cp_loss <= 10)        phrase = "Best move";
+        else if (cp_loss <= 15)               phrase = "Excellent move";
+        else if (cp_loss <= 50)               phrase = "Good move";
+        else if (cp_loss <= 100)              phrase = "Inaccuracy";
+        else if (cp_loss <= 200)              phrase = "Mistake";
+        else                                  phrase = "Blunder";
+
+        // Suppress the announcement when the move resolves a
+        // mate-search overflow (eval_before or eval_after pegged
+        // at ±100 pawn-units by app_eval_ready's mate clamp).
+        // Those generate noisy classifications because the score
+        // delta is dominated by mate-distance changes, not real
+        // material loss. Speak only when both endpoints are inside
+        // the normal centipawn range.
+        bool both_normal = std::abs(eval_before) < 50.0f &&
+                           std::abs(eval_after)  < 50.0f;
+        if (phrase && both_normal) {
+            voice_tts_speak(phrase);
+            std::fprintf(stderr,
+                "[classify] %s (cp_loss=%d, was_best=%d, "
+                "before=%.2f after=%.2f white_moved=%d)\n",
+                phrase, cp_loss, was_best ? 1 : 0,
+                eval_before, eval_after,
+                white_just_moved ? 1 : 0);
+        }
+    }
 
     // Decide whether to surface the hint NOW: Auto fires every
     // eval; OnDemand fires only when the voice command set the
