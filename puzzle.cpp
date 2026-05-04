@@ -298,18 +298,18 @@ bool file_exists(const char* path) {
     return stat(path, &st) == 0 && (st.st_mode & S_IFREG) != 0;
 }
 
-// Walk a single directory level, scanning every .md file for `fen`
-// as a standalone line. The in-app archiver writes the FEN on its
-// own line so the literal-string match is reliable.
-bool dir_contains_fen(const std::string& dir, const std::string& fen) {
-    DIR* d = opendir(dir.c_str());
+// True if any *.md directly inside puzzles/ contains `fen` as a
+// standalone line. The in-app archiver writes the FEN on its own
+// line so the literal-string match is reliable.
+bool fen_already_archived(const std::string& fen) {
+    DIR* d = opendir("puzzles");
     if (!d) return false;
     bool found = false;
     while (struct dirent* e = readdir(d)) {
         std::string name = e->d_name;
         if (name == "." || name == "..") continue;
         if (name.size() < 3 || name.substr(name.size() - 3) != ".md") continue;
-        std::string path = dir + "/" + name;
+        std::string path = std::string("puzzles/") + name;
         std::ifstream f(path);
         if (!f.is_open()) continue;
         std::string line;
@@ -320,27 +320,6 @@ bool dir_contains_fen(const std::string& dir, const std::string& fen) {
             if (line == fen) { found = true; break; }
         }
         if (found) break;
-    }
-    closedir(d);
-    return found;
-}
-
-// True if `fen` appears anywhere under puzzles/ (recursing into
-// subdirectories like daily/ and random/). Used as the dedup
-// gate for the in-app archive write.
-bool fen_already_archived(const std::string& fen) {
-    if (dir_contains_fen("puzzles", fen)) return true;
-    DIR* d = opendir("puzzles");
-    if (!d) return false;
-    bool found = false;
-    while (struct dirent* e = readdir(d)) {
-        std::string name = e->d_name;
-        if (name == "." || name == "..") continue;
-        std::string path = std::string("puzzles/") + name;
-        struct stat st{};
-        if (stat(path.c_str(), &st) != 0) continue;
-        if ((st.st_mode & S_IFDIR) == 0) continue;
-        if (dir_contains_fen(path, fen)) { found = true; break; }
     }
     closedir(d);
     return found;
@@ -374,28 +353,33 @@ std::string fen_side(const std::string& fen) {
 
 bool puzzle_archive_save(const Puzzle& p) {
     if (p.fen.empty()) return false;
-    if (!ensure_dir("puzzles") || !ensure_dir("puzzles/daily")) {
+    if (!ensure_dir("puzzles")) {
         std::fprintf(stderr,
-            "[puzzle] couldn't create ./puzzles/daily/ — archive skipped\n");
+            "[puzzle] couldn't create ./puzzles/ — archive skipped\n");
         return false;
     }
 
-    // Dedup against everything already in puzzles/**/*.md so a
-    // daily that chess.com later reposts (or that random surfaces
-    // by chance) doesn't get a second copy.
+    // Dedup against every .md already in puzzles/. A daily that
+    // chess.com reposts later, or that the cron's random fetch
+    // surfaces by chance, doesn't get a second copy.
     if (fen_already_archived(p.fen)) {
         return true;  // benign — we already have this puzzle.
     }
 
-    // Filename = sanitised title (or today's date if title empty).
-    // If the path collides with an existing file (same title, different
-    // FEN) we suffix _2, _3, ... so neither file is clobbered.
-    std::string base = sanitize_title_to_filename(p.title);
-    if (base.empty()) base = today_yyyy_mm_dd();
-    std::string path = "puzzles/daily/" + base + ".md";
+    // Filename = `<sanitised-title>_<today>.md`. If the title is
+    // empty (chess.com sometimes ships untitled random puzzles)
+    // we fall back to `<today>.md`. Same-title-same-day collisions
+    // (different FEN) get a numeric suffix so neither file is
+    // clobbered.
+    std::string today = today_yyyy_mm_dd();
+    std::string title_slug = sanitize_title_to_filename(p.title);
+    std::string base = title_slug.empty()
+        ? today
+        : (title_slug + "_" + today);
+    std::string path = "puzzles/" + base + ".md";
     int suffix = 2;
     while (file_exists(path.c_str())) {
-        path = "puzzles/daily/" + base + "_" + std::to_string(suffix) + ".md";
+        path = "puzzles/" + base + "_" + std::to_string(suffix) + ".md";
         ++suffix;
     }
 
@@ -405,7 +389,6 @@ bool puzzle_archive_save(const Puzzle& p) {
                      path.c_str());
         return false;
     }
-    std::string today = today_yyyy_mm_dd();
     std::fprintf(f,
         "# Chess.com Daily Puzzle archive\n"
         "#\n"

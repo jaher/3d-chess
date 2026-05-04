@@ -3,16 +3,17 @@
 Fetch chess.com puzzles and archive them under ../puzzles/.
 
 Each run hits two endpoints:
-    * /pub/puzzle           → ../puzzles/daily/<title>.md
-    * /pub/puzzle/random    → ../puzzles/random/<title>.md
+    * /pub/puzzle           → today's chess.com Puzzle of the Day
+    * /pub/puzzle/random    → an arbitrary historical puzzle
 
-The filename is derived from the puzzle's `title` (sanitised to
+Both responses land directly in ../puzzles/ as flat files.
+Filenames are derived from the puzzle's `title` (sanitised to
 [A-Za-z0-9._-]_); if the title is empty we fall back to today's
-date or a FEN-derived slug. Dedup is by FEN — if any existing
-file under puzzles/**/*.md already contains the response's FEN
-as a standalone line, that fetch is skipped. Same puzzle never
-gets two files even when chess.com reposts it later or random
-happens to surface the day's daily.
+date plus a short FEN-derived suffix. Dedup is by FEN — if any
+existing file under puzzles/*.md already contains the response's
+FEN as a standalone line, that fetch is skipped. Same puzzle
+never gets two files even when chess.com reposts it later or
+random happens to surface the day's daily.
 
 The written file mirrors challenges/*.md (name + type + side +
 FEN, with the chess.com solution PGN appended as a comment
@@ -49,8 +50,6 @@ import urllib.error
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 PUZZLES_DIR = os.path.join(PROJECT_ROOT, "puzzles")
-DAILY_DIR  = os.path.join(PUZZLES_DIR, "daily")
-RANDOM_DIR = os.path.join(PUZZLES_DIR, "random")
 ENDPOINTS = {
     "daily":  "https://api.chess.com/pub/puzzle",
     "random": "https://api.chess.com/pub/puzzle/random",
@@ -75,29 +74,23 @@ def fetch_puzzle(endpoint: str) -> dict:
 
 
 def fen_already_archived(fen: str) -> bool:
-    """True if any *.md anywhere under puzzles/ contains the FEN as
-    a standalone line.
-
-    Walks `daily/`, `random/`, and any other future subfolder under
-    `puzzles/`, plus loose .md files at the puzzles/ root (legacy).
-    The archive writer always emits the FEN on its own line, so a
-    literal-string match is reliable regardless of which subfolder
-    the existing file lives in."""
+    """True if any *.md in puzzles/ contains the FEN as a standalone
+    line. The archive writer always emits the FEN on its own line, so
+    a literal-string match is reliable."""
     if not os.path.isdir(PUZZLES_DIR):
         return False
     fen_line = fen.strip()
-    for dirpath, _dirs, files in os.walk(PUZZLES_DIR):
-        for name in files:
-            if not name.endswith(".md"):
-                continue
-            path = os.path.join(dirpath, name)
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if line.strip() == fen_line:
-                            return True
-            except OSError:
-                continue
+    for name in os.listdir(PUZZLES_DIR):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(PUZZLES_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.strip() == fen_line:
+                        return True
+        except OSError:
+            continue
     return False
 
 
@@ -111,19 +104,21 @@ def side_from_fen(fen: str) -> str:
     return "black" if len(parts) >= 2 and parts[1] == "b" else "white"
 
 
-def archive_path_for(out_dir: str, title: str, fen: str, today: str) -> str:
-    """Pick a non-clobbering path under `out_dir`. Filename is the
-    sanitised title; if the title is empty we fall back to today's
-    date plus a FEN hash (so different positions never collide on
-    the same date)."""
-    base = slugify(title)[:80].rstrip("_") if title else ""
-    if not base:
+def archive_path_for(title: str, fen: str, today: str) -> str:
+    """Pick a non-clobbering path under PUZZLES_DIR/. Filename is
+    `<sanitised-title>_<today>.md`; if the title is empty we fall
+    back to `<today>_<short-fen-hash>.md` so different positions
+    on the same day still get distinct files."""
+    title_slug = slugify(title)[:80].rstrip("_") if title else ""
+    if title_slug:
+        base = f"{title_slug}_{today}"
+    else:
         h = abs(hash(fen)) % 0x10000
         base = f"{today}_{h:04x}"
-    path = os.path.join(out_dir, base + ".md")
+    path = os.path.join(PUZZLES_DIR, base + ".md")
     suffix = 2
     while os.path.exists(path):
-        path = os.path.join(out_dir, f"{base}_{suffix}.md")
+        path = os.path.join(PUZZLES_DIR, f"{base}_{suffix}.md")
         suffix += 1
     return path
 
@@ -134,9 +129,8 @@ def write_archive(p: dict, kind: str, today: str) -> str:
     url   = p.get("url")   or ""
     pgn   = p.get("pgn")   or ""
 
-    out_dir = DAILY_DIR if kind == "daily" else RANDOM_DIR
-    os.makedirs(out_dir, exist_ok=True)
-    path = archive_path_for(out_dir, title, fen, today)
+    os.makedirs(PUZZLES_DIR, exist_ok=True)
+    path = archive_path_for(title, fen, today)
 
     label = "Daily" if kind == "daily" else "Random"
     lines: list[str] = []
