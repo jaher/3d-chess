@@ -26,6 +26,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -180,10 +181,28 @@ void worker_loop() {
             "[voice_tts] piper synth: \"%s\"\n", text.c_str());
         std::vector<int16_t> pcm;
         bool ok = synthesize_via_piper(text, &pcm);
+        size_t samples = pcm.size();
         std::fprintf(stderr,
             "[voice_tts] piper %s — %zu samples\n",
-            ok ? "done" : "failed", pcm.size());
-        if (ok && !pcm.empty()) audio_play_pcm(std::move(pcm));
+            ok ? "done" : "failed", samples);
+        if (ok && samples > 0) {
+            audio_play_pcm(std::move(pcm));
+            // Block the worker for the duration of playback so the
+            // next utterance's synth + audio_play_pcm doesn't fire
+            // until this one finishes. The audio mixer plays its
+            // voice slots in parallel, so without this gate two
+            // queued utterances ("Knight to f three" + "Excellent
+            // move") would overlap mid-sentence. The mixer device
+            // is opened at 22050 Hz mono, matching Piper's output,
+            // so samples / 22050 seconds is the playback length.
+            // A small tail (50 ms) guards against scheduling
+            // jitter so the next utterance doesn't start while the
+            // previous is still draining the SDL audio buffer.
+            int duration_ms =
+                static_cast<int>(samples * 1000 / 22050) + 50;
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(duration_ms));
+        }
     }
 }
 

@@ -1696,30 +1696,75 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         bool was_best = !a.prev_eval_best_uci.empty() &&
                         gs.move_history.back() == a.prev_eval_best_uci;
 
-        const char* phrase = nullptr;
-        if (was_best && cp_loss <= 10)        phrase = "Best move";
-        else if (cp_loss <= 15)               phrase = "Excellent move";
-        else if (cp_loss <= 50)               phrase = "Good move";
-        else if (cp_loss <= 100)              phrase = "Inaccuracy";
-        else if (cp_loss <= 200)              phrase = "Mistake";
-        else                                  phrase = "Blunder";
+        // Bucket the player's evaluation into losing / equal /
+        // winning so we can detect category swings — that's what
+        // Brilliant / Great / Missed-Win classifications hinge on.
+        // Boundaries follow the standard ±1 pawn convention.
+        auto categorize = [](float pawn_units) -> int {
+            if (pawn_units >  1.0f) return  1;  // winning
+            if (pawn_units < -1.0f) return -1;  // losing
+            return 0;                            // equal
+        };
+        float pe_before = white_just_moved ? eval_before : -eval_before;
+        float pe_after  = white_just_moved ? eval_after  : -eval_after;
+        int cat_before = categorize(pe_before);
+        int cat_after  = categorize(pe_after);
+        int cat_delta  = cat_after - cat_before;
 
-        // Suppress the announcement when the move resolves a
-        // mate-search overflow (eval_before or eval_after pegged
-        // at ±100 pawn-units by app_eval_ready's mate clamp).
-        // Those generate noisy classifications because the score
-        // delta is dominated by mate-distance changes, not real
-        // material loss. Speak only when both endpoints are inside
-        // the normal centipawn range.
-        bool both_normal = std::abs(eval_before) < 50.0f &&
-                           std::abs(eval_after)  < 50.0f;
-        if (phrase && both_normal) {
+        // Book move heuristic — first 8 full moves (16 plies) +
+        // a small evaluation loss is the casual definition. Real
+        // book detection needs a Polyglot opening database; this
+        // heuristic catches "you played a known opening line" for
+        // the cases that matter and stays out of the way after the
+        // opening transitions to middlegame territory.
+        bool in_opening = gs.move_history.size() <= 16;
+
+        // Missed Win: the position WAS winning before the move,
+        // and it's now equal or losing — i.e. the player threw
+        // away a winning advantage. Distinct from Mistake/Blunder
+        // because the framing matters: missing a win feels
+        // different from making a position worse from neutral.
+        bool missed_win = (cat_before ==  1) && (cat_after <  1) &&
+                          (cp_loss > 80);
+
+        // Mate-search noise suppression — when both endpoints are
+        // in mate territory on the SAME side, the cp delta is
+        // dominated by mate-distance shifts (e.g. +99 → +50 means
+        // mate-in-1 became mate-in-50, not "you blew it"). Sign
+        // flips in mate territory still classify (going from
+        // mating to being mated IS a blunder).
+        bool both_mate_same_side =
+            (eval_before * eval_after > 0.0f) &&
+            (std::abs(eval_before) >= 50.0f) &&
+            (std::abs(eval_after)  >= 50.0f);
+
+        // Pick the most-distinctive applicable label. Order
+        // matters: Book first so opening moves don't get branded
+        // "Best"; Brilliant/Great/Missed-Win next because they
+        // describe *what changed*; cp-loss thresholds last as
+        // the routine commentary.
+        const char* phrase = nullptr;
+        if (in_opening && cp_loss <= 20)        phrase = "Book move";
+        else if (was_best && cat_delta >= 2)    phrase = "Brilliant move";
+        else if (was_best && cat_delta == 1)    phrase = "Great move";
+        else if (missed_win)                    phrase = "Missed win";
+        else if (was_best && cp_loss <= 10)     phrase = "Best move";
+        else if (cp_loss <= 15)                 phrase = "Excellent move";
+        else if (cp_loss <= 50)                 phrase = "Good move";
+        else if (cp_loss <= 100)                phrase = "Inaccuracy";
+        else if (cp_loss <= 200)                phrase = "Mistake";
+        else                                    phrase = "Blunder";
+
+        if (phrase && !both_mate_same_side) {
             voice_tts_speak(phrase);
             std::fprintf(stderr,
                 "[classify] %s (cp_loss=%d, was_best=%d, "
-                "before=%.2f after=%.2f white_moved=%d)\n",
+                "before=%.2f after=%.2f cat=%d→%d ply=%zu "
+                "white_moved=%d)\n",
                 phrase, cp_loss, was_best ? 1 : 0,
                 eval_before, eval_after,
+                cat_before, cat_after,
+                gs.move_history.size(),
                 white_just_moved ? 1 : 0);
         }
     }
