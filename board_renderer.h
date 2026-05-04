@@ -65,6 +65,15 @@ void renderer_draw(GameState& gs,
                    bool cartoon_outline,
                    float shake_x = 0.0f);
 
+// Draws a thin white border around the current viewport. Called
+// after renderer_draw in multi-game mode to mark the active board
+// — the one that accepts moves and whose clock is ticking. Caller
+// must have glViewport / glScissor set to the active sub-rect
+// already; (sub_w, sub_h) drive the per-pixel border thickness in
+// NDC so the frame stays the same width regardless of quadrant
+// size.
+void renderer_draw_active_frame(int sub_w, int sub_h);
+
 // Splits the window into sub-rects per game count.
 //   N=1 → full screen.
 //   N=2 → side-by-side halves (game 0 left, game 1 right).

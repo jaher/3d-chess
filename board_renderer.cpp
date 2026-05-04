@@ -1788,6 +1788,61 @@ static void draw_game_over_overlay(const GameState& gs,
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
 
+void renderer_draw_active_frame(int sub_w, int sub_h) {
+    // 3 px thick border, drawn as four quads. Slightly inset so
+    // the lines don't bleed outside the sub-viewport when the
+    // window dims aren't evenly divisible.
+    constexpr float THICKNESS_PX = 3.0f;
+    if (sub_w <= 0 || sub_h <= 0) return;
+    float tx = THICKNESS_PX / static_cast<float>(sub_w) * 2.0f;
+    float ty = THICKNESS_PX / static_cast<float>(sub_h) * 2.0f;
+    const float L = -1.0f, R = 1.0f, B = -1.0f, T = 1.0f;
+
+    std::vector<float> v;
+    v.reserve(4 * 6 * 3);
+    auto rect = [&](float x0, float y0, float x1, float y1) {
+        v.insert(v.end(),
+            {x0,y0,0,  x1,y0,0,  x1,y1,0,
+             x0,y0,0,  x1,y1,0,  x0,y1,0});
+    };
+    rect(L,        T - ty, R,        T);          // top
+    rect(L,        B,      R,        B + ty);     // bottom
+    rect(L,        B + ty, L + tx,   T - ty);     // left
+    rect(R - tx,   B + ty, R,        T - ty);     // right
+
+    GLuint vao = 0, vbo = 0;
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                 v.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
+                          (void*)0);
+    glEnableVertexAttribArray(0);
+
+    Mat4 id = mat4_identity();
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                1.0f, 1.0f, 1.0f, 0.95f);
+
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size() / 3));
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+}
+
 void viewport_for_game(int game_idx, int N, int win_w, int win_h,
                        int& sub_x, int& sub_y,
                        int& sub_w, int& sub_h) {

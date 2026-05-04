@@ -2450,6 +2450,14 @@ static void render_board(AppState& a, int width, int height) {
                       draw_clock, clock_ms, clock_side_is_white,
                       a.cartoon_outline,
                       is_active ? a.board_shake_x : 0.0f);
+
+        // White frame around the active board so the player can
+        // tell at a glance which one accepts moves and whose clock
+        // is ticking. renderer_draw left glViewport set to the
+        // sub-rect already; scissor is still on for this iteration.
+        if (N > 1 && is_active) {
+            renderer_draw_active_frame(sub_w, sub_h);
+        }
     }
 
     if (N > 1) {
