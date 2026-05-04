@@ -31,16 +31,20 @@ namespace {
 constexpr float PG_TOGGLE_W = 0.60f;
 constexpr float PG_TOGGLE_H = 0.10f;
 constexpr float PG_TOGGLE_X = -PG_TOGGLE_W * 0.5f;
-constexpr float PG_TOGGLE_Y =  0.32f;
+constexpr float PG_TOGGLE_Y =  0.34f;
 
 // "Games:" row of [1][2][3][4] square buttons. Sits between the
 // side toggle and the time-control dropdown. Hidden in 2-player
 // and chessnut paths (forced single board).
+//
+// Vertical spacing aims for ~0.06 NDC of gap above and below this
+// row so the [1][2][3][4] buttons don't crowd the toggle above
+// or the time-control dropdown below.
 constexpr float PG_GC_BTN_SIZE = 0.085f;
 constexpr float PG_GC_GAP      = 0.025f;
 constexpr float PG_GC_ROW_W    = 4 * PG_GC_BTN_SIZE + 3 * PG_GC_GAP;
 constexpr float PG_GC_X0       = -PG_GC_ROW_W * 0.5f;
-constexpr float PG_GC_Y        =  0.17f;     // top edge of the button row
+constexpr float PG_GC_Y        =  0.14f;     // top edge of the button row
 
 // Time-control dropdown. Sits between the games-count row and the
 // ELO label. When collapsed, only the head is visible; when open, a
@@ -49,7 +53,7 @@ constexpr float PG_GC_Y        =  0.17f;     // top edge of the button row
 constexpr float PG_TC_HEAD_W =  0.60f;
 constexpr float PG_TC_HEAD_H =  0.08f;
 constexpr float PG_TC_HEAD_X = -PG_TC_HEAD_W * 0.5f;
-constexpr float PG_TC_HEAD_Y =  0.03f;
+constexpr float PG_TC_HEAD_Y = -0.06f;
 constexpr float PG_TC_ROW_H  =  0.07f;
 
 constexpr float PG_SLIDER_X_LEFT  = -0.60f;  // mirrors APP_SLIDER_NDC_LEFT
@@ -468,7 +472,7 @@ void renderer_draw_pregame(bool human_plays_white,
                       "Stockfish strength  %d", elo);
         std::string elo_label = elo_buf;
         float ew = elo_label.size() * scw * 0.7f;
-        add_screen_string(ui_verts, -ew * 0.5f, -0.12f, scw, sch, elo_label);
+        add_screen_string(ui_verts, -ew * 0.5f, -0.21f, scw, sch, elo_label);
         elo_end = static_cast<int>(ui_verts.size() / 5);
     }
 
