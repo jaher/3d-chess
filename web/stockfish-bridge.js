@@ -22,7 +22,7 @@ window.StockfishBridge = (function () {
   // handshake so the first search uses the right strength.
   let worker = null;
 
-  // Each queued entry: { kind: 'move'|'eval', fen, movetime, idx }
+  // Each queued entry: { kind: 'move'|'eval', fen, movetime, idx, game_id }
   const queue = [];
   let active = null;          // currently-running entry, or null
   let bestEval = 0;           // running best eval score for the active eval search
@@ -87,8 +87,10 @@ window.StockfishBridge = (function () {
         if (uci === '(none)' || uci === '0000') uci = '';
         // Drop the 5th promotion char; execute_move auto-queens.
         if (uci.length > 4) uci = uci.substring(0, 4);
+        const gameId = active.game_id | 0;
         finishActive(function () {
-          safe_ccall('on_ai_move_from_js', null, ['string'], [uci]);
+          safe_ccall('on_ai_move_from_js', null,
+                     ['string', 'number'], [uci, gameId]);
         });
       }
       return;
@@ -116,10 +118,11 @@ window.StockfishBridge = (function () {
         const parts = line.split(/\s+/);
         let bestUci = parts.length >= 2 ? parts[1] : '';
         if (bestUci === '(none)' || bestUci === '0000') bestUci = '';
+        const gameId = active.game_id | 0;
         finishActive(function () {
           safe_ccall('on_eval_from_js', null,
-                     ['number', 'number', 'string'],
-                     [cp, idx, bestUci]);
+                     ['number', 'number', 'string', 'number'],
+                     [cp, idx, bestUci, gameId]);
         });
       }
       return;
@@ -174,12 +177,14 @@ window.StockfishBridge = (function () {
   }
 
   return {
-    requestMove: function (fen, movetime) {
-      queue.push({ kind: 'move', fen: fen, movetime: movetime, idx: -1 });
+    requestMove: function (fen, movetime, game_id) {
+      queue.push({ kind: 'move', fen: fen, movetime: movetime, idx: -1,
+                   game_id: game_id | 0 });
       startNext();
     },
-    requestEval: function (fen, movetime, idx) {
-      queue.push({ kind: 'eval', fen: fen, movetime: movetime, idx: idx });
+    requestEval: function (fen, movetime, idx, game_id) {
+      queue.push({ kind: 'eval', fen: fen, movetime: movetime, idx: idx,
+                   game_id: game_id | 0 });
       startNext();
     },
     setElo: applyElo,

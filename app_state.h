@@ -46,14 +46,20 @@ struct AppPlatform {
 
     // Kick off an async Stockfish move request. Must return immediately.
     // When the result arrives the platform calls app_ai_move_ready().
+    // `game_id` is the index of the GameInstance in `a.games` that
+    // initiated the request — round-tripped so we can route the
+    // response back to the right game when the user has multiple
+    // parallel games in flight.
     // 'fen' is a NUL-terminated C string valid only for the duration of
     // the call.
-    void (*trigger_ai_move)(const char* fen, int movetime_ms);
+    void (*trigger_ai_move)(const char* fen, int movetime_ms, int game_id);
 
     // Kick off an async position-eval request. Result comes back via
-    // app_eval_ready(). score_index is the index in gs.score_history
-    // to overwrite when the eval arrives.
-    void (*trigger_eval)(const char* fen, int movetime_ms, int score_index);
+    // app_eval_ready(). score_index is the index in
+    // a.games[game_id].game.score_history to overwrite when the eval
+    // arrives; game_id selects which instance.
+    void (*trigger_eval)(const char* fen, int movetime_ms,
+                         int score_index, int game_id);
 
     // Set the running Stockfish engine's UCI_Elo. Takes effect on the
     // next `go`, not any currently-running search. Safe to call from
@@ -498,9 +504,10 @@ void app_render(AppState& a, int width, int height);
 // ===========================================================================
 // uci may be empty to indicate "no move produced" — in that case
 // app_state picks a random legal black move as a fallback.
-void app_ai_move_ready(AppState& a, const char* uci);
+void app_ai_move_ready(AppState& a, const char* uci, int game_id);
 void app_eval_ready(AppState& a, int cp, int score_index,
-                    const std::string& best_uci = std::string());
+                    const std::string& best_uci = std::string(),
+                    int game_id = 0);
 
 #ifndef __EMSCRIPTEN__
 // Voice push-to-talk (desktop only — SDL2 + whisper.cpp). The

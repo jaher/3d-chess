@@ -25,9 +25,10 @@
 // ---------------------------------------------------------------------------
 // Bridge into web/ai_player_web.cpp + web/voice_web.cpp
 // ---------------------------------------------------------------------------
-extern void web_request_ai_move(const std::string& fen, int movetime_ms);
+extern void web_request_ai_move(const std::string& fen, int movetime_ms,
+                                int game_id);
 extern void web_request_eval(const std::string& fen, int movetime_ms,
-                             int score_index);
+                             int score_index, int game_id);
 extern void web_set_ai_elo(int elo);
 
 extern "C" void voice_web_bind_app(AppState* a);
@@ -35,10 +36,12 @@ extern "C" void voice_web_bind_app(AppState* a);
 namespace web_ai {
     extern bool        move_ready;
     extern std::string move_uci;
+    extern int         move_game_id;
     extern bool        eval_ready;
     extern int         eval_cp;
     extern int         eval_index;
     extern std::string eval_best_uci;
+    extern int         eval_game_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,12 +105,16 @@ static int64_t plat_now_us(void) {
     return static_cast<int64_t>(emscripten_get_now() * 1000.0);
 }
 
-static void plat_trigger_ai_move(const char* fen, int movetime_ms) {
-    web_request_ai_move(fen ? std::string(fen) : std::string(), movetime_ms);
+static void plat_trigger_ai_move(const char* fen, int movetime_ms,
+                                 int game_id) {
+    web_request_ai_move(fen ? std::string(fen) : std::string(),
+                        movetime_ms, game_id);
 }
 
-static void plat_trigger_eval(const char* fen, int movetime_ms, int idx) {
-    web_request_eval(fen ? std::string(fen) : std::string(), movetime_ms, idx);
+static void plat_trigger_eval(const char* fen, int movetime_ms, int idx,
+                              int game_id) {
+    web_request_eval(fen ? std::string(fen) : std::string(),
+                     movetime_ms, idx, game_id);
 }
 
 static void plat_set_ai_elo(int elo) {
@@ -307,12 +314,13 @@ static void pump_events() {
 static void poll_ai_results() {
     if (web_ai::move_ready) {
         web_ai::move_ready = false;
-        app_ai_move_ready(g_app, web_ai::move_uci.c_str());
+        app_ai_move_ready(g_app, web_ai::move_uci.c_str(),
+                          web_ai::move_game_id);
     }
     if (web_ai::eval_ready) {
         web_ai::eval_ready = false;
         app_eval_ready(g_app, web_ai::eval_cp, web_ai::eval_index,
-                       web_ai::eval_best_uci);
+                       web_ai::eval_best_uci, web_ai::eval_game_id);
     }
 }
 

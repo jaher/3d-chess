@@ -36,27 +36,30 @@
 namespace web_ai {
     bool        move_ready = false;
     std::string move_uci;
+    int         move_game_id = 0;
 
     bool        eval_ready = false;
     int         eval_cp = 0;
     int         eval_index = -1;
     std::string eval_best_uci;  // populated alongside cp on each eval
+    int         eval_game_id = 0;
 }
 
 // ---------------------------------------------------------------------------
 // JS-side request stubs (defined in web/stockfish-bridge.js).
 // ---------------------------------------------------------------------------
-EM_JS(void, js_request_ai_move, (const char* fen, int movetime), {
+EM_JS(void, js_request_ai_move, (const char* fen, int movetime, int game_id), {
     if (typeof StockfishBridge !== 'undefined') {
-        StockfishBridge.requestMove(UTF8ToString(fen), movetime);
+        StockfishBridge.requestMove(UTF8ToString(fen), movetime, game_id);
     } else {
         console.warn('StockfishBridge not loaded; AI move dropped');
     }
 });
 
-EM_JS(void, js_request_eval, (const char* fen, int movetime, int idx), {
+EM_JS(void, js_request_eval, (const char* fen, int movetime, int idx,
+                              int game_id), {
     if (typeof StockfishBridge !== 'undefined') {
-        StockfishBridge.requestEval(UTF8ToString(fen), movetime, idx);
+        StockfishBridge.requestEval(UTF8ToString(fen), movetime, idx, game_id);
     } else {
         console.warn('StockfishBridge not loaded; eval dropped');
     }
@@ -72,18 +75,21 @@ EM_JS(void, js_set_ai_elo, (int elo), {
 // ---------------------------------------------------------------------------
 // Public C++ entry points used by main_web.cpp.
 // ---------------------------------------------------------------------------
-void web_request_ai_move(const std::string& fen, int movetime_ms) {
+void web_request_ai_move(const std::string& fen, int movetime_ms, int game_id) {
     web_ai::move_ready = false;
     web_ai::move_uci.clear();
-    js_request_ai_move(fen.c_str(), movetime_ms);
+    web_ai::move_game_id = game_id;
+    js_request_ai_move(fen.c_str(), movetime_ms, game_id);
 }
 
-void web_request_eval(const std::string& fen, int movetime_ms, int score_index) {
+void web_request_eval(const std::string& fen, int movetime_ms, int score_index,
+                      int game_id) {
     web_ai::eval_ready = false;
     web_ai::eval_cp = 0;
     web_ai::eval_index = score_index;
     web_ai::eval_best_uci.clear();
-    js_request_eval(fen.c_str(), movetime_ms, score_index);
+    web_ai::eval_game_id = game_id;
+    js_request_eval(fen.c_str(), movetime_ms, score_index, game_id);
 }
 
 void web_set_ai_elo(int elo) {
@@ -96,20 +102,22 @@ void web_set_ai_elo(int elo) {
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE
-void on_ai_move_from_js(const char* uci) {
+void on_ai_move_from_js(const char* uci, int game_id) {
     if (uci && uci[0]) {
         web_ai::move_uci = uci;
     } else {
         web_ai::move_uci.clear();
     }
+    web_ai::move_game_id = game_id;
     web_ai::move_ready = true;
 }
 
 EMSCRIPTEN_KEEPALIVE
-void on_eval_from_js(int cp, int idx, const char* best_uci) {
+void on_eval_from_js(int cp, int idx, const char* best_uci, int game_id) {
     web_ai::eval_cp = cp;
     web_ai::eval_index = idx;
     web_ai::eval_best_uci = (best_uci && *best_uci) ? best_uci : "";
+    web_ai::eval_game_id = game_id;
     web_ai::eval_ready = true;
 }
 

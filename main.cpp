@@ -50,46 +50,50 @@ static int64_t plat_now_us(void) {
 // via g_idle_add so we can safely touch GameState.
 struct AiMoveArrived {
     std::string uci;
+    int         game_id;
 };
 struct EvalArrived {
     int cp;
     int score_index;
     std::string best_uci;  // empty when engine returned (none)
+    int         game_id;
 };
 
 static gboolean on_ai_move_ready(gpointer data) {
     auto* r = static_cast<AiMoveArrived*>(data);
-    app_ai_move_ready(g_app, r->uci.c_str());
+    app_ai_move_ready(g_app, r->uci.c_str(), r->game_id);
     delete r;
     return G_SOURCE_REMOVE;
 }
 
 static gboolean on_eval_ready(gpointer data) {
     auto* r = static_cast<EvalArrived*>(data);
-    app_eval_ready(g_app, r->cp, r->score_index, r->best_uci);
+    app_eval_ready(g_app, r->cp, r->score_index, r->best_uci, r->game_id);
     delete r;
     return G_SOURCE_REMOVE;
 }
 
-static void plat_trigger_ai_move(const char* fen_c, int movetime) {
+static void plat_trigger_ai_move(const char* fen_c, int movetime,
+                                 int game_id) {
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
-    std::thread([fen, mt]() {
+    std::thread([fen, mt, game_id]() {
         (void)mt; // ask_ai_move reads CHESS_AI_MOVETIME_MS itself
         std::printf("AI thinking... FEN: %s\n", fen.c_str());
         std::string uci = ask_ai_move(fen);
-        auto* r = new AiMoveArrived{uci};
+        auto* r = new AiMoveArrived{uci, game_id};
         g_idle_add(on_ai_move_ready, r);
     }).detach();
 }
 
-static void plat_trigger_eval(const char* fen_c, int movetime, int idx) {
+static void plat_trigger_eval(const char* fen_c, int movetime, int idx,
+                              int game_id) {
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
-    std::thread([fen, mt, idx]() {
+    std::thread([fen, mt, idx, game_id]() {
         std::string best;
         int cp = stockfish_eval(fen, mt, best);
-        auto* r = new EvalArrived{cp, idx, std::move(best)};
+        auto* r = new EvalArrived{cp, idx, std::move(best), game_id};
         g_idle_add(on_eval_ready, r);
     }).detach();
 }

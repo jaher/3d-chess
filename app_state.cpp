@@ -167,14 +167,15 @@ static void trigger_ai(AppState& a) {
         }
     }
     if (a.platform && a.platform->trigger_ai_move)
-        a.platform->trigger_ai_move(fen.c_str(), movetime);
+        a.platform->trigger_ai_move(fen.c_str(), movetime, a.active_game);
 }
 
 static void trigger_eval(AppState& a, int score_index) {
     std::string fen = current_fen(cur_gs(a), cur_gs(a).white_turn);
     int movetime = env_int("CHESS_EVAL_MOVETIME_MS", 150);
     if (a.platform && a.platform->trigger_eval)
-        a.platform->trigger_eval(fen.c_str(), movetime, score_index);
+        a.platform->trigger_eval(fen.c_str(), movetime,
+                                 score_index, a.active_game);
 }
 
 // Play the appropriate SFX for a move that's already been applied to
@@ -1620,7 +1621,25 @@ static void ai_random_fallback(AppState& a) {
     start_ai_animation(a, from.first, from.second, to.first, to.second);
 }
 
-void app_ai_move_ready(AppState& a, const char* uci_c) {
+void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
+    // Multi-game mode plumbing: validate the response is for the
+    // game that's currently waiting on Stockfish. With strict
+    // sequential play we never have more than one AI in flight,
+    // and the active game IS the one whose AI we're awaiting, so a
+    // mismatch here means a stale response (user reset, mode
+    // change, etc.) and we drop it.
+    if (game_id < 0 || game_id >= (int)a.games.size()) {
+        std::fprintf(stderr,
+            "[ai] dropping response for out-of-range game_id=%d "
+            "(have %zu games)\n", game_id, a.games.size());
+        return;
+    }
+    if (game_id != a.active_game) {
+        std::fprintf(stderr,
+            "[ai] dropping response for game_id=%d (active=%d)\n",
+            game_id, a.active_game);
+        return;
+    }
     GameState& gs = cur_gs(a);
 
     // If we're not waiting for a move (e.g. user reset), drop the result.
@@ -1645,7 +1664,19 @@ void app_ai_move_ready(AppState& a, const char* uci_c) {
 }
 
 void app_eval_ready(AppState& a, int cp, int score_index,
-                    const std::string& best_uci) {
+                    const std::string& best_uci, int game_id) {
+    // Validate the response is for a real game. For N=1 game_id is
+    // always 0; for N>1 a stale response (from before a reset)
+    // gets dropped. The body still mutates cur(a) — fine because
+    // strict sequential play keeps game_id == active_game when an
+    // eval lands. If/when pipelined parallelism arrives, this
+    // function gets re-routed via a.games[game_id] explicitly.
+    if (game_id < 0 || game_id >= (int)a.games.size()) {
+        std::fprintf(stderr,
+            "[eval] dropping response for out-of-range game_id=%d\n",
+            game_id);
+        return;
+    }
     GameState& gs = cur_gs(a);
     // Drain any pending move announcement even if the eval failed
     // — the user expects to hear what the AI just played
