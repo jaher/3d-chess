@@ -39,12 +39,14 @@ TEST_CASE("puzzle_parse_string_field: unescapes \\/ and \\n") {
 
 TEST_CASE("puzzle_parse_json: full envelope, FEN required") {
     std::string body =
-        R"({"title":"Daily","url":"https://chess.com/p","fen":"k7/8 w - - 0 1"})";
+        R"({"title":"Daily","url":"https://chess.com/p","fen":"k7/8 w - - 0 1",)"
+        R"("pgn":"[Event \"Daily\"]\n\n1.e4 e5"})";
     Puzzle p;
     REQUIRE(puzzle_parse_json(body, p));
     CHECK(p.fen == "k7/8 w - - 0 1");
     CHECK(p.title == "Daily");
     CHECK(p.url   == "https://chess.com/p");
+    CHECK(p.pgn   == "[Event \"Daily\"]\n\n1.e4 e5");
 
     // Missing FEN = parse failure.
     Puzzle q;

@@ -31,11 +31,17 @@
 #include <thread>
 #include <utility>
 
+// SimpleBLE's Config.h defines `static void reset_all()` inline,
+// which trips -Wunused-function when this TU doesn't reference it.
+// Scope the suppression to the third-party header block.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include <simpleble/Adapter.h>
 #include <simpleble/Characteristic.h>
 #include <simpleble/Peripheral.h>
 #include <simpleble/Service.h>
 #include <simpleble/SimpleBLE.h>
+#pragma GCC diagnostic pop
 
 namespace {
 

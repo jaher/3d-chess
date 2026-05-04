@@ -16,6 +16,7 @@ struct Puzzle {
     std::string title;
     std::string url;
     std::string fen;     // starting position
+    std::string pgn;     // solution PGN body (kept verbatim for the archive)
 };
 
 // Pull a top-level string field's value out of a JSON body. Handles
@@ -32,3 +33,17 @@ bool puzzle_parse_string_field(const std::string& body,
 // best-effort). The caller is expected to have fetched the body
 // from /pub/puzzle or /pub/puzzle/random.
 bool puzzle_parse_json(const std::string& body, Puzzle& out);
+
+// Persist a fetched puzzle to ``puzzles/YYYY-MM-DD.md`` (relative
+// to the current working directory) in a layout that mirrors the
+// challenges/*.md format: a `name:` header, a `# url`/`# saved`
+// comment block, the FEN on its own line, and the original PGN
+// body inside a comment block so the file stays parseable as a
+// single-FEN challenge file. Idempotent: existing files are not
+// overwritten so the same daily puzzle visited twice in a session
+// only writes once. No-op on platforms without a writable working
+// directory (web build returns false unconditionally).
+//
+// Returns true when a file was created (or already existed for the
+// same date), false on directory / write failure.
+bool puzzle_archive_save(const Puzzle& p);

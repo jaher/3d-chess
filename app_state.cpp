@@ -1082,6 +1082,13 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
         queue_redraw(a);
         return;
     }
+    // Archive the daily puzzle to ./puzzles/YYYY-MM-DD.md so the
+    // user builds up a replayable history (mirrors challenges/*.md
+    // format). Skipped for /pub/puzzle/random — the auto-advance
+    // flow would otherwise spam the directory with one file per
+    // post-solve fetch.
+    if (daily) puzzle_archive_save(p);
+
     a.games.assign(1, GameInstance{});
     a.active_game = 0;
     apply_fen_to_state(cur_gs(a), parsed);

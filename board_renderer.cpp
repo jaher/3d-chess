@@ -84,12 +84,20 @@ static int    g_scene_fbo_h      = 0;
 // process can sample the result) or directly into the default FB
 // (no outline) before UI overlays draw. GtkGLArea doesn't expose
 // MSAA on the default FB, so we get it via a custom MS RBO.
+//
+// Web (Emscripten/WebGL2) skips this entirely — the browser canvas
+// already provides MSAA via the antialias=true context attribute,
+// and a custom MS FBO has format-compatibility issues with the
+// default FB. The whole MS block is gated out so we don't trip
+// -Wunused-function on the wasm build.
+#ifndef __EMSCRIPTEN__
 static GLuint g_scene_ms_fbo       = 0;
 static GLuint g_scene_ms_color_rbo = 0;
 static GLuint g_scene_ms_depth_rbo = 0;
 static int    g_scene_ms_fbo_w     = 0;
 static int    g_scene_ms_fbo_h     = 0;
 constexpr int kSceneMSAASamples    = 4;
+#endif
 // Two-triangle NDC fullscreen quad, reused by the outline pass.
 static GLuint g_fullscreen_vao   = 0;
 static GLuint g_fullscreen_vbo   = 0;
@@ -139,6 +147,8 @@ static void ensure_scene_fbo(int w, int h) {
 // depth are renderbuffers (we never sample them as textures —
 // the resolve pass blits into the single-sample g_scene_fbo /
 // default FB, which is what the outline shader / display read).
+// Desktop-only — see the global-state block above for why.
+#ifndef __EMSCRIPTEN__
 static void ensure_scene_ms_fbo(int w, int h) {
     if (w <= 0) w = 1;
     if (h <= 0) h = 1;
@@ -191,6 +201,7 @@ static void resolve_scene_ms_to(GLuint dst_fbo,
                       mask, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
 }
+#endif  // __EMSCRIPTEN__
 
 // Run the cartoon-outline post-process. The caller is expected to
 // have just drawn the 3D scene into g_scene_fbo; this binds the

@@ -139,22 +139,28 @@ EM_JS(void, js_request_puzzle, (int daily), {
     var url = daily
         ? 'https://api.chess.com/pub/puzzle'
         : 'https://api.chess.com/pub/puzzle/random';
-    fetch(url, { cache: 'no-store' })
-        .then(function (r) { return r.ok ? r.text() : ''; })
+    // Note: this body is double-tokenised — first by the C++
+    // preprocessor (which interprets the EM_JS macro), then by the
+    // browser's JS engine. JS would accept '' as an empty string
+    // but the C++ preprocessor warns about it as an empty char
+    // constant ([-Winvalid-pp-token]); use double-quoted "" since
+    // both languages treat it as an empty string.
+    fetch(url, { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.text() : ""; })
         .then(function (body) {
             try {
-                Module.ccall('on_puzzle_from_js', null,
-                             ['string', 'number'],
-                             [body || '', daily ? 1 : 0]);
+                Module.ccall("on_puzzle_from_js", null,
+                             ["string", "number"],
+                             [body || "", daily ? 1 : 0]);
             } catch (e) {
-                console.error('[puzzle] ccall failed:', e);
+                console.error("[puzzle] ccall failed:", e);
             }
         })
         .catch(function (e) {
-            console.warn('[puzzle] fetch failed:', e);
+            console.warn("[puzzle] fetch failed:", e);
             try {
-                Module.ccall('on_puzzle_from_js', null,
-                             ['string', 'number'], ['', daily ? 1 : 0]);
+                Module.ccall("on_puzzle_from_js", null,
+                             ["string", "number"], ["", daily ? 1 : 0]);
             } catch (_) {}
         });
 });
