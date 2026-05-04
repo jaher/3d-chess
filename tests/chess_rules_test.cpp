@@ -629,6 +629,21 @@ TEST_CASE("generate_legal_moves: ep capture NOT offered when ep target is unset"
     CHECK_FALSE(found_d6);
 }
 
+TEST_CASE("execute_move: c3 to c4 single-step does NOT set ep target") {
+    // Regression — user reported "I moved a pawn c3->c4 and Stockfish
+    // played bxc3 the next ply." That capture is only legal as an en
+    // passant if c3 is the ep target square, which means the WHITE
+    // pawn made a double-push c2-c4 (not a single step from c3). This
+    // test pins down: a single-step c3->c4 must leave ep_target = -1
+    // so the enemy can't ep-capture onto an empty c3.
+    GameState gs = state_from_fen("4k3/8/8/8/8/2P5/8/4K3 w - - 0 1");
+    REQUIRE(gs.ep_target_col == -1);
+    REQUIRE(gs.ep_target_row == -1);
+    execute_move(gs, col_of('c'), row_of('3'), col_of('c'), row_of('4'));
+    CHECK(gs.ep_target_col == -1);
+    CHECK(gs.ep_target_row == -1);
+}
+
 TEST_CASE("execute_move: en passant capture removes the bypassed pawn") {
     GameState gs = state_from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
     int alive_before = 0;
