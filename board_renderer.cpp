@@ -1850,18 +1850,26 @@ void viewport_for_game(int game_idx, int N, int win_w, int win_h,
         sub_x = 0; sub_y = 0; sub_w = win_w; sub_h = win_h;
         return;
     }
+    int half_w = win_w / 2;
+    int half_h = win_h / 2;
     if (N == 2) {
-        // Side-by-side halves; game 0 = left, game 1 = right.
-        int half = win_w / 2;
-        if (game_idx == 0) { sub_x = 0;    sub_y = 0; sub_w = half;        sub_h = win_h; }
-        else               { sub_x = half; sub_y = 0; sub_w = win_w - half; sub_h = win_h; }
+        // Stacked left column: game 0 = top-left, game 1 = bottom-
+        // left. Two wide vertical bands felt ugly at typical
+        // window aspect ratios — keeping the per-board aspect
+        // closer to square (i.e. quadrant-sized) reads better and
+        // matches the per-board footprint at N=3/4.
+        if (game_idx == 0) {
+            sub_x = 0; sub_y = half_h;
+            sub_w = half_w; sub_h = win_h - half_h;
+        } else {
+            sub_x = 0; sub_y = 0;
+            sub_w = half_w; sub_h = half_h;
+        }
         return;
     }
     // N == 3 or 4: 2x2 grid. Indexing top-left, top-right, bottom-left,
     // bottom-right. GL y goes bottom-up, so the top row sits at sub_y =
     // win_h/2 and the bottom row at sub_y = 0.
-    int half_w = win_w / 2;
-    int half_h = win_h / 2;
     int idx = game_idx;
     bool right  = (idx == 1) || (idx == 3);
     bool bottom = (idx == 2) || (idx == 3);
