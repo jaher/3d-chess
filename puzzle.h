@@ -34,6 +34,33 @@ bool puzzle_parse_string_field(const std::string& body,
 // from /pub/puzzle or /pub/puzzle/random.
 bool puzzle_parse_json(const std::string& body, Puzzle& out);
 
+#include <vector>
+
+// Convert the SAN move list embedded in a chess.com puzzle PGN
+// body into a sequence of UCI strings, given the puzzle's
+// starting FEN. The implementation is brute-force-by-comparison:
+// for each SAN token, we generate every legal move at the
+// current position, compute its SAN via uci_to_algebraic, and
+// match. This avoids having to write a full SAN parser at the
+// cost of an O(legal-moves) loop per ply — fine since chess.com
+// solution lines are typically <10 plies.
+//
+// Returns an empty vector if any of the following hold:
+//   * pgn is empty / contains no SAN tokens after stripping
+//     headers, comments, NAGs, variations, the result token and
+//     move numbers;
+//   * fen fails to parse;
+//   * any SAN token has no matching legal move at its turn — we
+//     bail rather than half-fill the list, since downstream
+//     consumers want "trust the line or don't trust anything."
+//
+// The puzzle play flow uses this to drive Stockfish-free move
+// playback while the user follows the canonical line; the moment
+// the user diverges from it, the caller falls back to a regular
+// Stockfish bestmove for the AI's reply.
+std::vector<std::string> puzzle_parse_solution_uci(const std::string& fen,
+                                                   const std::string& pgn);
+
 // Persist a fetched puzzle to ``puzzles/YYYY-MM-DD.md`` (relative
 // to the current working directory) in a layout that mirrors the
 // challenges/*.md format: a `name:` header, a `# url`/`# saved`

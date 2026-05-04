@@ -401,6 +401,14 @@ static int pick_piece(const AppState& a, double mx, double my,
 // ===========================================================================
 // Board click handling
 // ===========================================================================
+// Forward declarations for AI helpers used inside the puzzle
+// branch of handle_board_click — implementations live with the
+// rest of the AI dispatch further down.
+static bool is_legal_ai_move(const AppState& a,
+                             int fc, int fr, int tc, int tr);
+static void start_ai_animation(AppState& a,
+                               int fc, int fr, int tc, int tr);
+
 static void handle_board_click(AppState& a, double mx, double my,
                                int width, int height) {
     GameState& gs = cur_gs(a);
@@ -649,11 +657,28 @@ static void handle_board_click(AppState& a, double mx, double my,
                         audio_play(SoundEffect::Mistake);
                     }
                 } else if (is_puzzle) {
-                    // No validation: the user plays whatever they
-                    // want and Stockfish always replies with its
-                    // best move from the resulting position. The
-                    // post-AI eval (kicked from tick_ai_animation)
-                    // is what decides whether the puzzle is solved.
+                    // First, see whether the user followed the
+                    // canonical solution line. A 4-char-prefix
+                    // match accepts user moves that lack the
+                    // promotion suffix (the executor auto-queens).
+                    std::string user_uci = gs.move_history.empty()
+                        ? std::string()
+                        : gs.move_history.back();
+                    auto trim4 = [](const std::string& s) {
+                        return s.size() >= 4 ? s.substr(0, 4) : s;
+                    };
+                    if (a.puzzle_on_book &&
+                        a.puzzle_solution_index < a.puzzle_solution_uci.size()) {
+                        const std::string& expected =
+                            a.puzzle_solution_uci[a.puzzle_solution_index];
+                        if (trim4(user_uci) == trim4(expected)) {
+                            a.puzzle_solution_index++;
+                        } else {
+                            // Off-line — fall back to Stockfish for
+                            // every remaining AI reply this puzzle.
+                            a.puzzle_on_book = false;
+                        }
+                    }
                     if (gs.game_over) {
                         a.puzzle_solved = true;
                         bool user_won = a.human_plays_white
@@ -669,6 +694,32 @@ static void handle_board_click(AppState& a, double mx, double my,
                             a.puzzle_loading = true;
                             a.platform->trigger_puzzle_fetch(
                                 /*daily=*/false);
+                        }
+                    } else if (a.puzzle_on_book &&
+                               a.puzzle_solution_index <
+                                   a.puzzle_solution_uci.size()) {
+                        // Play the next canned move from the PGN
+                        // line — bypasses Stockfish entirely. The
+                        // animation pipeline handles game-over
+                        // detection at completion in
+                        // tick_ai_animation, same as a Stockfish
+                        // move would.
+                        const std::string& canned =
+                            a.puzzle_solution_uci[a.puzzle_solution_index];
+                        int fc, fr, tc, tr;
+                        if (parse_uci_move(canned, fc, fr, tc, tr) &&
+                            is_legal_ai_move(a, fc, fr, tc, tr)) {
+                            a.puzzle_solution_index++;
+                            set_status(a, "Following the solution line.");
+                            start_ai_animation(a, fc, fr, tc, tr);
+                        } else {
+                            // Solution UCI no longer applies (e.g.
+                            // an earlier mismatch took us off-book
+                            // and the position drifted): give up
+                            // on the canned line and ask Stockfish.
+                            a.puzzle_on_book = false;
+                            set_status(a, "Stockfish is thinking…");
+                            trigger_ai(a);
                         }
                     } else {
                         set_status(a, "Stockfish is thinking…");
@@ -1102,6 +1153,14 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
     a.puzzle_solved        = false;
     a.puzzle_load_failed   = false;
     cur_gs(a).analysis_mode = false;
+
+    // Canonical solution from chess.com's PGN — parse once at
+    // load time. If parsing fails or the body is empty,
+    // puzzle_on_book stays false and the AI flow goes straight
+    // to Stockfish bestmoves.
+    a.puzzle_solution_uci   = puzzle_parse_solution_uci(p.fen, p.pgn);
+    a.puzzle_solution_index = 0;
+    a.puzzle_on_book        = !a.puzzle_solution_uci.empty();
 
     std::string status = daily ? "Puzzle of the Day"
                                : "Puzzle";

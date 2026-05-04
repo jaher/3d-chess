@@ -1,8 +1,14 @@
 #include "puzzle.h"
 
+#include "ai_player.h"     // move_to_uci, parse_uci_move
+#include "challenge.h"     // parse_fen, apply_fen_to_state, ParsedFEN
+#include "chess_rules.h"   // generate_legal_moves, uci_to_algebraic, execute_move
+#include "chess_types.h"
+
 #include <cctype>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -74,6 +80,156 @@ bool puzzle_parse_json(const std::string& body, Puzzle& out) {
     puzzle_parse_string_field(body, "url",   out.url);
     puzzle_parse_string_field(body, "pgn",   out.pgn);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// PGN solution parser
+// ---------------------------------------------------------------------------
+namespace {
+
+// Strip suffixes that uci_to_algebraic doesn't emit (annotation
+// chars, NAG markers) and unify "0-0" with "O-O" so the output of
+// uci_to_algebraic matches the input SAN by literal-string equality.
+std::string normalize_san(std::string s) {
+    for (auto& c : s) {
+        if (c == '0') c = 'O';   // some PGNs spell castling with zeros
+    }
+    while (!s.empty()) {
+        char c = s.back();
+        if (c == '!' || c == '?') s.pop_back();
+        else break;
+    }
+    return s;
+}
+
+bool is_pgn_skippable(const std::string& tok) {
+    if (tok.empty()) return true;
+    // Result tokens.
+    if (tok == "1-0" || tok == "0-1" || tok == "1/2-1/2" || tok == "*") return true;
+    // Move-number tokens: "1.", "1...", "12." — all-digit with at
+    // least one '.', no SAN content.
+    bool has_digit = false;
+    for (char c : tok) {
+        if (std::isdigit(static_cast<unsigned char>(c))) { has_digit = true; continue; }
+        if (c == '.') continue;
+        return false;
+    }
+    return has_digit;
+}
+
+// Tokenise a PGN body into SAN move strings, dropping headers
+// `[Tag "value"]`, comments `{...}`, recursive variations `(...)`,
+// NAGs `$N`, move numbers, and the result token.
+std::vector<std::string> tokenize_pgn(const std::string& pgn) {
+    std::vector<std::string> raw;
+    std::string buf;
+    int paren = 0, brace = 0;
+    bool in_header = false;
+    auto flush = [&]() {
+        if (!buf.empty()) {
+            raw.push_back(buf);
+            buf.clear();
+        }
+    };
+    for (size_t i = 0; i < pgn.size(); ++i) {
+        char c = pgn[i];
+        if (in_header) {
+            if (c == ']') in_header = false;
+            continue;
+        }
+        // PGN headers always sit at the start of a line.
+        if (c == '[' && (i == 0 || pgn[i - 1] == '\n')) {
+            flush();
+            in_header = true;
+            continue;
+        }
+        if (c == '{') { flush(); ++brace; continue; }
+        if (c == '}') { if (brace) --brace; continue; }
+        if (brace > 0) continue;
+        if (c == '(') { flush(); ++paren; continue; }
+        if (c == ')') { if (paren) --paren; continue; }
+        if (paren > 0) continue;
+        if (c == '$') {
+            flush();
+            // Skip until next whitespace.
+            while (i + 1 < pgn.size() &&
+                   !std::isspace(static_cast<unsigned char>(pgn[i + 1]))) {
+                ++i;
+            }
+            continue;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            flush();
+            continue;
+        }
+        buf.push_back(c);
+    }
+    flush();
+    std::vector<std::string> out;
+    out.reserve(raw.size());
+    for (auto& t : raw) {
+        if (!is_pgn_skippable(t)) out.push_back(normalize_san(t));
+    }
+    return out;
+}
+
+// Find the legal move at the current position whose SAN matches
+// `target_san`. Returns the move's UCI on hit, empty string on
+// miss / ambiguous match.
+std::string san_to_uci_brute(GameState& gs, const std::string& target_san) {
+    BoardSnapshot snap;
+    snap.pieces        = gs.pieces;
+    snap.white_turn    = gs.white_turn;
+    snap.castling      = gs.castling;
+    snap.ep_target_col = gs.ep_target_col;
+    snap.ep_target_row = gs.ep_target_row;
+
+    std::string match;
+    int hits = 0;
+    for (const auto& p : gs.pieces) {
+        if (!p.alive) continue;
+        if (p.is_white != gs.white_turn) continue;
+        auto moves = generate_legal_moves(gs, p.col, p.row);
+        for (const auto& [tc, tr] : moves) {
+            std::string uci = move_to_uci(p.col, p.row, tc, tr);
+            std::string san = normalize_san(uci_to_algebraic(snap, uci));
+            if (san == target_san) {
+                match = uci;
+                ++hits;
+            }
+        }
+    }
+    return hits == 1 ? match : std::string();
+}
+
+}  // namespace
+
+std::vector<std::string> puzzle_parse_solution_uci(const std::string& fen,
+                                                   const std::string& pgn) {
+    std::vector<std::string> out;
+    if (pgn.empty()) return out;
+    ParsedFEN parsed = parse_fen(fen);
+    if (!parsed.valid) return out;
+
+    GameState gs;
+    apply_fen_to_state(gs, parsed);
+
+    auto sans = tokenize_pgn(pgn);
+    out.reserve(sans.size());
+    for (const auto& san : sans) {
+        std::string uci = san_to_uci_brute(gs, san);
+        if (uci.empty()) {
+            // Couldn't pin the SAN down to a single legal move — bail
+            // so the caller falls back to Stockfish from the start
+            // rather than playing a half-line.
+            return {};
+        }
+        int fc, fr, tc, tr;
+        if (!parse_uci_move(uci, fc, fr, tc, tr)) return {};
+        execute_move(gs, fc, fr, tc, tr);
+        out.push_back(std::move(uci));
+    }
+    return out;
 }
 
 #ifndef __EMSCRIPTEN__
