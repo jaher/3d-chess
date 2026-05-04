@@ -140,6 +140,19 @@ def archive_path_for(title: str, fen: str, url: str, today: str) -> str:
     return path
 
 
+_PGN_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*$", re.MULTILINE)
+
+
+def pgn_move_list(pgn: str) -> str:
+    """Strip `[Tag "value"]` headers from a PGN body and collapse
+    whitespace to one line. The result is the SAN move sequence
+    (e.g. "1. e4 e5 2. Nf3 *") that we store under `solution:`."""
+    if not pgn:
+        return ""
+    body = _PGN_TAG_RE.sub("", pgn)
+    return " ".join(body.split())
+
+
 def write_archive(p: dict, kind: str, today: str) -> str:
     fen   = p["fen"]
     title = p.get("title") or ""
@@ -150,26 +163,22 @@ def write_archive(p: dict, kind: str, today: str) -> str:
     path = archive_path_for(title, fen, url, today)
 
     label = "Daily" if kind == "daily" else "Random"
+    moves = pgn_move_list(pgn)
     lines: list[str] = []
     lines.append(f"# Chess.com {label} Puzzle archive")
     lines.append("#")
     lines.append(f"# Fetched on {today} by tools/fetch_daily_puzzle.py")
-    if title:
-        lines.append(f"# title: {title}")
-    if url:
-        lines.append(f"# url:   {url}")
     lines.append("")
     if title:
         lines.append(f"name: {title}")
-        lines.append("")
+    if url:
+        lines.append(f"url: {url}")
+    lines.append("")
     lines.append("type: puzzle")
     lines.append(f"side: {side_from_fen(fen)}")
     lines.append(fen)
-    if pgn:
-        lines.append("")
-        lines.append("# --- Solution PGN (chess.com) ---")
-        for pgn_line in pgn.splitlines():
-            lines.append(f"# {pgn_line}".rstrip())
+    if moves:
+        lines.append(f"solution: {moves}")
 
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

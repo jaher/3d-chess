@@ -99,6 +99,31 @@ TEST_CASE("puzzle_parse_solution_uci: queenside castling notation parses") {
     CHECK(out[1] == "e8c8");
 }
 
+TEST_CASE("puzzle_parse_solution_uci: strips glued move-number prefixes") {
+    // chess.com sometimes serialises the move list without a space
+    // between the move number and the SAN ("1...Nh3+" instead of
+    // "1... Nh3+"). The tokenizer must still turn each entry into
+    // a clean SAN before brute-force matching, otherwise no legal
+    // move starts with "1...".
+    auto out = puzzle_parse_solution_uci(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "1.e4 e5 2.Nf3 Nc6");
+    REQUIRE(out.size() == 4);
+    CHECK(out[0] == "e2e4");
+    CHECK(out[1] == "e7e5");
+    CHECK(out[2] == "g1f3");
+    CHECK(out[3] == "b8c6");
+
+    // And the same with a black-side prefix.
+    auto out2 = puzzle_parse_solution_uci(
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "1...e5 2.Nf3 Nc6");
+    REQUIRE(out2.size() == 3);
+    CHECK(out2[0] == "e7e5");
+    CHECK(out2[1] == "g1f3");
+    CHECK(out2[2] == "b8c6");
+}
+
 TEST_CASE("puzzle_parse_solution_uci: bails out on illegal SAN") {
     // After 1.e4 e5 2.Nf3 it's black to move; "Nf6" is legal but
     // "Nz9" isn't. The parser must bail rather than half-fill.

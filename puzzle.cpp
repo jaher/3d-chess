@@ -87,12 +87,24 @@ bool puzzle_parse_json(const std::string& body, Puzzle& out) {
 // ---------------------------------------------------------------------------
 namespace {
 
-// Strip suffixes that uci_to_algebraic doesn't emit (annotation
-// chars, NAG markers) and unify "0-0" with "O-O" so the output of
-// uci_to_algebraic matches the input SAN by literal-string equality.
+// Strip suffixes / prefixes that uci_to_algebraic doesn't emit so
+// the input SAN can be compared by literal-string equality:
+//   * Leading move-number prefix `\d+\.+` (e.g. "1.Nh3", "12...Kh2"
+//     — chess.com sometimes glues the move number to the SAN
+//     without whitespace).
+//   * Trailing annotation chars `!` / `?`.
+//   * "0-0" / "0-0-0" → "O-O" / "O-O-O" (some PGNs use zeros).
 std::string normalize_san(std::string s) {
+    // Strip leading "<digits>(.+)" run.
+    size_t i = 0;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) ++i;
+    size_t dots = i;
+    while (dots < s.size() && s[dots] == '.') ++dots;
+    if (dots > i && i > 0) {
+        s.erase(0, dots);
+    }
     for (auto& c : s) {
-        if (c == '0') c = 'O';   // some PGNs spell castling with zeros
+        if (c == '0') c = 'O';
     }
     while (!s.empty()) {
         char c = s.back();
@@ -325,20 +337,37 @@ bool fen_already_archived(const std::string& fen) {
     return found;
 }
 
-// Indent every line of `body` with "# " so it becomes a comment
-// block in the saved .md file. Empty lines stay empty (no trailing
-// space).
-std::string indent_as_comment(const std::string& body) {
+// Strip PGN tag-pair headers (`[Tag "value"]` lines) from a PGN
+// body and join everything else into a single whitespace-collapsed
+// line — what we store as the `solution:` field. The result keeps
+// the original SAN sequence intact (e.g. "1. g5 Qh8 2. Qf1+ Ka5
+// ...") and is short enough to live on one line for typical
+// chess.com puzzles.
+std::string pgn_extract_move_list(const std::string& pgn) {
     std::string out;
-    out.reserve(body.size() + 32);
-    bool at_line_start = true;
-    for (char c : body) {
-        if (at_line_start) {
-            if (c != '\n') out += "# ";
-            at_line_start = false;
+    out.reserve(pgn.size());
+    size_t i = 0;
+    bool need_space = false;
+    while (i < pgn.size()) {
+        // Skip `[ ... ]` tag pairs that sit at the start of a line.
+        if (pgn[i] == '[' && (i == 0 || pgn[i - 1] == '\n')) {
+            while (i < pgn.size() && pgn[i] != ']') ++i;
+            if (i < pgn.size() && pgn[i] == ']') ++i;
+            // Eat the trailing newline that follows a tag.
+            while (i < pgn.size() && (pgn[i] == '\n' || pgn[i] == '\r')) ++i;
+            continue;
+        }
+        char c = pgn[i++];
+        if (c == '\r') continue;
+        if (c == '\n' || c == '\t' || c == ' ') {
+            if (!out.empty()) need_space = true;
+            continue;
+        }
+        if (need_space) {
+            out += ' ';
+            need_space = false;
         }
         out += c;
-        if (c == '\n') at_line_start = true;
     }
     return out;
 }
@@ -419,28 +448,39 @@ bool puzzle_archive_save(const Puzzle& p) {
                      path.c_str());
         return false;
     }
+    // Format:
+    //   # comment header (provenance)
+    //
+    //   name: <title>
+    //   url: <chess.com URL>
+    //
+    //   type: puzzle
+    //   side: white|black
+    //   <FEN>
+    //   solution: <PGN move list on one line>
+    //
+    // url and solution are top-level key:value lines now (instead
+    // of being buried in comments) so a downstream tool can parse
+    // them with a one-line awk/grep — same shape as `name:` /
+    // `type:` / `side:`.
     std::fprintf(f,
         "# Chess.com Daily Puzzle archive\n"
         "#\n"
-        "# Fetched on %s.\n",
+        "# Fetched on %s.\n\n",
         today.c_str());
-    if (!p.title.empty()) std::fprintf(f, "# title: %s\n", p.title.c_str());
-    if (!p.url.empty())   std::fprintf(f, "# url:   %s\n", p.url.c_str());
+
+    if (!p.title.empty()) std::fprintf(f, "name: %s\n", p.title.c_str());
+    if (!p.url.empty())   std::fprintf(f, "url: %s\n",  p.url.c_str());
     std::fprintf(f, "\n");
 
-    if (!p.title.empty()) {
-        std::fprintf(f, "name: %s\n\n", p.title.c_str());
-    }
     std::fprintf(f, "type: puzzle\n");
     std::fprintf(f, "side: %s\n", fen_side(p.fen).c_str());
     std::fprintf(f, "%s\n", p.fen.c_str());
 
     if (!p.pgn.empty()) {
-        std::fprintf(f, "\n# --- Solution PGN (chess.com) ---\n");
-        std::string commented = indent_as_comment(p.pgn);
-        std::fputs(commented.c_str(), f);
-        if (!commented.empty() && commented.back() != '\n') {
-            std::fputc('\n', f);
+        std::string moves = pgn_extract_move_list(p.pgn);
+        if (!moves.empty()) {
+            std::fprintf(f, "solution: %s\n", moves.c_str());
         }
     }
     std::fclose(f);
@@ -500,28 +540,43 @@ bool puzzle_load_from_md(const std::string& path, Puzzle& out) {
     std::ifstream f(path);
     if (!f.is_open()) return false;
     std::string line;
-    bool in_pgn = false;
+    // Backward-compat for older files that still carry the comment-
+    // block PGN: when we hit "--- Solution PGN ---" inside a
+    // comment, append every subsequent comment line to out.pgn.
+    bool in_legacy_pgn_block = false;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty()) continue;
+        if (line.empty()) {
+            in_legacy_pgn_block = false;
+            continue;
+        }
         if (line[0] == '#') {
             std::string s = md_strip_hash(line);
-            if (in_pgn) {
+            if (in_legacy_pgn_block) {
                 if (!out.pgn.empty()) out.pgn += '\n';
                 out.pgn += s;
                 continue;
             }
-            if (md_starts_with(s, "url:")) {
+            // Legacy comment-style url / title (older archive files).
+            if (out.url.empty() && md_starts_with(s, "url:")) {
                 out.url = md_trim(s.substr(4));
-            } else if (md_starts_with(s, "title:") && out.title.empty()) {
+            } else if (out.title.empty() && md_starts_with(s, "title:")) {
                 out.title = md_trim(s.substr(6));
             } else if (s.find("Solution PGN") != std::string::npos) {
-                in_pgn = true;
+                in_legacy_pgn_block = true;
             }
             continue;
         }
+        // Top-level key:value lines — the new parsable format.
         if (md_starts_with(line, "name:")) {
             out.title = md_trim(line.substr(5));
+        } else if (md_starts_with(line, "url:")) {
+            out.url = md_trim(line.substr(4));
+        } else if (md_starts_with(line, "solution:")) {
+            // Single-line move list. Overwrites any legacy PGN block
+            // we picked up earlier so the new format wins on files
+            // that for some reason carry both.
+            out.pgn = md_trim(line.substr(9));
         } else if (md_starts_with(line, "type:") ||
                    md_starts_with(line, "side:")) {
             // Derivable from FEN — ignore.
