@@ -1774,7 +1774,11 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         else if (was_best && cp_loss <= 10)     phrase = "Best move";
         else if (cp_loss <= 15)                 phrase = "Excellent move";
         else if (cp_loss <= 50)                 phrase = "Good move";
-        else if (cp_loss <= 100)                phrase = "Inaccuracy";
+        // Inaccuracy band (50 < cp_loss ≤ 100): intentionally
+        // silent. Per user preference, we don't call out small
+        // concessions — only Good and the louder Mistake/Blunder
+        // labels speak. The move text alone still gets announced.
+        else if (cp_loss <= 100)                phrase = nullptr;
         else if (cp_loss <= 200)                phrase = "Mistake";
         else                                    phrase = "Blunder";
 

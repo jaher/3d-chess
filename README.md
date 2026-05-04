@@ -191,7 +191,7 @@ centipawn delta between the eval before and after the move:
 | Best move        |     ≤10 | Exact match for Stockfish's bestmove |
 | Excellent move   |     ≤15 | Within a sliver of best |
 | Good move        |     ≤50 | Solid, doesn't move the eval much |
-| Inaccuracy       |    ≤100 | Small but real concession |
+| *(silent)*       |    ≤100 | Inaccuracy band — move text only, no label |
 | Mistake          |    ≤200 | Noticeable advantage given up |
 | Blunder          |    >200 | Massive eval swing |
 
