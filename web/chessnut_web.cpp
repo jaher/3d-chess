@@ -312,12 +312,12 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         // Phantom: per-move ASCII MOVE_CMD; no full-position-set
         // primitive. Force-syncs (game start / reset) are no-ops.
         if (force) return;
-        if (a.game.move_history.empty()) return;
-        const std::string& uci = a.game.move_history.back();
+        if (cur_gs(a).move_history.empty()) return;
+        const std::string& uci = cur_gs(a).move_history.back();
         int fc = -1, fr = -1, tc = -1, tr = -1;
         if (!parse_uci_move(uci, fc, fr, tc, tr)) return;
         bool capture = false;
-        const auto& snaps = a.game.snapshots;
+        const auto& snaps = cur_gs(a).snapshots;
         if (snaps.size() >= 2) {
             int n_before = 0, n_after = 0;
             for (const auto& p : snaps[snaps.size() - 2].pieces)

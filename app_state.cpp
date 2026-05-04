@@ -88,7 +88,7 @@ int env_int(const char* name, int fallback) {
 // Status text formatting
 // ===========================================================================
 static void refresh_play_status(AppState& a) {
-    const GameState& gs = a.game;
+    const GameState& gs = cur_gs(a);
     if (gs.ai_thinking) {
         set_status(a, "3D Chess — AI thinking...");
         return;
@@ -116,7 +116,7 @@ static void refresh_play_status(AppState& a) {
 }
 
 static void refresh_analysis_status(AppState& a) {
-    const GameState& gs = a.game;
+    const GameState& gs = cur_gs(a);
     int total = static_cast<int>(gs.snapshots.size()) - 1;
     char buf[160];
     if (gs.analysis_index == 0) {
@@ -136,7 +136,7 @@ static void refresh_analysis_status(AppState& a) {
 }
 
 void app_refresh_status(AppState& a) {
-    if (a.game.analysis_mode) refresh_analysis_status(a);
+    if (cur_gs(a).analysis_mode) refresh_analysis_status(a);
     else                       refresh_play_status(a);
 }
 
@@ -144,12 +144,12 @@ void app_refresh_status(AppState& a) {
 // Async AI / eval dispatch (through the platform)
 // ===========================================================================
 static void trigger_ai(AppState& a) {
-    a.game.ai_thinking = true;
+    cur_gs(a).ai_thinking = true;
     set_status(a, "3D Chess — AI thinking...");
     queue_redraw(a);
     // Pass the actual current side-to-move; Stockfish plays whichever
     // side the human isn't.
-    std::string fen = current_fen(a.game, a.game.white_turn);
+    std::string fen = current_fen(cur_gs(a), cur_gs(a).white_turn);
     // Move time: an explicit env var override wins; otherwise use
     // ~1/30 of the AI's own remaining clock, clamped so bullet is
     // responsive (≤2s) and classical doesn't drag (≤3s). In
@@ -159,8 +159,8 @@ static void trigger_ai(AppState& a) {
         if (!a.clock_enabled) {
             movetime = 800;
         } else {
-            int64_t ai_ms = a.human_plays_white ? a.black_ms_left
-                                                : a.white_ms_left;
+            int64_t ai_ms = a.human_plays_white ? cur(a).black_ms_left
+                                                : cur(a).white_ms_left;
             movetime = static_cast<int>(ai_ms / 30);
             if (movetime < 200)  movetime = 200;
             if (movetime > 3000) movetime = 3000;
@@ -171,7 +171,7 @@ static void trigger_ai(AppState& a) {
 }
 
 static void trigger_eval(AppState& a, int score_index) {
-    std::string fen = current_fen(a.game, a.game.white_turn);
+    std::string fen = current_fen(cur_gs(a), cur_gs(a).white_turn);
     int movetime = env_int("CHESS_EVAL_MOVETIME_MS", 150);
     if (a.platform && a.platform->trigger_eval)
         a.platform->trigger_eval(fen.c_str(), movetime, score_index);
@@ -327,7 +327,7 @@ static int pick_piece(const AppState& a, double mx, double my,
     float ro[3], rd[3];
     if (!screen_ray(a, mx, my, width, height, ro, rd)) return -1;
 
-    const GameState& gs = a.game;
+    const GameState& gs = cur_gs(a);
     const float deg2rad = static_cast<float>(M_PI) / 180.0f;
     const float rot_z_to_y = -90.0f * deg2rad;
 
@@ -401,7 +401,7 @@ static int pick_piece(const AppState& a, double mx, double my,
 // ===========================================================================
 static void handle_board_click(AppState& a, double mx, double my,
                                int width, int height) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     bool is_challenge = (a.mode == MODE_CHALLENGE);
     bool is_normal_game = (a.mode == MODE_PLAYING);
 
@@ -478,7 +478,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                 gs.valid_moves.clear();
                 gs.hint_from_col = gs.hint_from_row = -1;
                 gs.hint_to_col   = gs.hint_to_row   = -1;
-                a.hint_confirm_pending = false;
+                cur(a).hint_confirm_pending = false;
                 play_move_sfx(gs, sfx_capture);
                 // Stash the move announcement for app_eval_ready
                 // to speak alongside the classification — single
@@ -486,9 +486,9 @@ static void handle_board_click(AppState& a, double mx, double my,
                 // happens when the audio mixer plays two queued
                 // PCM buffers in parallel.
                 if (a.voice_tts_enabled && !gs.move_history.empty()) {
-                    a.pending_move_speech = uci_to_speech(
+                    cur(a).pending_move_speech = uci_to_speech(
                         tts_before, gs.move_history.back());
-                    a.pending_move_speech_was_human = true;
+                    cur(a).pending_move_speech_was_human = true;
                 }
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
@@ -572,7 +572,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                                 ParsedFEN p = parse_fen(
                                     a.current_challenge.fens[pi]);
                                 if (p.valid) {
-                                    apply_fen_to_state(a.game, p);
+                                    apply_fen_to_state(cur_gs(a), p);
                                     app_chessnut_sync_board(a, /*force=*/true);
                                 }
                                 a.challenge_moves_made = 0;
@@ -689,7 +689,7 @@ static void handle_board_click(AppState& a, double mx, double my,
 void app_enter_menu(AppState& a) {
     // Exit analysis mode if we're in it, so the next game starts
     // clean even if the user clicked Back to Menu mid-analysis.
-    if (a.game.analysis_mode) game_exit_analysis(a.game);
+    if (cur_gs(a).analysis_mode) game_exit_analysis(cur_gs(a));
 
     a.mode = MODE_MENU;
     menu_init_physics(a.menu_pieces);
@@ -759,7 +759,7 @@ void app_enter_game(AppState& a) {
         a.chessnut_connected ? 1 : 0);
     a.mode = MODE_PLAYING;
     audio_music_stop();
-    game_reset(a.game);
+    game_reset(cur_gs(a));
     a.rot_x = 30.0f;
     // Camera points at whichever side the human is playing so their
     // pieces are at the bottom of the screen.
@@ -785,10 +785,10 @@ void app_enter_game(AppState& a) {
     {
         const TimeControlSpec& spec = TIME_CONTROLS[a.time_control];
         a.clock_enabled = (a.time_control != TC_UNLIMITED);
-        a.white_ms_left = spec.base_ms;
-        a.black_ms_left = spec.base_ms;
-        a.clock_last_tick_us = 0;
-        a.prev_white_turn = -1;
+        cur(a).white_ms_left = spec.base_ms;
+        cur(a).black_ms_left = spec.base_ms;
+        cur(a).clock_last_tick_us = 0;
+        cur(a).prev_white_turn = -1;
     }
     app_refresh_status(a);
     queue_redraw(a);
@@ -859,7 +859,7 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     a.challenge_try_again_hover = false;
     a.board_shake_x = 0.0f;
     ParsedFEN parsed = parse_fen(a.current_challenge.fens[puzzle_index]);
-    if (parsed.valid) apply_fen_to_state(a.game, parsed);
+    if (parsed.valid) apply_fen_to_state(cur_gs(a), parsed);
 
     // Fresh puzzle: drop tactic progress from any prior puzzle in
     // this Challenge. Try-Again preserves found_moves separately
@@ -873,7 +873,7 @@ void app_load_challenge_puzzle(AppState& a, int puzzle_index) {
     const std::string& ct = a.current_challenge.type;
     if (is_tactic_type(ct)) {
         a.current_challenge.required_moves = find_tactic_moves(
-            a.game, a.current_challenge.starts_white, ct
+            cur_gs(a), a.current_challenge.starts_white, ct
         );
         // Degenerate puzzle: no legal motif moves at all (bad data
         // or a position where no fork / pin is possible). Mark it
@@ -1141,12 +1141,12 @@ static void release_options(AppState& a, double mx, double my,
         }
         // Clear any in-flight ring state when the mode changes so
         // a stale hint from the previous mode doesn't linger.
-        a.game.hint_from_col = a.game.hint_from_row = -1;
-        a.game.hint_to_col   = a.game.hint_to_row   = -1;
-        a.game.hint_last_spoken_uci.clear();
-        a.game.hint_last_spoken_ply = -1;
-        a.hint_request_pending = false;
-        a.hint_confirm_pending = false;
+        cur_gs(a).hint_from_col = cur_gs(a).hint_from_row = -1;
+        cur_gs(a).hint_to_col   = cur_gs(a).hint_to_row   = -1;
+        cur_gs(a).hint_last_spoken_uci.clear();
+        cur_gs(a).hint_last_spoken_ply = -1;
+        cur(a).hint_request_pending = false;
+        cur(a).hint_confirm_pending = false;
         queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
@@ -1232,16 +1232,16 @@ static void release_playing(AppState& a, double mx, double my,
     // analysis mode (entered via the withdraw flag). Analysis mode
     // additionally gets a "Continue Playing" button that exits
     // analysis and resumes the live game — same effect as ESC.
-    if (a.game.game_over || a.game.analysis_mode) {
+    if (cur_gs(a).game_over || cur_gs(a).analysis_mode) {
         double dx_eg = mx - a.press_x, dy_eg = my - a.press_y;
         if (dx_eg*dx_eg + dy_eg*dy_eg < 25.0) {
             if (endgame_menu_button_hit_test(mx, my, width, height)) {
                 app_enter_menu(a);
                 return;
             }
-            if (a.game.analysis_mode &&
+            if (cur_gs(a).analysis_mode &&
                 analysis_continue_button_hit_test(mx, my, width, height)) {
-                game_exit_analysis(a.game);
+                game_exit_analysis(cur_gs(a));
                 a.continue_playing_hover = false;
                 a.endgame_menu_hover = false;
                 refresh_play_status(a);
@@ -1252,11 +1252,11 @@ static void release_playing(AppState& a, double mx, double my,
         // In analysis mode, non-button clicks still shouldn't act
         // on the board. Game-over falls through to camera-drag
         // release below.
-        if (a.game.analysis_mode) return;
+        if (cur_gs(a).analysis_mode) return;
     }
 
     // Withdraw flag (live game only, no modal already open).
-    if (!a.game.game_over && !a.game.analysis_mode) {
+    if (!cur_gs(a).game_over && !cur_gs(a).analysis_mode) {
         double dx_f = mx - a.press_x, dy_f = my - a.press_y;
         if (dx_f*dx_f + dy_f*dy_f < 25.0 &&
             flag_hit_test(a.flag, mx, my, width, height)) {
@@ -1439,13 +1439,13 @@ static void motion_playing(AppState& a, double mx, double my,
         // other widgets.
         return;
     }
-    if (a.game.game_over || a.game.analysis_mode) {
+    if (cur_gs(a).game_over || cur_gs(a).analysis_mode) {
         bool h_now = endgame_menu_button_hit_test(mx, my, width, height);
         if (h_now != a.endgame_menu_hover) {
             a.endgame_menu_hover = h_now;
             queue_redraw(a);
         }
-        if (a.game.analysis_mode) {
+        if (cur_gs(a).analysis_mode) {
             bool c_now = analysis_continue_button_hit_test(mx, my, width, height);
             if (c_now != a.continue_playing_hover) {
                 a.continue_playing_hover = c_now;
@@ -1478,7 +1478,7 @@ void app_scroll(AppState& a, double delta) {
 }
 
 void app_key(AppState& a, AppKey key) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
 
     // First key in a menu-ish mode acts as the user gesture browsers
     // require before audio can start. Idempotent — no-op if already
@@ -1573,7 +1573,7 @@ void app_key(AppState& a, AppKey key) {
 // AI move animation + async result delivery
 // ===========================================================================
 static bool is_legal_ai_move(const AppState& a, int fc, int fr, int tc, int tr) {
-    GameState& gs = const_cast<GameState&>(a.game);
+    GameState& gs = const_cast<GameState&>(cur_gs(a));
     int idx = gs.grid[fr][fc];
     // AI's piece is whichever color the human isn't playing.
     if (idx < 0 || gs.pieces[idx].is_white == a.human_plays_white) return false;
@@ -1584,7 +1584,7 @@ static bool is_legal_ai_move(const AppState& a, int fc, int fr, int tc, int tr) 
 }
 
 static void start_ai_animation(AppState& a, int fc, int fr, int tc, int tr) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     gs.ai_from_col = fc;
     gs.ai_from_row = fr;
     gs.ai_to_col   = tc;
@@ -1596,7 +1596,7 @@ static void start_ai_animation(AppState& a, int fc, int fr, int tc, int tr) {
 }
 
 static void ai_random_fallback(AppState& a) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     std::vector<std::pair<std::pair<int,int>, std::pair<int,int>>> all_legal;
     for (const auto& p : gs.pieces) {
         // AI moves whichever color the human isn't playing.
@@ -1621,7 +1621,7 @@ static void ai_random_fallback(AppState& a) {
 }
 
 void app_ai_move_ready(AppState& a, const char* uci_c) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
 
     // If we're not waiting for a move (e.g. user reset), drop the result.
     if (!gs.ai_thinking || gs.ai_animating) return;
@@ -1646,16 +1646,16 @@ void app_ai_move_ready(AppState& a, const char* uci_c) {
 
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     // Drain any pending move announcement even if the eval failed
     // — the user expects to hear what the AI just played
     // regardless of whether Stockfish managed to score it.
     auto drain_pending_speech_no_classify = [&]() {
-        if (a.voice_tts_enabled && !a.pending_move_speech.empty()) {
-            voice_tts_speak(a.pending_move_speech);
-            a.pending_move_speech.clear();
-            a.pending_move_classification.clear();
-            a.pending_move_speech_was_human = false;
+        if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
+            voice_tts_speak(cur(a).pending_move_speech);
+            cur(a).pending_move_speech.clear();
+            cur(a).pending_move_classification.clear();
+            cur(a).pending_move_speech_was_human = false;
         }
     };
     if (cp == INT_MIN) {
@@ -1690,8 +1690,8 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // player JUST moved out of (i.e. what they should have
     // played).
     if (!best_uci.empty()) {
-        a.prev_eval_best_uci = a.last_eval_best_uci;
-        a.last_eval_best_uci = best_uci;
+        cur(a).prev_eval_best_uci = cur(a).last_eval_best_uci;
+        cur(a).last_eval_best_uci = best_uci;
     }
 
     // Move-quality classification — speak a category ("Best move",
@@ -1716,8 +1716,8 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             : (cp_after - cp_before);
         if (cp_loss < 0) cp_loss = 0;  // can't help yourself by moving
 
-        bool was_best = !a.prev_eval_best_uci.empty() &&
-                        gs.move_history.back() == a.prev_eval_best_uci;
+        bool was_best = !cur(a).prev_eval_best_uci.empty() &&
+                        gs.move_history.back() == cur(a).prev_eval_best_uci;
 
         // Bucket the player's evaluation into losing / equal /
         // winning so we can detect category swings — that's what
@@ -1795,9 +1795,9 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         // pending move to combine it with — see the unified
         // speak block below. Cache the phrase for now.
         if (phrase && !both_mate_same_side) {
-            a.pending_move_classification = phrase;
+            cur(a).pending_move_classification = phrase;
         } else {
-            a.pending_move_classification.clear();
+            cur(a).pending_move_classification.clear();
         }
     }
 
@@ -1807,17 +1807,17 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // quality label, per user preference). Combining keeps the
     // two phrases in one PCM buffer so the audio mixer can't
     // overlap them with each other or with the next move.
-    if (a.voice_tts_enabled && !a.pending_move_speech.empty()) {
-        std::string utterance = a.pending_move_speech;
-        if (a.pending_move_speech_was_human &&
-            !a.pending_move_classification.empty()) {
+    if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
+        std::string utterance = cur(a).pending_move_speech;
+        if (cur(a).pending_move_speech_was_human &&
+            !cur(a).pending_move_classification.empty()) {
             utterance += ". ";
-            utterance += a.pending_move_classification;
+            utterance += cur(a).pending_move_classification;
         }
         voice_tts_speak(utterance);
-        a.pending_move_speech.clear();
-        a.pending_move_classification.clear();
-        a.pending_move_speech_was_human = false;
+        cur(a).pending_move_speech.clear();
+        cur(a).pending_move_classification.clear();
+        cur(a).pending_move_speech_was_human = false;
     }
 
     // Decide whether to surface the hint NOW: Auto fires every
@@ -1834,7 +1834,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     bool surface_now = conditions_met &&
         (a.hint_mode == AppState::HintMode::Auto ||
          (a.hint_mode == AppState::HintMode::OnDemand &&
-          a.hint_request_pending));
+          cur(a).hint_request_pending));
 
     if (surface_now) {
         int fc, fr, tc, tr;
@@ -1851,7 +1851,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             int ply = static_cast<int>(gs.move_history.size());
             bool was_on_demand_request =
                 (a.hint_mode == AppState::HintMode::OnDemand &&
-                 a.hint_request_pending);
+                 cur(a).hint_request_pending);
             if (gs.hint_last_spoken_uci != best_uci ||
                 gs.hint_last_spoken_ply != ply) {
                 gs.hint_last_spoken_uci = best_uci;
@@ -1867,7 +1867,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                     if (was_on_demand_request) {
                         voice_tts_speak("Hint: " + spoken +
                             ". Do you want to play this?");
-                        a.hint_confirm_pending = true;
+                        cur(a).hint_confirm_pending = true;
                         set_status(a,
                             "Hint shown — say \"yes\" to play it "
                             "or \"no\" to dismiss");
@@ -1876,7 +1876,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                     }
                 }
             }
-            a.hint_request_pending = false;  // consume
+            cur(a).hint_request_pending = false;  // consume
         }
     } else if (a.hint_mode != AppState::HintMode::Auto) {
         // OnDemand idle / Off: drop any stale rings. (Auto leaves
@@ -1915,7 +1915,7 @@ static void tick_menu_physics(AppState& a, int64_t now) {
 //   * ai_anim_trigger_ai_after — single-player sensor move just
 //     applied, so Stockfish's reply needs to be kicked off.
 static void tick_ai_animation(AppState& a, int64_t now) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     if (!gs.ai_animating) return;
     float elapsed =
         static_cast<float>(static_cast<double>(now - a.ai_anim_start_us) / 1e6);
@@ -1938,14 +1938,14 @@ static void tick_ai_animation(AppState& a, int64_t now) {
                      gs.ai_to_col,   gs.ai_to_row);
         gs.hint_from_col = gs.hint_from_row = -1;
         gs.hint_to_col   = gs.hint_to_row   = -1;
-        a.hint_confirm_pending = false;
+        cur(a).hint_confirm_pending = false;
         play_move_sfx(gs, sfx_capture);
         // Defer the announcement so app_eval_ready can speak it as
         // one utterance with the optional move-quality label. AI
         // moves don't get classified (per user preference), but the
         // move text itself is still announced.
         if (a.voice_tts_enabled && !gs.move_history.empty()) {
-            a.pending_move_speech = uci_to_speech(
+            cur(a).pending_move_speech = uci_to_speech(
                 tts_before, gs.move_history.back());
             // The animation pipeline is reused for both AI moves
             // (single-player) and sensor-driven moves (which are
@@ -1953,7 +1953,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
             // ai_anim_trigger_ai_after flag is set when the
             // animation we're finishing was a human sensor move.
             // 2P mode is always human-vs-human.
-            a.pending_move_speech_was_human =
+            cur(a).pending_move_speech_was_human =
                 a.two_player_mode || gs.ai_anim_trigger_ai_after;
         }
         gs.ai_thinking = false;
@@ -2016,7 +2016,7 @@ static void tick_mistake_shake(AppState& a, int64_t now) {
 // game-over, analysis, or an open modal). The pause-on-modal latch
 // stops a huge dt from dumping into the sim when the user reopens.
 static void tick_withdraw_flag(AppState& a, int64_t now) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     const bool live = a.mode == MODE_PLAYING && !gs.game_over && !gs.analysis_mode &&
                       !a.withdraw_confirm_open && !a.flag.p.empty();
     if (live) {
@@ -2044,34 +2044,34 @@ static void tick_withdraw_flag(AppState& a, int64_t now) {
 // pause-on-modal pattern as the flag so a modal doesn't dump a
 // huge dt into a clock.
 static void tick_clock(AppState& a, int64_t now) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     const bool active = a.mode == MODE_PLAYING && a.clock_enabled && !gs.game_over &&
                         !gs.analysis_mode && !a.withdraw_confirm_open;
     if (!active) {
         if (a.clock_enabled && (a.withdraw_confirm_open || gs.game_over ||
                                 gs.analysis_mode)) {
-            a.clock_last_tick_us = 0;
+            cur(a).clock_last_tick_us = 0;
         }
         return;
     }
-    if (a.clock_last_tick_us == 0) {
-        a.clock_last_tick_us = now;
-        a.prev_white_turn = gs.white_turn ? 1 : 0;
+    if (cur(a).clock_last_tick_us == 0) {
+        cur(a).clock_last_tick_us = now;
+        cur(a).prev_white_turn = gs.white_turn ? 1 : 0;
         queue_redraw(a);
         return;
     }
 
-    int64_t dt_us = now - a.clock_last_tick_us;
-    a.clock_last_tick_us = now;
-    int cur = gs.white_turn ? 1 : 0;
+    int64_t dt_us = now - cur(a).clock_last_tick_us;
+    cur(a).clock_last_tick_us = now;
+    int cur_side = gs.white_turn ? 1 : 0;
     // Charge this interval to whoever WAS on move. If the turn
     // flipped between ticks, the move happened mid-interval — the
     // dt belongs to the previous side (they thought, then moved),
     // not the new side.
     if (dt_us > 0) {
         int64_t dt_ms = dt_us / 1000;
-        if (a.prev_white_turn == 1) a.white_ms_left -= dt_ms;
-        else                        a.black_ms_left -= dt_ms;
+        if (cur(a).prev_white_turn == 1) cur(a).white_ms_left -= dt_ms;
+        else                        cur(a).black_ms_left -= dt_ms;
     }
     // On turn flip, the side that just moved gets the Fischer
     // increment. Detected here (not inside execute_move) so the
@@ -2080,26 +2080,26 @@ static void tick_clock(AppState& a, int64_t now) {
     // (raw Fischer + our adaptive AI time produced a visible "clock
     // counting up" artefact in classical).
     const int64_t base = TIME_CONTROLS[a.time_control].base_ms;
-    if (cur != a.prev_white_turn) {
+    if (cur_side != cur(a).prev_white_turn) {
         int64_t inc = TIME_CONTROLS[a.time_control].increment_ms;
-        if (a.prev_white_turn == 1) {
-            a.white_ms_left += inc;
-            if (a.white_ms_left > base) a.white_ms_left = base;
+        if (cur(a).prev_white_turn == 1) {
+            cur(a).white_ms_left += inc;
+            if (cur(a).white_ms_left > base) cur(a).white_ms_left = base;
         } else {
-            a.black_ms_left += inc;
-            if (a.black_ms_left > base) a.black_ms_left = base;
+            cur(a).black_ms_left += inc;
+            if (cur(a).black_ms_left > base) cur(a).black_ms_left = base;
         }
     }
-    a.prev_white_turn = cur;
+    cur(a).prev_white_turn = cur_side;
 
-    if (a.white_ms_left <= 0) {
-        a.white_ms_left = 0;
+    if (cur(a).white_ms_left <= 0) {
+        cur(a).white_ms_left = 0;
         gs.game_over = true;
         gs.game_result = "Black wins on time!";
         std::printf("Black wins on time!\n");
         app_refresh_status(a);
-    } else if (a.black_ms_left <= 0) {
-        a.black_ms_left = 0;
+    } else if (cur(a).black_ms_left <= 0) {
+        cur(a).black_ms_left = 0;
         gs.game_over = true;
         gs.game_result = "White wins on time!";
         std::printf("White wins on time!\n");
@@ -2128,7 +2128,7 @@ void app_tick(AppState& a) {
     // Selection ring pulse + shatter transition only need redraws
     // issued; the pulse reads gs.anim_start_time directly and
     // shatter has its own elapsed check in the render path.
-    if (a.game.selected_col >= 0) queue_redraw(a);
+    if (cur_gs(a).selected_col >= 0) queue_redraw(a);
     if (a.transition_active)      queue_redraw(a);
 
     tick_mistake_shake(a, now);
@@ -2229,7 +2229,7 @@ static void render_challenge_summary(AppState& a, int width, int height) {
 // (the Next button replaces it); we save/restore the GameState's
 // game_over fields around the call to keep the rules layer pure.
 static void render_board(AppState& a, int width, int height) {
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     bool save_game_over = false;
     std::string save_result;
     if (a.mode == MODE_CHALLENGE) {
@@ -2258,7 +2258,7 @@ static void render_board(AppState& a, int width, int height) {
     const bool draw_clock =
         a.mode == MODE_PLAYING && a.clock_enabled &&
         !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
-    int64_t clock_ms = gs.white_turn ? a.white_ms_left : a.black_ms_left;
+    int64_t clock_ms = gs.white_turn ? cur(a).white_ms_left : cur(a).black_ms_left;
     bool clock_side_is_white = gs.white_turn;
 
     renderer_draw(gs, width, height, a.rot_x, a.rot_y, a.zoom,
@@ -2343,7 +2343,7 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
     // Challenge mode never wants the withdraw flag, modal, or clock.
     // Reuse the session cartoon_outline so toggling survives the
     // transition.
-    renderer_draw(a.game, width, height, a.rot_x, a.rot_y, a.zoom,
+    renderer_draw(cur_gs(a), width, height, a.rot_x, a.rot_y, a.zoom,
                   a.human_plays_white,
                   a.endgame_menu_hover, false,
                   nullptr, false, false, 0,
@@ -2415,7 +2415,7 @@ namespace {
 // nothing blocking). Doesn't touch any state — pure check.
 bool voice_action_allowed(const AppState& a) {
     if (a.mode != MODE_PLAYING) return false;
-    const GameState& gs = a.game;
+    const GameState& gs = cur_gs(a);
     if (gs.ai_thinking || gs.ai_animating) return false;
     if (gs.analysis_mode || gs.game_over)  return false;
     if (gs.white_turn != a.human_plays_white) return false;
@@ -2428,13 +2428,13 @@ bool voice_action_allowed(const AppState& a) {
 bool try_voice_command(AppState& a, const std::string& utterance) {
     VoiceCommandContext ctx;
     ctx.mode                     = a.mode;
-    ctx.game_over                = a.game.game_over;
-    ctx.analysis_mode            = a.game.analysis_mode;
+    ctx.game_over                = cur_gs(a).game_over;
+    ctx.analysis_mode            = cur_gs(a).analysis_mode;
     ctx.challenge_solved         = a.challenge_solved;
     ctx.challenge_mistake_ready  = mistake_reveal_ready(a);
     ctx.challenge_show_summary   = a.challenge_show_summary;
     ctx.withdraw_confirm_open    = a.withdraw_confirm_open;
-    ctx.hint_confirm_open        = a.hint_confirm_pending;
+    ctx.hint_confirm_open        = cur(a).hint_confirm_pending;
 
     VoiceCommand cmd = parse_voice_command(utterance, ctx);
     if (cmd == VoiceCommand::None) return false;
@@ -2457,8 +2457,8 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         app_enter_challenge_select(a);
         break;
     case VoiceCommand::ContinuePlaying:
-        if (a.game.analysis_mode) {
-            game_exit_analysis(a.game);
+        if (cur_gs(a).analysis_mode) {
+            game_exit_analysis(cur_gs(a));
             a.continue_playing_hover = false;
             a.endgame_menu_hover = false;
             app_refresh_status(a);
@@ -2468,8 +2468,8 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         // Same effect as clicking the withdraw flag: open the
         // confirmation modal. The user confirms by saying yes/no
         // (handled below) or by clicking the modal buttons.
-        if (a.mode == MODE_PLAYING && !a.game.game_over &&
-            !a.game.analysis_mode) {
+        if (a.mode == MODE_PLAYING && !cur_gs(a).game_over &&
+            !cur_gs(a).analysis_mode) {
             a.withdraw_confirm_open = true;
             a.withdraw_hover = 0;
         }
@@ -2479,12 +2479,12 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
             app_enter_menu(a);
-        } else if (a.hint_confirm_pending) {
+        } else if (cur(a).hint_confirm_pending) {
             // User accepted the hint — play it. Mirror the voice
             // move-execution path (capture detection, sfx, TTS,
             // chessnut sync, eval kick, AI trigger).
-            a.hint_confirm_pending = false;
-            const std::string uci = a.last_eval_best_uci;
+            cur(a).hint_confirm_pending = false;
+            const std::string uci = cur(a).last_eval_best_uci;
             int fc, fr, tc, tr;
             if (uci.empty() || !parse_uci_move(uci, fc, fr, tc, tr)) {
                 set_status(a, "Hint move expired — try again");
@@ -2496,16 +2496,16 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             // (the AI may have already moved, etc.), refuse rather
             // than play the wrong side's move.
             if (a.two_player_mode || a.mode != MODE_PLAYING ||
-                a.game.game_over || a.game.ai_animating ||
-                a.game.ai_thinking ||
-                a.game.white_turn != a.human_plays_white) {
+                cur_gs(a).game_over || cur_gs(a).ai_animating ||
+                cur_gs(a).ai_thinking ||
+                cur_gs(a).white_turn != a.human_plays_white) {
                 set_status(a, "Hint move expired — try again");
-                a.game.hint_from_col = a.game.hint_from_row = -1;
-                a.game.hint_to_col   = a.game.hint_to_row   = -1;
+                cur_gs(a).hint_from_col = cur_gs(a).hint_from_row = -1;
+                cur_gs(a).hint_to_col   = cur_gs(a).hint_to_row   = -1;
                 queue_redraw(a);
                 break;
             }
-            GameState& gs = a.game;
+            GameState& gs = cur_gs(a);
             bool sfx_capture = gs.grid[tr][tc] >= 0;
             BoardSnapshot tts_before;
             if (a.voice_tts_enabled) {
@@ -2522,9 +2522,9 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             gs.hint_to_col   = gs.hint_to_row   = -1;
             play_move_sfx(gs, sfx_capture);
             if (a.voice_tts_enabled && !gs.move_history.empty()) {
-                a.pending_move_speech = uci_to_speech(
+                cur(a).pending_move_speech = uci_to_speech(
                     tts_before, gs.move_history.back());
-                a.pending_move_speech_was_human = true;
+                cur(a).pending_move_speech_was_human = true;
             }
             app_chessnut_sync_board(a, /*force=*/false);
             app_refresh_status(a);
@@ -2539,13 +2539,13 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         if (a.withdraw_confirm_open) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
-        } else if (a.hint_confirm_pending) {
+        } else if (cur(a).hint_confirm_pending) {
             // User declined — wipe the hint rings and the prompt.
-            a.hint_confirm_pending = false;
-            a.game.hint_from_col = a.game.hint_from_row = -1;
-            a.game.hint_to_col   = a.game.hint_to_row   = -1;
-            a.game.hint_last_spoken_uci.clear();
-            a.game.hint_last_spoken_ply = -1;
+            cur(a).hint_confirm_pending = false;
+            cur_gs(a).hint_from_col = cur_gs(a).hint_from_row = -1;
+            cur_gs(a).hint_to_col   = cur_gs(a).hint_to_row   = -1;
+            cur_gs(a).hint_last_spoken_uci.clear();
+            cur_gs(a).hint_last_spoken_ply = -1;
             set_status(a, "Hint dismissed");
             queue_redraw(a);
         }
@@ -2599,12 +2599,12 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
             set_status(a, "Move hints: OFF");
             break;
         }
-        a.game.hint_from_col = a.game.hint_from_row = -1;
-        a.game.hint_to_col   = a.game.hint_to_row   = -1;
-        a.game.hint_last_spoken_uci.clear();
-        a.game.hint_last_spoken_ply = -1;
-        a.hint_request_pending = false;
-        a.hint_confirm_pending = false;
+        cur_gs(a).hint_from_col = cur_gs(a).hint_from_row = -1;
+        cur_gs(a).hint_to_col   = cur_gs(a).hint_to_row   = -1;
+        cur_gs(a).hint_last_spoken_uci.clear();
+        cur_gs(a).hint_last_spoken_ply = -1;
+        cur(a).hint_request_pending = false;
+        cur(a).hint_confirm_pending = false;
         break;
     case VoiceCommand::RequestHint: {
         // One-shot hint request from voice. Three sub-cases:
@@ -2627,22 +2627,22 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         }
         // Reset dedup so a repeated request re-speaks the same
         // hint — the user is explicitly asking again.
-        a.game.hint_last_spoken_uci.clear();
-        a.game.hint_last_spoken_ply = -1;
-        if (!a.last_eval_best_uci.empty() &&
+        cur_gs(a).hint_last_spoken_uci.clear();
+        cur_gs(a).hint_last_spoken_ply = -1;
+        if (!cur(a).last_eval_best_uci.empty() &&
             !a.two_player_mode &&
             a.mode == MODE_PLAYING &&
-            !a.game.game_over &&
-            !a.game.ai_animating &&
-            !a.game.ai_thinking &&
-            a.game.white_turn == a.human_plays_white) {
+            !cur_gs(a).game_over &&
+            !cur_gs(a).ai_animating &&
+            !cur_gs(a).ai_thinking &&
+            cur_gs(a).white_turn == a.human_plays_white) {
             int fc, fr, tc, tr;
-            if (parse_uci_move(a.last_eval_best_uci, fc, fr, tc, tr)) {
-                a.game.hint_from_col = fc;
-                a.game.hint_from_row = fr;
-                a.game.hint_to_col   = tc;
-                a.game.hint_to_row   = tr;
-                if (!a.game.snapshots.empty()) {
+            if (parse_uci_move(cur(a).last_eval_best_uci, fc, fr, tc, tr)) {
+                cur_gs(a).hint_from_col = fc;
+                cur_gs(a).hint_from_row = fr;
+                cur_gs(a).hint_to_col   = tc;
+                cur_gs(a).hint_to_row   = tr;
+                if (!cur_gs(a).snapshots.empty()) {
                     // Speak the move + ask for confirmation in
                     // one utterance so the prompt arrives on the
                     // same voice channel without the user
@@ -2650,12 +2650,12 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
                     // dispatcher routes the next yes/no through
                     // the hint_confirm_pending branch above.
                     std::string move_speech = uci_to_speech(
-                        a.game.snapshots.back(),
-                        a.last_eval_best_uci);
+                        cur_gs(a).snapshots.back(),
+                        cur(a).last_eval_best_uci);
                     voice_tts_speak("Hint: " + move_speech +
                                     ". Do you want to play this?");
                 }
-                a.hint_confirm_pending = true;
+                cur(a).hint_confirm_pending = true;
                 set_status(a,
                     "Hint shown — say \"yes\" to play it or \"no\" "
                     "to dismiss");
@@ -2664,7 +2664,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         } else {
             // No cached bestmove yet — let the next eval landing
             // surface the hint when it arrives.
-            a.hint_request_pending = true;
+            cur(a).hint_request_pending = true;
             set_status(a, "Hint requested — computing…");
         }
         break;
@@ -2714,7 +2714,7 @@ void apply_voice_utterance(AppState& a,
         return;
     }
 
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     if (!voice_action_allowed(a)) {
         std::string msg = std::string("Voice ignored '") + utterance +
                           "' — not your turn";
@@ -2752,12 +2752,12 @@ void apply_voice_utterance(AppState& a,
     gs.valid_moves.clear();
     gs.hint_from_col = gs.hint_from_row = -1;
     gs.hint_to_col   = gs.hint_to_row   = -1;
-    a.hint_confirm_pending = false;
+    cur(a).hint_confirm_pending = false;
     play_move_sfx(gs, sfx_capture);
     if (a.voice_tts_enabled && !gs.move_history.empty()) {
-        a.pending_move_speech = uci_to_speech(
+        cur(a).pending_move_speech = uci_to_speech(
             tts_before, gs.move_history.back());
-        a.pending_move_speech_was_human = true;
+        cur(a).pending_move_speech_was_human = true;
     }
     app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2972,7 +2972,7 @@ void app_voice_shutdown(AppState& a) {
 // snapshot the position without re-implementing FEN serialisation.
 
 std::string app_current_fen(const AppState& a) {
-    return current_fen(a.game, a.game.white_turn);
+    return current_fen(cur_gs(a), cur_gs(a).white_turn);
 }
 
 // ---------------------------------------------------------------------------
@@ -3014,11 +3014,11 @@ digital_grid_snapshot(const GameState& gs) {
 // physical board through these states; we just don't promote the
 // physical move into the digital game.
 bool sensor_action_allowed(const AppState& a) {
-    if (a.game.ai_thinking || a.game.ai_animating) return false;
+    if (cur_gs(a).ai_thinking || cur_gs(a).ai_animating) return false;
     if (a.withdraw_confirm_open) return false;
     if (a.chessnut_missing_modal_open) return false;
-    if (a.game.game_over) return false;
-    if (a.game.analysis_mode) return false;
+    if (cur_gs(a).game_over) return false;
+    if (cur_gs(a).analysis_mode) return false;
     if (a.mode != MODE_PLAYING && a.mode != MODE_CHALLENGE) return false;
     if (a.mode == MODE_CHALLENGE &&
         (a.challenge_solved || a.challenge_mistake)) return false;
@@ -3067,7 +3067,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         }
     }
     auto sensor  = chessnut::board_bytes_to_grid(bytes);
-    auto digital = digital_grid_snapshot(a.game);
+    auto digital = digital_grid_snapshot(cur_gs(a));
 
     // Settling window — motors are mid-motion, sensor frames during
     // this period are transient and don't match the eventual
@@ -3119,7 +3119,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         deltas.size(), digital_diffs.size(),
         static_cast<int>(a.mode),
         a.two_player_mode ? 1 : 0,
-        a.game.white_turn ? 1 : 0,
+        cur_gs(a).white_turn ? 1 : 0,
         settling ? 1 : 0,
         a.chessnut_sensor_baseline_set ? 1 : 0);
     // Dump three grids: digital, current sensor, and 'd' marks for
@@ -3257,9 +3257,9 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             // board is positioned, kick it off.
             if (a.chessnut_pending_ai_trigger) {
                 a.chessnut_pending_ai_trigger = false;
-                if (a.mode == MODE_PLAYING && !a.game.game_over &&
+                if (a.mode == MODE_PLAYING && !cur_gs(a).game_over &&
                     !a.two_player_mode &&
-                    a.game.white_turn != a.human_plays_white) {
+                    cur_gs(a).white_turn != a.human_plays_white) {
                     trigger_ai(a);
                 }
             }
@@ -3303,7 +3303,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         //    via the establish-baseline path above.
         if (!settling && paired_moves.size() == 1 &&
             unpaired_missing_idx.empty() && unpaired_extra_idx.empty() &&
-            !a.game.ai_animating) {
+            !cur_gs(a).ai_animating) {
             const auto& md = digital_diffs[paired_moves[0].from_idx];
             const auto& ed = digital_diffs[paired_moves[0].to_idx];
             // Pre-validate the implied move's legality before
@@ -3315,11 +3315,11 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             // shake on every motor move that bumps a piece across
             // an intermediate square.
             bool legal = false;
-            int piece_idx = a.game.grid[md.row][md.col];
-            int side_to_move_white = a.game.white_turn ? 1 : 0;
+            int piece_idx = cur_gs(a).grid[md.row][md.col];
+            int side_to_move_white = cur_gs(a).white_turn ? 1 : 0;
             if (piece_idx >= 0 &&
-                (a.game.pieces[piece_idx].is_white ? 1 : 0) == side_to_move_white) {
-                auto legal_moves = generate_legal_moves(a.game, md.col, md.row);
+                (cur_gs(a).pieces[piece_idx].is_white ? 1 : 0) == side_to_move_white) {
+                auto legal_moves = generate_legal_moves(cur_gs(a), md.col, md.row);
                 for (const auto& [mc, mr] : legal_moves) {
                     if (mc == ed.col && mr == ed.row) { legal = true; break; }
                 }
@@ -3437,8 +3437,8 @@ void app_chessnut_apply_sensor_frame(AppState& a,
             "[chessnut/sensor] move detected but app state blocks "
             "auto-apply (mode=%d ai_thinking=%d game_over=%d)\n",
             static_cast<int>(a.mode),
-            a.game.ai_thinking ? 1 : 0,
-            a.game.game_over ? 1 : 0);
+            cur_gs(a).ai_thinking ? 1 : 0,
+            cur_gs(a).game_over ? 1 : 0);
         reject("not your turn / game not active", /*invalid_chess_move=*/false);
         return;
     }
@@ -3447,7 +3447,7 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     // the user moved a piece for the OTHER side, we'd refuse here
     // — that's intentional; we don't want the board's accidental
     // touch of the wrong piece to corrupt the game.
-    GameState& gs = a.game;
+    GameState& gs = cur_gs(a);
     int side_to_move_white = gs.white_turn ? 1 : 0;
     int piece_idx = gs.grid[from->row][from->col];
     if (piece_idx < 0) {
@@ -3852,14 +3852,14 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         app_chessnut_highlight_last_move(a);
         return;
     }
-    if (a.game.move_history.empty()) return;
-    const std::string& uci = a.game.move_history.back();
+    if (cur_gs(a).move_history.empty()) return;
+    const std::string& uci = cur_gs(a).move_history.back();
     int fc = -1, fr = -1, tc = -1, tr = -1;
     if (!parse_uci_move(uci, fc, fr, tc, tr)) return;
     // Capture detection by alive-piece delta between the last two
     // snapshots — handles regular captures and en passant uniformly.
     bool capture = false;
-    const auto& snaps = a.game.snapshots;
+    const auto& snaps = cur_gs(a).snapshots;
     if (snaps.size() >= 2) {
         int n_before = 0, n_after = 0;
         for (const auto& p : snaps[snaps.size() - 2].pieces)
@@ -3882,8 +3882,8 @@ void app_chessnut_sync_board(AppState& a, bool force) {
 void app_chessnut_highlight_last_move(AppState& a) {
     if (!g_active_bridge || !a.chessnut_connected) return;
     int fc = -1, fr = -1, tc = -1, tr = -1;
-    if (!a.game.move_history.empty()) {
-        parse_uci_move(a.game.move_history.back(), fc, fr, tc, tr);
+    if (!cur_gs(a).move_history.empty()) {
+        parse_uci_move(cur_gs(a).move_history.back(), fc, fr, tc, tr);
     }
     g_active_bridge->on_highlight_move(fc, fr, tc, tr);
 }
@@ -3961,7 +3961,7 @@ static void chessnut_tick_reconnect(AppState& a, int64_t now) {
 // ===========================================================================
 void app_init(AppState& a, const AppPlatform* platform) {
     a.platform = platform;
-    game_reset(a.game);
+    game_reset(cur_gs(a));
     app_settings_load(a);
 }
 

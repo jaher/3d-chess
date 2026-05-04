@@ -87,11 +87,61 @@ enum AppKey {
 };
 
 // ===========================================================================
+// Per-game state container
+// ===========================================================================
+//
+// The "Multi-game" mode in pregame lets the user run up to 4 parallel
+// games against Stockfish, played sequentially (one at a time, the
+// app rotates the active game after each AI reply). Most of the
+// codebase already treats GameState as per-game (move_history,
+// snapshots, score_history live there), but a few bits of game-
+// specific state used to dangle off AppState directly. This struct
+// gathers those into a per-instance bundle so we can hold an array
+// of them.
+//
+// For N=1 the bundle is functionally identical to "the live game"
+// it replaces — every existing call site uses cur(a) / cur_gs(a)
+// helpers below to read/write whichever instance is active.
+struct GameInstance {
+    GameState game;
+
+    // Per-game clock state — only the active game's clock ticks
+    // each frame; the rest are paused. clock_last_tick_us == 0
+    // means "paused, re-latch on the next active tick" (same
+    // semantics as pre-refactor AppState).
+    int64_t white_ms_left      = 0;
+    int64_t black_ms_left      = 0;
+    int64_t clock_last_tick_us = 0;
+    int     prev_white_turn    = -1;  // -1 unset, 0 black, 1 white
+
+    // Per-game eval / hint cache. Each instance has its own
+    // Stockfish bestmove history; the hint feature keys off the
+    // active instance's prev_eval_best_uci to brand "Best" moves.
+    std::string last_eval_best_uci;
+    std::string prev_eval_best_uci;
+    bool hint_request_pending = false;
+    bool hint_confirm_pending = false;
+
+    // Per-game pending move announcement — set at execute_move
+    // time, drained in app_eval_ready so the move text + the
+    // classification phrase land as one combined utterance.
+    std::string pending_move_speech;
+    bool        pending_move_speech_was_human = false;
+    std::string pending_move_classification;
+};
+
+// ===========================================================================
 // Shared UI-level application state
 // ===========================================================================
 struct AppState {
-    // The chess position is owned here; platform code reads through a.game.
-    GameState game;
+    // Active and (optionally) inactive game instances. With the
+    // user-selected pregame_game_count = 1, the vector has one
+    // entry and behaves identically to the pre-refactor world.
+    // active_game indexes into this vector for the user's current
+    // turn. Helpers `cur(a)` / `cur_gs(a)` (defined below the
+    // struct) abbreviate the common access pattern.
+    std::vector<GameInstance> games{1};
+    int                       active_game = 0;
 
     // Camera
     float rot_x = 30.0f;
@@ -173,6 +223,11 @@ struct AppState {
     int  stockfish_elo     = 1400;
     bool slider_dragging   = false;
     int  pregame_hover     = 0;
+    // Number of parallel games to start (1..4). Only the start-
+    // game flow honours this; 2-player and challenge modes force
+    // N=1. Default 1 so first-time users get the original single-
+    // board UX. Drives `games.size()` after `app_enter_game`.
+    int  pregame_game_count = 1;
 
     // Two-player (hot-seat) mode. Set by clicking the menu's
     // "Multiplayer" button (only visible when chessnut_connected),
@@ -191,17 +246,13 @@ struct AppState {
     // dropdown is open), -2 = collapsed-head hover.
     int         pregame_tc_hover = -1;
 
-    // Live in-game clock state. Milliseconds remaining per side.
-    // clock_last_tick_us is the monotonic timestamp of the last tick
-    // that decremented a clock; zero means "paused, re-latch on the
-    // next active tick" (same pattern as flag_last_update_us).
-    // prev_white_turn is used to detect turn flips so we can add the
-    // Fischer increment to the side that just moved.
+    // Clock-on/clock-off is a global setting (driven by the
+    // pregame time-control choice); per-game clock state
+    // (ms_left / last_tick / prev_white_turn) lives on each
+    // GameInstance so parallel games each have their own
+    // remaining time. Only the active instance's clock ticks
+    // per frame.
     bool    clock_enabled       = false;
-    int64_t white_ms_left       = 0;
-    int64_t black_ms_left       = 0;
-    int64_t clock_last_tick_us  = 0;
-    int     prev_white_turn     = -1; // -1 = uninitialised, 0 = black, 1 = white
 
     // Hover flag for the "Back to Menu" button drawn on top of the
     // game-over / analysis overlay. Only meaningful in MODE_PLAYING
@@ -270,44 +321,8 @@ struct AppState {
     // a hint" / "best move" — distinct from the toggle phrases.
     enum class HintMode { Off, Auto, OnDemand };
     HintMode hint_mode = HintMode::Off;
-    // Set by the on-demand voice command ("give me a hint"),
-    // consumed by app_eval_ready to surface the cached bestmove
-    // once. Reset after one hint is rendered + spoken.
-    bool hint_request_pending = false;
-    // Most recent bestmove from the eval pipeline, cached so the
-    // on-demand path can surface it instantly without waiting for
-    // a fresh eval round trip.
-    std::string last_eval_best_uci;
-    // Bestmove from the previous eval round — i.e. what the
-    // player who just moved *should* have played. Used by the
-    // post-move classifier to brand exact-match moves as "Best".
-    // Shifted from last_eval_best_uci every time a new eval lands,
-    // so it's always one position behind.
-    std::string prev_eval_best_uci;
-    // Move announcement deferred until the eval for the move lands
-    // — that way the move text + the classification phrase ("Best
-    // move", "Inaccuracy", ...) are spoken as one combined
-    // utterance instead of two queued ones that the audio mixer
-    // would play in parallel and overlap. Set at execute_move
-    // time, drained in app_eval_ready.
-    std::string pending_move_speech;
-    // True when the move stored in pending_move_speech was made
-    // by the human (single-player) or by either player (2P).
-    // Drives whether app_eval_ready appends a classification: AI
-    // moves get the move text spoken but no quality label.
-    bool        pending_move_speech_was_human = false;
-    // Classification phrase ("Best move", "Inaccuracy", ...) for
-    // the just-played move. Set inside app_eval_ready's
-    // classifier; consumed by the same function's combined-
-    // utterance speak block. Empty when no classification applies
-    // (mate noise, off the board, etc.).
-    std::string pending_move_classification;
-    // True after a hint has been surfaced via "give me a hint" and
-    // the app has spoken "Do you want to play this?". The next
-    // yes/no utterance plays the hint move ("yes") or dismisses it
-    // ("no"). Cleared when the user makes any move (click / voice
-    // / sensor), the hint mode changes, or the game ends.
-    bool hint_confirm_pending = false;
+    // Per-game state related to hints + pending move announcement
+    // moved into GameInstance — see definitions there.
 
     // Chessnut Move physical board mirroring. Off by default;
     // toggled by a row in the Options screen. When on, the app
@@ -415,6 +430,29 @@ struct AppState {
     // the flat-plane click test.
     const StlModel* loaded_models = nullptr;
 };
+
+// ===========================================================================
+// Active-game accessors
+// ===========================================================================
+//
+// Most of the codebase reads/writes "the live game" — for N=1 that's
+// just `a.games[0]`; for N>1 it's whichever instance is currently
+// the user's turn. These helpers abbreviate the access pattern so
+// `a.game.move_history` becomes `cur_gs(a).move_history` and
+// `a.white_ms_left` becomes `cur(a).white_ms_left`. Inline +
+// reference-returning so there's no copy and no perf cost.
+inline GameInstance& cur(AppState& a) {
+    return a.games[a.active_game];
+}
+inline const GameInstance& cur(const AppState& a) {
+    return a.games[a.active_game];
+}
+inline GameState& cur_gs(AppState& a) {
+    return a.games[a.active_game].game;
+}
+inline const GameState& cur_gs(const AppState& a) {
+    return a.games[a.active_game].game;
+}
 
 // ===========================================================================
 // Lifecycle
