@@ -752,15 +752,23 @@ static int slider_px_to_elo(double mx, int width) {
 }
 
 void app_enter_game(AppState& a) {
+    // Resolve N: 2-player and chessnut paths force a single board.
+    int N = a.pregame_game_count;
+    if (N < 1) N = 1;
+    if (N > 4) N = 4;
+    if (a.two_player_mode || a.chessnut_connected) N = 1;
     std::fprintf(stderr,
         "[app] enter_game: two_player=%d human_plays_white=%d "
-        "chessnut_connected=%d\n",
+        "chessnut_connected=%d games=%d\n",
         a.two_player_mode ? 1 : 0,
         a.human_plays_white ? 1 : 0,
-        a.chessnut_connected ? 1 : 0);
+        a.chessnut_connected ? 1 : 0,
+        N);
     a.mode = MODE_PLAYING;
+    a.games.assign(N, GameInstance{});
+    a.active_game = 0;
     audio_music_stop();
-    game_reset(cur_gs(a));
+    for (auto& gi : a.games) game_reset(gi.game);
     a.rot_x = 30.0f;
     // Camera points at whichever side the human is playing so their
     // pieces are at the bottom of the screen.
@@ -780,16 +788,18 @@ void app_enter_game(AppState& a) {
     a.flag.inited_h = 0;
     a.flag_last_update_us = 0;
     a.flag_start_us = now_us(a);
-    // Clocks — refill both sides with the starting budget for the
-    // selected time control. Unlimited leaves base_ms at 0 which
-    // disables the clock widget and the tick loop entirely.
+    // Clocks — every parallel game gets its own ms_left / last_tick
+    // from the selected time control. Only the active board's clock
+    // ticks per frame (see tick_clock).
     {
         const TimeControlSpec& spec = TIME_CONTROLS[a.time_control];
         a.clock_enabled = (a.time_control != TC_UNLIMITED);
-        cur(a).white_ms_left = spec.base_ms;
-        cur(a).black_ms_left = spec.base_ms;
-        cur(a).clock_last_tick_us = 0;
-        cur(a).prev_white_turn = -1;
+        for (auto& gi : a.games) {
+            gi.white_ms_left = spec.base_ms;
+            gi.black_ms_left = spec.base_ms;
+            gi.clock_last_tick_us = 0;
+            gi.prev_white_turn = -1;
+        }
     }
     app_refresh_status(a);
     queue_redraw(a);
@@ -926,6 +936,11 @@ void app_enter_challenge(AppState& a, int index) {
     a.current_challenge = load_challenge(a.challenge_files[index]);
     if (a.current_challenge.fens.empty()) return;
     a.mode = MODE_CHALLENGE;
+    // Challenge mode is always single-board. Drop any leftover
+    // multi-game state from a previous start-game session so the
+    // renderer / clocks / click router all collapse to N=1.
+    a.games.assign(1, GameInstance{});
+    a.active_game = 0;
     audio_music_stop();
     a.challenge_solutions.assign(a.current_challenge.fens.size(), {});
     a.challenge_show_summary = false;
@@ -1050,9 +1065,11 @@ static void release_pregame(AppState& a, double mx, double my,
         return;
     }
     int tc_index = -1;
+    const bool hide_gc = a.two_player_mode || a.chessnut_connected;
     int btn = pregame_hit_test(mx, my, width, height,
                                a.pregame_tc_open,
                                /*hide_elo_slider=*/a.two_player_mode,
+                               /*hide_game_count=*/hide_gc,
                                &tc_index);
     if (a.pregame_tc_open) {
         // Dropdown is modal while open. Row click → select and
@@ -1078,6 +1095,10 @@ static void release_pregame(AppState& a, double mx, double my,
     } else if (btn == 5) {    // Dropdown head → expand
         a.pregame_tc_open = true;
         a.pregame_tc_hover = -1;
+        queue_redraw(a);
+    } else if (btn >= 7 && btn <= 10) {
+        // Games-count [1..4] selector.
+        a.pregame_game_count = btn - 6;
         queue_redraw(a);
     }
 }
@@ -1360,9 +1381,11 @@ static void motion_menu(AppState& a, double mx, double my, int width, int height
 
 static void motion_pregame(AppState& a, double mx, double my, int width, int height) {
     int tc_idx = -1;
+    const bool hide_gc = a.two_player_mode || a.chessnut_connected;
     int h = pregame_hit_test(mx, my, width, height,
                              a.pregame_tc_open,
-                             /*hide_elo_slider=*/a.two_player_mode, &tc_idx);
+                             /*hide_elo_slider=*/a.two_player_mode,
+                             /*hide_game_count=*/hide_gc, &tc_idx);
     if (h != a.pregame_hover) {
         a.pregame_hover = h;
         queue_redraw(a);
@@ -1380,13 +1403,20 @@ static void motion_pregame(AppState& a, double mx, double my, int width, int hei
         a.pregame_tc_hover = new_tc_hover;
         queue_redraw(a);
     }
+    // Game-count row hover (1..4 for buttons 7..10, else 0).
+    int new_gc_hover = (h >= 7 && h <= 10) ? (h - 6) : 0;
+    if (new_gc_hover != a.pregame_game_count_hover) {
+        a.pregame_game_count_hover = new_gc_hover;
+        queue_redraw(a);
+    }
     // Mouse button held AND press was inside the slider → slider
     // drag. Skipped while the dropdown is open (it's modal).
     if (a.dragging && !a.pregame_tc_open) {
         if (!a.slider_dragging) {
             int start = pregame_hit_test(a.press_x, a.press_y,
                                          width, height,
-                                         false, a.two_player_mode, nullptr);
+                                         false, a.two_player_mode,
+                                         hide_gc, nullptr);
             if (start == 4) a.slider_dragging = true;
         }
         if (a.slider_dragging) {
@@ -2052,6 +2082,37 @@ static void tick_ai_animation(AppState& a, int64_t now) {
             gs.white_turn != a.human_plays_white) {
             trigger_ai(a);
         }
+
+        // Multi-game sequential rotation. Fires only at the end of an
+        // AI move's animation (trigger_ai_after=false ⇒ this wasn't a
+        // human sensor move that still needs an AI reply). 2-player
+        // mode forces N=1 so this block is naturally a no-op there.
+        // After rotating, if the new active board is mid-state with
+        // AI to move (e.g. brand-new game and human plays black),
+        // kick Stockfish for it so the player has something to react
+        // to when they look over.
+        const int N = static_cast<int>(a.games.size());
+        if (!trigger_ai_after && N > 1 && a.mode == MODE_PLAYING &&
+            !a.two_player_mode) {
+            int next = a.active_game;
+            for (int step = 1; step <= N; ++step) {
+                int candidate = (a.active_game + step) % N;
+                if (!a.games[candidate].game.game_over) {
+                    next = candidate;
+                    break;
+                }
+            }
+            if (next != a.active_game) {
+                a.active_game = next;
+                GameState& ngs = cur_gs(a);
+                cur(a).clock_last_tick_us = 0;     // reset clock pacing
+                if (!ngs.game_over &&
+                    ngs.white_turn != a.human_plays_white &&
+                    !ngs.ai_thinking && !ngs.ai_animating) {
+                    trigger_ai(a);
+                }
+            }
+        }
     }
     queue_redraw(a);
 }
@@ -2247,12 +2308,19 @@ static void render_menu(AppState& a, int width, int height, int64_t now) {
 }
 
 static void render_pregame(AppState& a, int width, int height) {
+    // Multi-game selector hidden in 2-player mode (no AI to play
+    // parallel games against) and on the chessnut path (only one
+    // physical board).
+    const bool hide_game_count = a.two_player_mode || a.chessnut_connected;
     renderer_draw_pregame(a.human_plays_white, a.stockfish_elo,
                           APP_ELO_MIN, APP_ELO_MAX,
                           a.time_control,
                           a.pregame_tc_open,
                           a.pregame_tc_hover,
                           /*hide_elo_slider=*/a.two_player_mode,
+                          a.pregame_game_count,
+                          a.pregame_game_count_hover,
+                          hide_game_count,
                           width, height, a.pregame_hover);
 }
 

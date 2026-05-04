@@ -14,7 +14,8 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 
 - **3D rendered chess board** with PBR (Physically Based Rendering), shadow mapping, and procedural wood grain textures
 - **AI opponent** powered by Stockfish (UCI), strength configurable from ~1320 to ~2850 Elo via an in-app slider
-- **Pre-game setup screen** — choose your side (White or Black), pick Stockfish strength, and pick a time control before the game starts
+- **Pre-game setup screen** — choose your side (White or Black), pick Stockfish strength, pick a time control, and pick how many parallel games to play (1–4) before the game starts
+- **Multi-game mode** — set "Games" in pregame to 2, 3, or 4 to start that many simultaneous games against Stockfish in a 2×2 grid. Play sequentially: make a move on the active board, Stockfish replies, the active board rotates to the next non-finished game. Clocks tick only on the active board; the others freeze until they come around again. Two-player and Chessnut paths force a single board
 - **Chess clocks**: Classical (30+30), Rapid (15+10), Blitz (5+3), Bullet (1+1), or Unlimited. Live clock shown in the top-centre during play; game ends on flag fall with a "wins on time" result. Stockfish's own move time adapts to its remaining clock
 - **Full chess rules**: legal move validation, check/checkmate/stalemate detection, castling, en passant, pawn promotion
 - **Interactive controls**: click to select pieces, valid moves shown as animated glowing rings

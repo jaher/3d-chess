@@ -31,12 +31,21 @@ namespace {
 constexpr float PG_TOGGLE_W = 0.60f;
 constexpr float PG_TOGGLE_H = 0.10f;
 constexpr float PG_TOGGLE_X = -PG_TOGGLE_W * 0.5f;
-constexpr float PG_TOGGLE_Y =  0.25f;
+constexpr float PG_TOGGLE_Y =  0.32f;
 
-// Time-control dropdown. Sits between the toggle button and the ELO
-// label. When collapsed, only the head is visible; when open, a list
-// of TC_COUNT rows drops down below the head and overlaps the ELO
-// slider (clicks on it are suppressed while the dropdown is open).
+// "Games:" row of [1][2][3][4] square buttons. Sits between the
+// side toggle and the time-control dropdown. Hidden in 2-player
+// and chessnut paths (forced single board).
+constexpr float PG_GC_BTN_SIZE = 0.085f;
+constexpr float PG_GC_GAP      = 0.025f;
+constexpr float PG_GC_ROW_W    = 4 * PG_GC_BTN_SIZE + 3 * PG_GC_GAP;
+constexpr float PG_GC_X0       = -PG_GC_ROW_W * 0.5f;
+constexpr float PG_GC_Y        =  0.17f;     // top edge of the button row
+
+// Time-control dropdown. Sits between the games-count row and the
+// ELO label. When collapsed, only the head is visible; when open, a
+// list of TC_COUNT rows drops down below the head and overlaps the
+// ELO slider (clicks on it are suppressed while the dropdown is open).
 constexpr float PG_TC_HEAD_W =  0.60f;
 constexpr float PG_TC_HEAD_H =  0.08f;
 constexpr float PG_TC_HEAD_X = -PG_TC_HEAD_W * 0.5f;
@@ -57,7 +66,9 @@ constexpr float PG_START_Y = -0.63f;
 }  // namespace
 
 int pregame_hit_test(double mx, double my, int width, int height,
-                     bool dropdown_open, bool hide_elo_slider,
+                     bool dropdown_open,
+                     bool hide_elo_slider,
+                     bool hide_game_count,
                      int* out_tc_index) {
     if (out_tc_index) *out_tc_index = -1;
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
@@ -101,6 +112,17 @@ int pregame_hit_test(double mx, double my, int width, int height,
         ndc_y >= PG_TOGGLE_Y - PG_TOGGLE_H && ndc_y <= PG_TOGGLE_Y)
         return 3;
 
+    if (!hide_game_count) {
+        for (int i = 0; i < 4; ++i) {
+            float bx = PG_GC_X0 + static_cast<float>(i) *
+                       (PG_GC_BTN_SIZE + PG_GC_GAP);
+            if (ndc_x >= bx && ndc_x <= bx + PG_GC_BTN_SIZE &&
+                ndc_y >= PG_GC_Y - PG_GC_BTN_SIZE && ndc_y <= PG_GC_Y) {
+                return 7 + i;          // 7..10 → 1..4 games
+            }
+        }
+    }
+
     if (ndc_x >= PG_TC_HEAD_X && ndc_x <= PG_TC_HEAD_X + PG_TC_HEAD_W &&
         ndc_y >= PG_TC_HEAD_Y - PG_TC_HEAD_H && ndc_y <= PG_TC_HEAD_Y)
         return 5;
@@ -126,6 +148,9 @@ void renderer_draw_pregame(bool human_plays_white,
                            bool dropdown_open,
                            int tc_hover,
                            bool hide_elo_slider,
+                           int game_count,
+                           int game_count_hover,
+                           bool hide_game_count,
                            int width, int height, int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -162,6 +187,27 @@ void renderer_draw_pregame(bool human_plays_white,
 
     add_quad(PG_START_X, PG_START_Y, PG_START_W, PG_START_H,
              0.20f, 0.60f, 0.30f, hover == 1 ? 0.75f : 0.55f);
+
+    // Games-count row of 4 buttons. Selected gets a brighter slate
+    // tint; hovered gets a small alpha bump.
+    if (!hide_game_count) {
+        for (int i = 0; i < 4; ++i) {
+            float bx = PG_GC_X0 + static_cast<float>(i) *
+                       (PG_GC_BTN_SIZE + PG_GC_GAP);
+            const bool selected = (game_count == i + 1);
+            const bool hovered  = (game_count_hover == i + 1);
+            float r, g, b, alpha;
+            if (selected) {
+                r = 0.55f; g = 0.45f; b = 0.20f;   // gold-ish
+                alpha = hovered ? 1.0f : 0.92f;
+            } else {
+                r = 0.18f; g = 0.22f; b = 0.30f;   // slate
+                alpha = hovered ? 0.85f : 0.65f;
+            }
+            add_quad(bx, PG_GC_Y, PG_GC_BTN_SIZE, PG_GC_BTN_SIZE,
+                     r, g, b, alpha);
+        }
+    }
 
     // Dropdown head in collapsed state. When expanded, the list
     // overlay further down draws on top to give a continuous panel.
@@ -366,6 +412,30 @@ void renderer_draw_pregame(bool human_plays_white,
                       PG_TOGGLE_Y - 0.025f, bcw, bch, toggle_text);
     int toggle_end = static_cast<int>(ui_verts.size() / 5);
 
+    int gc_header_end = toggle_end;
+    int gc_digits_end = toggle_end;
+    if (!hide_game_count) {
+        float gcw = 0.022f, gch = 0.033f;
+        std::string gc_header = "Games";
+        float gw_header = gc_header.size() * gcw * 0.7f;
+        add_screen_string(ui_verts, -gw_header * 0.5f,
+                          PG_GC_Y + 0.040f, gcw, gch, gc_header);
+        gc_header_end = static_cast<int>(ui_verts.size() / 5);
+
+        float dcw = 0.040f, dch = 0.060f;
+        for (int i = 0; i < 4; ++i) {
+            float bx = PG_GC_X0 + static_cast<float>(i) *
+                       (PG_GC_BTN_SIZE + PG_GC_GAP);
+            std::string digit = std::string(1, static_cast<char>('1' + i));
+            float dw = digit.size() * dcw * 0.7f;
+            add_screen_string(ui_verts,
+                              bx + (PG_GC_BTN_SIZE - dw) * 0.5f,
+                              PG_GC_Y - (PG_GC_BTN_SIZE - dch) * 0.5f - 0.005f,
+                              dcw, dch, digit);
+        }
+        gc_digits_end = static_cast<int>(ui_verts.size() / 5);
+    }
+
     float hcw = 0.022f, hch = 0.033f;
     std::string tc_header = "Time control";
     float hw = tc_header.size() * hcw * 0.7f;
@@ -447,9 +517,24 @@ void renderer_draw_pregame(bool human_plays_white,
     }
     glDrawArrays(GL_TRIANGLES, title_count, toggle_end - title_count);
 
+    if (!hide_game_count && gc_header_end > toggle_end) {
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.72f, 0.72f, 0.78f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, toggle_end, gc_header_end - toggle_end);
+
+        // Digits inside each button: brighter on the selected one.
+        // Drawn as a single span for simplicity — selection stands
+        // out via the quad colour underneath, so all digits share
+        // the same warm tint.
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.96f, 0.92f, 0.78f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, gc_header_end,
+                     gc_digits_end - gc_header_end);
+    }
+
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                 0.72f, 0.72f, 0.78f, 1.0f);
-    glDrawArrays(GL_TRIANGLES, toggle_end, tc_header_end - toggle_end);
+    glDrawArrays(GL_TRIANGLES, gc_digits_end, tc_header_end - gc_digits_end);
 
     {
         float b = (tc_hover == -2 || dropdown_open) ? 1.0f : 0.92f;

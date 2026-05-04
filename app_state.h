@@ -234,6 +234,10 @@ struct AppState {
     // N=1. Default 1 so first-time users get the original single-
     // board UX. Drives `games.size()` after `app_enter_game`.
     int  pregame_game_count = 1;
+    // Hover index for the games-count [1][2][3][4] row in the
+    // pregame screen. 0 = none, 1..4 = button hovered. Visual
+    // only — the actual selection lives in pregame_game_count.
+    int  pregame_game_count_hover = 0;
 
     // Two-player (hot-seat) mode. Set by clicking the menu's
     // "Multiplayer" button (only visible when chessnut_connected),
