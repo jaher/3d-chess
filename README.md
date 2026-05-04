@@ -42,6 +42,7 @@ sudo apt-get install -y \
     build-essential \
     libgtk-3-dev \
     libepoxy-dev \
+    libcurl4-openssl-dev \
     pkg-config
 ```
 
@@ -52,6 +53,7 @@ sudo dnf install -y \
     gcc-c++ make \
     gtk3-devel \
     libepoxy-devel \
+    libcurl-devel \
     pkg-config
 ```
 
@@ -62,6 +64,7 @@ sudo pacman -S \
     base-devel \
     gtk3 \
     libepoxy \
+    curl \
     pkgconf
 ```
 
@@ -70,7 +73,7 @@ sudo pacman -S \
 Install the dependencies via [Homebrew](https://brew.sh):
 
 ```bash
-brew install gtk+3 libepoxy pkg-config
+brew install gtk+3 libepoxy curl pkg-config
 ```
 
 The Makefile auto-detects Darwin and prepends Homebrew's pkgconfig directory

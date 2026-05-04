@@ -15,8 +15,8 @@ else
     PKG_CONFIG := pkg-config
 endif
 
-CXXFLAGS += $(shell $(PKG_CONFIG) --cflags gtk+-3.0 epoxy sdl2)
-LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy sdl2) -lz -lm
+CXXFLAGS += $(shell $(PKG_CONFIG) --cflags gtk+-3.0 epoxy sdl2 libcurl)
+LDFLAGS  := $(shell $(PKG_CONFIG) --libs gtk+-3.0 epoxy sdl2 libcurl) -lz -lm
 
 TARGET   := chess
 SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cpp \

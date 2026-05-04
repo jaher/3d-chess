@@ -10,6 +10,7 @@
 
 #include <epoxy/gl.h>
 #include <gtk/gtk.h>
+#include <curl/curl.h>
 
 #include "ai_player.h"
 #include "app_state.h"
@@ -108,11 +109,11 @@ static void plat_request_quit() {
 
 // --- Puzzle fetch dispatch ---
 // Same idiom as AI move / eval: spawn a worker thread that runs the
-// blocking HTTP fetch (via `curl -s`), marshal the JSON body back to
-// the GTK main thread via g_idle_add. Curl is a hard runtime dep on
-// desktop; if it's missing or the fetch fails, app_puzzle_ready is
-// called with an empty body and the UI surfaces a "couldn't load
-// puzzle" hint.
+// blocking HTTP fetch via libcurl, then marshal the JSON body back
+// to the GTK main thread via g_idle_add. On any failure (network,
+// non-2xx status, libcurl init error) the worker delivers an empty
+// body and the UI surfaces a "couldn't load puzzle" hint via
+// app_puzzle_ready.
 struct PuzzleArrived {
     std::string body;
     bool        daily;
@@ -125,23 +126,40 @@ static gboolean on_puzzle_ready(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-static std::string fetch_url_via_curl(const char* url) {
-    // -s silent, -L follow redirects, --max-time 10 hard-cap so a
-    // hung connection can't wedge the worker thread for the whole
-    // session, --fail return non-zero on HTTP errors so popen sees
-    // an empty body.
-    char cmd[512];
-    std::snprintf(cmd, sizeof(cmd),
-                  "curl -s -L --max-time 10 --fail '%s' 2>/dev/null", url);
-    FILE* f = popen(cmd, "r");
-    if (!f) return std::string();
-    std::string out;
-    char buf[4096];
-    while (size_t n = std::fread(buf, 1, sizeof(buf), f)) {
-        out.append(buf, n);
+static size_t curl_write_to_string(char* ptr, size_t size, size_t nmemb,
+                                   void* userdata) {
+    auto* dst = static_cast<std::string*>(userdata);
+    size_t n = size * nmemb;
+    dst->append(ptr, n);
+    return n;
+}
+
+static std::string fetch_url(const char* url) {
+    std::string body;
+    CURL* c = curl_easy_init();
+    if (!c) return body;
+    curl_easy_setopt(c, CURLOPT_URL, url);
+    // libcurl's defaults are fine for everything we need: no
+    // redirect follow → enable it (chess.com sometimes 301s); fail
+    // on HTTP ≥ 400 so we don't pass an HTML error page through to
+    // the JSON parser; 10 s hard timeout so a hung connection can't
+    // wedge the worker thread for the session; small connect timeout
+    // so DNS / network errors surface fast.
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_to_string);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "3d-chess/1.0 (libcurl)");
+    CURLcode rc = curl_easy_perform(c);
+    if (rc != CURLE_OK) {
+        std::fprintf(stderr, "[puzzle] curl_easy_perform: %s\n",
+                     curl_easy_strerror(rc));
+        body.clear();
     }
-    pclose(f);
-    return out;
+    curl_easy_cleanup(c);
+    return body;
 }
 
 static void plat_trigger_puzzle_fetch(bool daily) {
@@ -149,7 +167,7 @@ static void plat_trigger_puzzle_fetch(bool daily) {
         const char* url = daily
             ? "https://api.chess.com/pub/puzzle"
             : "https://api.chess.com/pub/puzzle/random";
-        std::string body = fetch_url_via_curl(url);
+        std::string body = fetch_url(url);
         auto* r = new PuzzleArrived{std::move(body), daily};
         g_idle_add(on_puzzle_ready, r);
     }).detach();
@@ -358,6 +376,21 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
     if (argc > 1) g_models_dir = argv[1];
+
+    // libcurl global init has documented thread-safety caveats — it
+    // must run before any concurrent CURL usage and from a single
+    // thread. Doing it here at the top of main(), before workers
+    // spawn, satisfies both. curl_global_cleanup() is called via
+    // atexit so it runs after the puzzle worker threads have
+    // finished — they're detached, so we can't join them, and an
+    // explicit cleanup before shutdown could race a still-running
+    // request.
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK) {
+        std::atexit([]{ curl_global_cleanup(); });
+    } else {
+        std::fprintf(stderr,
+            "[puzzle] curl_global_init failed; puzzle fetch disabled\n");
+    }
 
     // Startup is fan-out: model parsing (6 threads), audio device
     // setup (1 thread), and gtk_init all run concurrently. gtk_init
