@@ -710,6 +710,48 @@ void app_enter_menu(AppState& a) {
     queue_redraw(a);
 }
 
+// User confirmed "Yes" on the withdraw modal (or said "yes" by
+// voice). In single-game mode this exits to the main menu, same
+// as before. In multi-game mode the resigned board is marked
+// game-over and the active rotates to the next still-running
+// board; only when every board is finished do we drop back to
+// the menu.
+static void resign_active_game(AppState& a) {
+    GameState& gs = cur_gs(a);
+    if (!gs.game_over) {
+        gs.game_over = true;
+        gs.game_result = a.human_plays_white
+            ? "Black wins by resignation!"
+            : "White wins by resignation!";
+    }
+
+    const int N = static_cast<int>(a.games.size());
+    int next = a.active_game;
+    for (int step = 1; step <= N; ++step) {
+        int candidate = (a.active_game + step) % N;
+        if (!a.games[candidate].game.game_over) {
+            next = candidate;
+            break;
+        }
+    }
+    if (next == a.active_game) {
+        // Every board finished — back to main menu.
+        app_enter_menu(a);
+        return;
+    }
+    a.active_game = next;
+    cur(a).clock_last_tick_us = 0;
+    GameState& ngs = cur_gs(a);
+    if (!ngs.game_over &&
+        ngs.white_turn != a.human_plays_white &&
+        !ngs.ai_thinking && !ngs.ai_animating &&
+        !a.two_player_mode) {
+        trigger_ai(a);
+    }
+    app_refresh_status(a);
+    queue_redraw(a);
+}
+
 void app_enter_pregame(AppState& a) {
     a.mode = MODE_PREGAME;
     // Preserve a.human_plays_white, a.stockfish_elo, a.time_control
@@ -1257,10 +1299,10 @@ static void release_playing(AppState& a, double mx, double my,
             int which = 0;
             withdraw_confirm_hit_test(active_mx, active_my,
                                       sub_w, sub_h, &which);
-            if (which == 1) {            // Yes → back to main menu
+            if (which == 1) {            // Yes → resign active board
                 a.withdraw_confirm_open = false;
                 a.withdraw_hover = 0;
-                app_enter_menu(a);
+                resign_active_game(a);
                 return;
             }
             if (which == 2) {            // No → close modal
@@ -2675,7 +2717,7 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         if (a.withdraw_confirm_open) {
             a.withdraw_confirm_open = false;
             a.withdraw_hover = 0;
-            app_enter_menu(a);
+            resign_active_game(a);
         } else if (cur(a).hint_confirm_pending) {
             // User accepted the hint — play it. Mirror the voice
             // move-execution path (capture detection, sfx, TTS,
