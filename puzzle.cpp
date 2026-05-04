@@ -349,6 +349,33 @@ std::string fen_side(const std::string& fen) {
     return fen[sp + 1] == 'b' ? "black" : "white";
 }
 
+// Extract the YYYY-MM-DD chunk from a chess.com puzzle URL like
+// https://www.chess.com/daily/2019-12-09 — returns `fallback` if
+// the URL is empty or doesn't carry a date in that form.
+std::string url_date(const std::string& url, const std::string& fallback) {
+    if (url.empty()) return fallback;
+    // Tiny hand-rolled match for "/YYYY-MM-DD" with the dashes in
+    // exactly the right positions; std::regex is overkill for this
+    // and pulls in extra header weight.
+    for (size_t i = 0; i + 10 <= url.size(); ++i) {
+        if (url[i] != '/') continue;
+        size_t s = i + 1;
+        if (s + 10 > url.size()) break;
+        bool ok = true;
+        for (int k = 0; k < 4 && ok; ++k)
+            ok = std::isdigit(static_cast<unsigned char>(url[s + k]));
+        if (ok && url[s + 4] == '-' &&
+            std::isdigit(static_cast<unsigned char>(url[s + 5])) &&
+            std::isdigit(static_cast<unsigned char>(url[s + 6])) &&
+            url[s + 7] == '-' &&
+            std::isdigit(static_cast<unsigned char>(url[s + 8])) &&
+            std::isdigit(static_cast<unsigned char>(url[s + 9]))) {
+            return url.substr(s, 10);
+        }
+    }
+    return fallback;
+}
+
 }  // namespace
 
 bool puzzle_archive_save(const Puzzle& p) {
@@ -366,16 +393,19 @@ bool puzzle_archive_save(const Puzzle& p) {
         return true;  // benign — we already have this puzzle.
     }
 
-    // Filename = `<sanitised-title>_<today>.md`. If the title is
-    // empty (chess.com sometimes ships untitled random puzzles)
-    // we fall back to `<today>.md`. Same-title-same-day collisions
-    // (different FEN) get a numeric suffix so neither file is
-    // clobbered.
+    // Filename = `<sanitised-title>_<url-date>.md`. The date comes
+    // from the chess.com URL (e.g. /daily/2019-12-09) so a random
+    // puzzle archives under its real publish date rather than the
+    // local fetch date. Empty / non-matching URL → fall back to
+    // today's local date. Empty title → use just the date plus a
+    // FEN-derived suffix so different positions on the same day
+    // stay distinct. Same-name collisions get a numeric suffix.
     std::string today = today_yyyy_mm_dd();
+    std::string date  = url_date(p.url, today);
     std::string title_slug = sanitize_title_to_filename(p.title);
     std::string base = title_slug.empty()
-        ? today
-        : (title_slug + "_" + today);
+        ? date
+        : (title_slug + "_" + date);
     std::string path = "puzzles/" + base + ".md";
     int suffix = 2;
     while (file_exists(path.c_str())) {

@@ -104,17 +104,34 @@ def side_from_fen(fen: str) -> str:
     return "black" if len(parts) >= 2 and parts[1] == "b" else "white"
 
 
-def archive_path_for(title: str, fen: str, today: str) -> str:
+_URL_DATE_RE = re.compile(r"/(\d{4}-\d{2}-\d{2})(?:/|$|\?)")
+
+
+def url_date(url: str, fallback: str) -> str:
+    """Pull the YYYY-MM-DD chunk out of a chess.com puzzle URL like
+    https://www.chess.com/daily/2019-12-09 . Falls back to `fallback`
+    when the URL is missing the date or empty."""
+    if not url:
+        return fallback
+    m = _URL_DATE_RE.search(url)
+    return m.group(1) if m else fallback
+
+
+def archive_path_for(title: str, fen: str, url: str, today: str) -> str:
     """Pick a non-clobbering path under PUZZLES_DIR/. Filename is
-    `<sanitised-title>_<today>.md`; if the title is empty we fall
-    back to `<today>_<short-fen-hash>.md` so different positions
-    on the same day still get distinct files."""
+    `<sanitised-title>_<url-date>.md` — `url-date` is the YYYY-MM-DD
+    embedded in the chess.com URL (so a random puzzle from 2019
+    archives under its real publish date, not when we happened to
+    fetch it). If the URL doesn't carry a date we fall back to
+    today; if the title is empty we use `<url-date>_<short-fen-
+    hash>.md` so different positions on the same day stay distinct."""
+    date = url_date(url, today)
     title_slug = slugify(title)[:80].rstrip("_") if title else ""
     if title_slug:
-        base = f"{title_slug}_{today}"
+        base = f"{title_slug}_{date}"
     else:
         h = abs(hash(fen)) % 0x10000
-        base = f"{today}_{h:04x}"
+        base = f"{date}_{h:04x}"
     path = os.path.join(PUZZLES_DIR, base + ".md")
     suffix = 2
     while os.path.exists(path):
@@ -130,7 +147,7 @@ def write_archive(p: dict, kind: str, today: str) -> str:
     pgn   = p.get("pgn")   or ""
 
     os.makedirs(PUZZLES_DIR, exist_ok=True)
-    path = archive_path_for(title, fen, today)
+    path = archive_path_for(title, fen, url, today)
 
     label = "Daily" if kind == "daily" else "Random"
     lines: list[str] = []
