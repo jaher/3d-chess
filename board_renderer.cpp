@@ -2109,15 +2109,33 @@ void renderer_draw(GameState& gs,
     // If main_pass_fbo is an offscreen FBO sized exactly (width,
     // height) the viewport origin is (0, 0). Otherwise (web no-
     // outline path → main_pass_fbo == default_fbo) we draw inside
-    // the sub-rect directly, so origin is (sub_x, sub_y). The
-    // outer multi-game loop has glScissor on the default FB
-    // already, so the clear and draws stay confined to the sub-rect.
+    // the sub-rect on the canvas directly, so origin is (sub_x,
+    // sub_y).
+    //
+    // Critical: when the main pass writes straight to the default
+    // FB, the per-iteration glClear must be scissor-protected to
+    // the sub-rect. Otherwise each multi-game iteration's clear
+    // wipes the previous boards' resolved content and only the
+    // last iteration's drawing survives — that's the "only the
+    // bottom-right board appears with N=4" bug on the web build.
+    // We don't want the scissor for the offscreen-FBO path
+    // (desktop, or web cartoon-outline) because the bound FB IS
+    // the sub-rect at that point and applying a default-FB-coord
+    // scissor box there clipped clears for non-(0,0)-origin
+    // sub-rects (the symmetric desktop-resize bug we fixed earlier).
     const bool main_pass_is_default =
         (main_pass_fbo == static_cast<GLuint>(default_fbo));
     const int mp_x = main_pass_is_default ? sub_x : 0;
     const int mp_y = main_pass_is_default ? sub_y : 0;
     glViewport(mp_x, mp_y, width, height);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (main_pass_is_default) {
+        glScissor(sub_x, sub_y, width, height);
+        glEnable(GL_SCISSOR_TEST);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+    } else {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
 
     glUseProgram(g_program);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uView"), 1, GL_FALSE, view.m);
