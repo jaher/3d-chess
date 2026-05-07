@@ -4,24 +4,35 @@
 
 #ifdef __EMSCRIPTEN__
 #include <GLES3/gl3.h>
-// Provided by web/font_atlas_stb.cpp; bakes the same 16x6 cell atlas
-// the desktop Cairo path produces, and binds it to *out_tex with
-// GL_R8.
+// Provided by web/font_atlas_stb.cpp; both bakers share the 16x6
+// cell layout produced by the desktop Cairo path. The "title" baker
+// uses Cinzel-Bold (the inscriptional Roman face used by the menu
+// title) and the default baker uses Inter-Bold (the clean sans
+// used everywhere else).
 extern "C" void build_font_atlas_stb(unsigned int* out_tex,
                                      int atlas_w, int atlas_h);
+extern "C" void build_title_font_atlas_stb(unsigned int* out_tex,
+                                           int atlas_w, int atlas_h);
 #else
 #include <epoxy/gl.h>
 #include <cairo.h>
 #include <glib.h>
 #include <pango/pangocairo.h>
+#include <fontconfig/fontconfig.h>
 #endif
 
 #include <cstdint>
 
 // Font atlas layout: full ASCII printable range (32-126) = 95 chars
-// laid out on a 16×6 grid of 48-pixel cells.
+// laid out on a 16×6 grid. Cells are deliberately oversized (96 px
+// each, ~80 px glyph height) so the title font's serif detail
+// survives the upscale — a 32 px glyph blurred away the inscribed
+// terminals and stroke contrast that make Cinzel readable as a
+// Roman face. The atlas texture is single-channel R8, so the cost
+// is one ~860 KB texture per font (1536×576 × 1 byte) — a fine
+// trade for crisp text at the sizes we render.
 namespace {
-constexpr int CELL_SIZE        = 48;
+constexpr int CELL_SIZE        = 96;
 constexpr int ATLAS_COLS       = 16;
 constexpr int ATLAS_ROWS       = 6;  // ceil(95/16)
 constexpr int ATLAS_W          = ATLAS_COLS * CELL_SIZE;
@@ -40,12 +51,13 @@ void char_uvs(char ch, float& u0, float& v0, float& u1, float& v1) {
     v1 = static_cast<float>(row + 1) / ATLAS_ROWS;
 }
 
-void build_font_atlas() {
-#ifdef __EMSCRIPTEN__
-    // Web build: stb_truetype-based atlas baker (same cell layout).
-    build_font_atlas_stb(&g_font_tex, ATLAS_W, ATLAS_H);
-#else
-    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8, ATLAS_W, ATLAS_H);
+#ifndef __EMSCRIPTEN__
+// Bake one 16×6-cell atlas from the given Pango font description
+// string ("Inter Bold 28", "Cinzel Bold 28", …) and upload it to a
+// new GL_R8 texture. Shared by the default and title bakers below.
+static void bake_pango_atlas(const char* pango_font_desc, GLuint* out_tex) {
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_A8,
+                                                          ATLAS_W, ATLAS_H);
     cairo_t* cr = cairo_create(surface);
 
     cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
@@ -53,7 +65,12 @@ void build_font_atlas() {
     cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
-    PangoFontDescription* font = pango_font_description_from_string("Sans Bold 28");
+    // Pango's font-size string is expressed in points; the bake
+    // size used to be 28 to fit the 48 px cell. Now that cells are
+    // 96 px tall we double the type to 56 to get crisp ~80 px tall
+    // glyphs that fill the cell properly.
+    PangoFontDescription* font =
+        pango_font_description_from_string(pango_font_desc);
     pango_layout_set_font_description(layout, font);
 
     cairo_set_source_rgba(cr, 1, 1, 1, 1);
@@ -75,17 +92,19 @@ void build_font_atlas() {
     cairo_surface_flush(surface);
     unsigned char* data = cairo_image_surface_get_data(surface);
 
-    glGenTextures(1, &g_font_tex);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glGenTextures(1, out_tex);
+    glBindTexture(GL_TEXTURE_2D, *out_tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    // Cairo A8 stride may differ from width; handle both cases.
     int stride = cairo_image_surface_get_stride(surface);
     if (stride == ATLAS_W) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, data);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, data);
     } else {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_W, ATLAS_H, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, nullptr);
         for (int y = 0; y < ATLAS_H; y++)
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, ATLAS_W, 1, GL_RED, GL_UNSIGNED_BYTE, data + y * stride);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, ATLAS_W, 1,
+                            GL_RED, GL_UNSIGNED_BYTE, data + y * stride);
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -96,6 +115,38 @@ void build_font_atlas() {
     g_object_unref(layout);
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
+}
+
+// Register the bundled TTFs with the per-application FontConfig set
+// so Pango can match them by family name without requiring the user
+// to install the fonts system-wide. Safe to call repeatedly.
+static void register_app_fonts_once() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    FcConfig* cfg = FcConfigGetCurrent();
+    FcConfigAppFontAddFile(cfg,
+        reinterpret_cast<const FcChar8*>("fonts/Cinzel-Bold.ttf"));
+    FcConfigAppFontAddFile(cfg,
+        reinterpret_cast<const FcChar8*>("fonts/Inter-Bold.ttf"));
+}
+#endif
+
+void build_font_atlas() {
+#ifdef __EMSCRIPTEN__
+    build_font_atlas_stb(&g_font_tex, ATLAS_W, ATLAS_H);
+#else
+    register_app_fonts_once();
+    bake_pango_atlas("Inter Bold 28", &g_font_tex);
+#endif
+}
+
+void build_title_font_atlas() {
+#ifdef __EMSCRIPTEN__
+    build_title_font_atlas_stb(&g_title_font_tex, ATLAS_W, ATLAS_H);
+#else
+    register_app_fonts_once();
+    bake_pango_atlas("Cinzel Bold 28", &g_title_font_tex);
 #endif
 }
 

@@ -8,9 +8,14 @@
 // this atlas; they are also declared in render_internal.h because
 // the per-screen modules share them.
 
-// Build the atlas texture. Populates g_font_tex. Call once at
-// renderer_init time after a GL context is available.
+// Build the body atlas texture (Inter Bold). Populates g_font_tex.
+// Call once at renderer_init time after a GL context is available.
 void build_font_atlas();
+
+// Build the display/title atlas (Cinzel Bold). Populates
+// g_title_font_tex. Used for the menu title — the rest of the UI
+// stays on the body atlas for legibility at small sizes.
+void build_title_font_atlas();
 
 // UVs of a single glyph cell. Exposed so the world-space board-
 // coordinate label mesh can sample the atlas directly instead of

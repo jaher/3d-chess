@@ -20,32 +20,39 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
-static constexpr int CELL_SIZE = 48;
+// Must match the constants in text_atlas.cpp; the renderer's
+// char_uvs() helper assumes the same 16×6 grid so glyph UVs line
+// up regardless of which baker filled the texture.
+static constexpr int CELL_SIZE = 96;
 static constexpr int ATLAS_COLS = 16;
 static constexpr int ATLAS_FIRST_CHAR = 32;
-static constexpr int FONT_PIXEL_HEIGHT = 32;  // fits within the 48-px cell
+static constexpr int FONT_PIXEL_HEIGHT = 80;  // ~83% of cell — leaves room for descenders
 
-// Buffer the entire font file in memory once.
-static unsigned char* g_ttf_data = nullptr;
-static size_t g_ttf_size = 0;
+// Each atlas keeps its own buffered TTF data so we can hold both
+// the body font (Inter, used everywhere by default) and the title
+// font (Cinzel, used for the menu title + etched board labels) at
+// the same time without re-reading the file every bake.
+struct FontBuffer {
+    unsigned char* data = nullptr;
+    size_t         size = 0;
+};
+static FontBuffer g_body_font, g_title_font;
 
-static bool load_font_once() {
-    if (g_ttf_data) return true;
-    // Loaded into the Emscripten virtual FS via --preload-file (see Makefile).
-    const char* path = "/DejaVuSans-Bold.ttf";
+static bool load_font_into(FontBuffer& buf, const char* path) {
+    if (buf.data) return true;
     std::FILE* f = std::fopen(path, "rb");
     if (!f) {
         std::fprintf(stderr, "font_atlas_stb: cannot open %s\n", path);
         return false;
     }
     std::fseek(f, 0, SEEK_END);
-    g_ttf_size = static_cast<size_t>(std::ftell(f));
+    buf.size = static_cast<size_t>(std::ftell(f));
     std::fseek(f, 0, SEEK_SET);
-    g_ttf_data = static_cast<unsigned char*>(std::malloc(g_ttf_size));
-    if (!g_ttf_data) { std::fclose(f); return false; }
-    if (std::fread(g_ttf_data, 1, g_ttf_size, f) != g_ttf_size) {
-        std::free(g_ttf_data);
-        g_ttf_data = nullptr;
+    buf.data = static_cast<unsigned char*>(std::malloc(buf.size));
+    if (!buf.data) { std::fclose(f); return false; }
+    if (std::fread(buf.data, 1, buf.size, f) != buf.size) {
+        std::free(buf.data);
+        buf.data = nullptr;
         std::fclose(f);
         return false;
     }
@@ -53,11 +60,15 @@ static bool load_font_once() {
     return true;
 }
 
-// Bake the atlas. atlas_w / atlas_h must match the constants in
-// board_renderer.cpp (ATLAS_W = 16*48 = 768, ATLAS_H = 6*48 = 288).
+static void bake_atlas_from_buffer(const FontBuffer& buf,
+                                   unsigned int* out_tex,
+                                   int atlas_w, int atlas_h);
+
+// Bake the body atlas (Inter-Bold). atlas_w / atlas_h must match
+// the constants in text_atlas.cpp (768 × 288).
 extern "C" void build_font_atlas_stb(unsigned int* out_tex,
                                      int atlas_w, int atlas_h) {
-    if (!load_font_once()) {
+    if (!load_font_into(g_body_font, "/fonts/Inter-Bold.ttf")) {
         // Bind a single-pixel white texture as a fallback so the renderer
         // doesn't crash trying to sample a null texture.
         glGenTextures(1, out_tex);
@@ -69,9 +80,32 @@ extern "C" void build_font_atlas_stb(unsigned int* out_tex,
         return;
     }
 
+    bake_atlas_from_buffer(g_body_font, out_tex, atlas_w, atlas_h);
+}
+
+// Bake the title atlas (Cinzel-Bold) — same cell layout, used by
+// the menu title / subtitle and the etched board labels.
+extern "C" void build_title_font_atlas_stb(unsigned int* out_tex,
+                                           int atlas_w, int atlas_h) {
+    if (!load_font_into(g_title_font, "/fonts/Cinzel-Bold.ttf")) {
+        glGenTextures(1, out_tex);
+        glBindTexture(GL_TEXTURE_2D, *out_tex);
+        unsigned char white = 255;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 1, 1, 0,
+                     GL_RED, GL_UNSIGNED_BYTE, &white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        return;
+    }
+    bake_atlas_from_buffer(g_title_font, out_tex, atlas_w, atlas_h);
+}
+
+static void bake_atlas_from_buffer(const FontBuffer& buf,
+                                   unsigned int* out_tex,
+                                   int atlas_w, int atlas_h) {
     stbtt_fontinfo info;
-    if (!stbtt_InitFont(&info, g_ttf_data,
-                        stbtt_GetFontOffsetForIndex(g_ttf_data, 0))) {
+    if (!stbtt_InitFont(&info, buf.data,
+                        stbtt_GetFontOffsetForIndex(buf.data, 0))) {
         std::fprintf(stderr, "font_atlas_stb: stbtt_InitFont failed\n");
         return;
     }
@@ -97,15 +131,11 @@ extern "C" void build_font_atlas_stb(unsigned int* out_tex,
         int gw = x1 - x0;
         int gh = y1 - y0;
 
-        // Center the glyph horizontally inside the cell. Vertically, place
-        // the baseline at (cell_top + (CELL_SIZE - font_h)/2 + baseline),
-        // matching the centered look of the Cairo path.
         int cell_x = col * CELL_SIZE;
         int cell_y = row * CELL_SIZE;
         int dst_x  = cell_x + (CELL_SIZE - gw) / 2;
         int dst_y  = cell_y + (CELL_SIZE - font_h) / 2 + baseline + y0;
 
-        // Clamp to atlas bounds (defensive — should always fit).
         if (dst_x < 0) dst_x = 0;
         if (dst_y < 0) dst_y = 0;
         if (dst_x + gw > atlas_w) gw = atlas_w - dst_x;

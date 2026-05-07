@@ -62,7 +62,7 @@ static int    g_board_frame_count = 0;
 // metallic in the source materials (Material.006 / .007).
 static GLuint g_board_lining_vao = 0, g_board_lining_vbo = 0;
 static int    g_board_lining_count = 0;
-static GLuint g_wood_diffuse_tex  = 0;
+GLuint g_wood_diffuse_tex  = 0;
 static GLuint g_wood_specular_tex = 0;
 
 // Planar-reflection FBO. The squares fragment shader samples
@@ -85,8 +85,64 @@ static int    g_reflection_h         = 0;
 // should touch these symbols.
 GLuint g_text_program = 0;
 GLuint g_etched_label_program = 0;
+GLuint g_wood_button_program = 0;
 GLuint g_highlight_program = 0;
 GLuint g_font_tex = 0;
+GLuint g_title_font_tex = 0;
+
+// Shared palette for menu-style button labels and headings — same
+// warm gold the main menu introduced. Owned here so the per-screen
+// modules don't drift apart.
+const MenuPalette g_menu_palette;
+
+// Reusable walnut button — same chamfered look the main menu uses.
+// All per-screen UIs (pregame, options, challenge, endgame) call
+// this so the visual language stays consistent without each module
+// re-implementing the wood-button drawing.
+void draw_wood_button(float left, float top, float w, float h,
+                      bool hovered) {
+    static constexpr float CHAMFER = 0.012f;
+
+    glDisable(GL_BLEND);
+    glUseProgram(g_wood_button_program);
+    Mat4 id = mat4_identity();
+    glUniformMatrix4fv(glGetUniformLocation(g_wood_button_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_wood_diffuse_tex);
+    glUniform1i(glGetUniformLocation(g_wood_button_program, "uWoodTex"), 0);
+    glUniform2f(glGetUniformLocation(g_wood_button_program, "uButtonSize"),
+                w, h);
+    glUniform1f(glGetUniformLocation(g_wood_button_program, "uChamferSize"),
+                CHAMFER);
+    glUniform1f(glGetUniformLocation(g_wood_button_program, "uHoverBoost"),
+                hovered ? 0.18f : 0.0f);
+
+    float v[30] = {
+        left,     top - h, 0.0f,  0.0f, 0.0f,
+        left + w, top - h, 0.0f,  1.0f, 0.0f,
+        left + w, top,     0.0f,  1.0f, 1.0f,
+        left,     top - h, 0.0f,  0.0f, 0.0f,
+        left + w, top,     0.0f,  1.0f, 1.0f,
+        left,     top,     0.0f,  0.0f, 1.0f,
+    };
+    GLuint vao, vbo;
+    glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
+    glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float),
+                          (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &vbo); glDeleteVertexArrays(1, &vao);
+
+    glEnable(GL_BLEND);
+}
 
 static GLuint g_program = 0;
 static GLuint g_shadow_program = 0;
@@ -751,6 +807,7 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_shadow_program = create_program(shadow_vs_src, shadow_fs_src);
     g_text_program = create_program(text_vs_src, text_fs_src);
     g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
+    g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
     g_outline_program = create_program(outline_vs_src, outline_fs_src);
     shatter_init();
 
@@ -845,8 +902,11 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     build_ring_mesh(0.38f, 0.48f, 48, g_ring_vao, g_ring_vbo, g_ring_vertex_count);
 
     glEnable(GL_DEPTH_TEST);
-    // Font atlas and board labels
+    // Font atlases and board labels. The title atlas (Cinzel) is
+    // only sampled by the main-menu title; everything else samples
+    // the body atlas (Inter).
     build_font_atlas();
+    build_title_font_atlas();
     build_label_mesh();
 
     glClearColor(0.12f, 0.12f, 0.15f, 1.0f);
@@ -1585,18 +1645,19 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glUseProgram(g_highlight_program);
     Mat4 id_wc = mat4_identity();
-    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
-                       1, GL_FALSE, id_wc.m);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
 
-    // Full-screen backdrop dim.
-    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                0.0f, 0.0f, 0.0f, 0.55f);
+    // 1) Full-screen dim — pulls focus to the dialog without
+    // hiding the board.
     {
+        glUseProgram(g_highlight_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id_wc.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.0f, 0.0f, 0.0f, 0.55f);
         std::vector<float> bv;
         push_quad(bv, -1.0f, -1.0f, 1.0f, 1.0f);
         GLuint bvao, bvbo;
@@ -1613,138 +1674,126 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
         glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
     }
 
-    // Outlined panel, slightly larger behind the bg for a 1-cell border.
-    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                0.60f, 0.65f, 0.75f, 0.95f);
-    {
-        std::vector<float> ov;
-        push_quad(ov,
-                  WC_PANEL_X0 - 0.006f, WC_PANEL_Y0 - 0.010f,
-                  WC_PANEL_X1 + 0.006f, WC_PANEL_Y1 + 0.010f);
-        GLuint ovao, ovbo;
-        glGenVertexArrays(1, &ovao); glGenBuffers(1, &ovbo);
-        glBindVertexArray(ovao); glBindBuffer(GL_ARRAY_BUFFER, ovbo);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(ov.size() * sizeof(float)),
-                     ov.data(), GL_STREAM_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                              3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(ov.size() / 3));
-        glBindVertexArray(0);
-        glDeleteBuffers(1, &ovbo); glDeleteVertexArrays(1, &ovao);
-    }
+    // 2) Walnut panel — same wood treatment the menu buttons use,
+    // sized as the dialog body. The chamfer reads as a chunky
+    // wood plaque rather than the old flat dark-blue rectangle.
+    draw_wood_button(WC_PANEL_X0,
+                     WC_PANEL_Y1,
+                     WC_PANEL_X1 - WC_PANEL_X0,
+                     WC_PANEL_Y1 - WC_PANEL_Y0,
+                     /*hovered=*/false);
 
-    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                0.10f, 0.12f, 0.16f, 0.97f);
-    {
-        std::vector<float> pv;
-        push_quad(pv, WC_PANEL_X0, WC_PANEL_Y0, WC_PANEL_X1, WC_PANEL_Y1);
-        GLuint pvao, pvbo;
-        glGenVertexArrays(1, &pvao); glGenBuffers(1, &pvbo);
-        glBindVertexArray(pvao); glBindBuffer(GL_ARRAY_BUFFER, pvbo);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(pv.size() * sizeof(float)),
-                     pv.data(), GL_STREAM_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                              3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(pv.size() / 3));
-        glBindVertexArray(0);
-        glDeleteBuffers(1, &pvbo); glDeleteVertexArrays(1, &pvao);
-    }
+    // 3) Yes / No buttons — solid colored blocks that contrast
+    // against the wood (cream Yes, near-black No), echoing the
+    // light/dark squares of the chess board behind them. A thin
+    // top-edge highlight + bottom-edge shadow gives them the
+    // same chamfer feel as the panel.
+    auto draw_solid_block = [&](float x0, float y0, float x1, float y1,
+                                float r, float g, float b) {
+        glUseProgram(g_highlight_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                           1, GL_FALSE, id_wc.m);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+        glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
 
-    // Yes button (green, brighter on hover).
-    {
-        float r = (withdraw_hover == 1) ? 0.30f : 0.20f;
-        float g = (withdraw_hover == 1) ? 0.70f : 0.55f;
-        float b = (withdraw_hover == 1) ? 0.35f : 0.25f;
+        // Body fill.
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    r, g, b, 0.95f);
-        std::vector<float> yv;
-        push_quad(yv, WC_YES_X0, WC_YES_Y0, WC_YES_X1, WC_YES_Y1);
-        GLuint yvao, yvbo;
-        glGenVertexArrays(1, &yvao); glGenBuffers(1, &yvbo);
-        glBindVertexArray(yvao); glBindBuffer(GL_ARRAY_BUFFER, yvbo);
+                    r, g, b, 1.0f);
+        std::vector<float> qv; push_quad(qv, x0, y0, x1, y1);
+        GLuint qvao, qvbo;
+        glGenVertexArrays(1, &qvao); glGenBuffers(1, &qvbo);
+        glBindVertexArray(qvao); glBindBuffer(GL_ARRAY_BUFFER, qvbo);
         glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(yv.size() * sizeof(float)),
-                     yv.data(), GL_STREAM_DRAW);
+                     static_cast<GLsizeiptr>(qv.size() * sizeof(float)),
+                     qv.data(), GL_STREAM_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
                               3 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(yv.size() / 3));
-        glBindVertexArray(0);
-        glDeleteBuffers(1, &yvbo); glDeleteVertexArrays(1, &yvao);
-    }
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(qv.size() / 3));
 
-    // No button (red, brighter on hover).
-    {
-        float r = (withdraw_hover == 2) ? 0.80f : 0.65f;
-        float g = (withdraw_hover == 2) ? 0.28f : 0.22f;
-        float b = (withdraw_hover == 2) ? 0.28f : 0.22f;
+        // Top highlight (catches the studio key light).
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    r, g, b, 0.95f);
-        std::vector<float> nv;
-        push_quad(nv, WC_NO_X0, WC_NO_Y0, WC_NO_X1, WC_NO_Y1);
-        GLuint nvao, nvbo;
-        glGenVertexArrays(1, &nvao); glGenBuffers(1, &nvbo);
-        glBindVertexArray(nvao); glBindBuffer(GL_ARRAY_BUFFER, nvbo);
+                    1.0f, 1.0f, 1.0f, 0.18f);
+        std::vector<float> hv; push_quad(hv, x0, y1 - 0.005f, x1, y1);
         glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(nv.size() * sizeof(float)),
-                     nv.data(), GL_STREAM_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                              3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(nv.size() / 3));
+                     static_cast<GLsizeiptr>(hv.size() * sizeof(float)),
+                     hv.data(), GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(hv.size() / 3));
+
+        // Bottom shadow.
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    0.0f, 0.0f, 0.0f, 0.30f);
+        std::vector<float> sv; push_quad(sv, x0, y0, x1, y0 + 0.005f);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(sv.size() * sizeof(float)),
+                     sv.data(), GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(sv.size() / 3));
+
         glBindVertexArray(0);
-        glDeleteBuffers(1, &nvbo); glDeleteVertexArrays(1, &nvao);
+        glDeleteBuffers(1, &qvbo); glDeleteVertexArrays(1, &qvao);
+    };
+
+    // Yes — cream/ivory block, lifts to warmer cream on hover.
+    {
+        bool h = (withdraw_hover == 1);
+        float r = h ? 0.96f : 0.90f;
+        float g = h ? 0.91f : 0.85f;
+        float b = h ? 0.78f : 0.72f;
+        draw_solid_block(WC_YES_X0, WC_YES_Y0, WC_YES_X1, WC_YES_Y1, r, g, b);
+    }
+    // No — near-black, lifts to mid-charcoal on hover.
+    {
+        bool h = (withdraw_hover == 2);
+        float v = h ? 0.18f : 0.06f;
+        draw_solid_block(WC_NO_X0, WC_NO_Y0, WC_NO_X1, WC_NO_Y1, v, v, v);
     }
 
+    // 4) Text — title in Cinzel, button labels in Inter. Title
+    // colour is the same warm cream the menu uses for the
+    // subtitle so it reads as part of the same family.
     glUseProgram(g_text_program);
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
                        1, GL_FALSE, id_wc.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
-    std::vector<float> tv;
-    {
-        std::string title = "Withdraw from game?";
-        float cw = 0.036f, ch = 0.055f;
-        float tw = title.size() * cw * 0.7f;
-        add_screen_string(tv, -tw * 0.5f, 0.08f, cw, ch, title);
-    }
-    int title_count = static_cast<int>(tv.size() / 5);
+    std::vector<float> title_v;
+    std::string title = "Withdraw from game?";
+    float tcw = 0.034f, tch = 0.052f;
+    float tw  = title.size() * tcw * 0.7f;
+    add_screen_string(title_v, -tw * 0.5f, 0.08f, tcw, tch, title);
 
+    std::vector<float> body_v;
     {
         std::string s = "Yes";
         float cw = 0.030f, ch = 0.045f;
         float sw = s.size() * cw * 0.7f;
         float cx = (WC_YES_X0 + WC_YES_X1) * 0.5f;
         float cy = (WC_YES_Y0 + WC_YES_Y1) * 0.5f;
-        add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
+        add_screen_string(body_v, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
     }
-    int yes_end = static_cast<int>(tv.size() / 5);
-    int yes_count = yes_end - title_count;
-
+    int yes_end = static_cast<int>(body_v.size() / 5);
     {
         std::string s = "No";
         float cw = 0.030f, ch = 0.045f;
         float sw = s.size() * cw * 0.7f;
         float cx = (WC_NO_X0 + WC_NO_X1) * 0.5f;
         float cy = (WC_NO_Y0 + WC_NO_Y1) * 0.5f;
-        add_screen_string(tv, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
+        add_screen_string(body_v, cx - sw * 0.5f, cy + ch * 0.35f, cw, ch, s);
     }
-    int no_end = static_cast<int>(tv.size() / 5);
-    int no_count = no_end - yes_end;
+    int no_end = static_cast<int>(body_v.size() / 5);
 
-    if (!tv.empty()) {
+    auto draw_text_buf = [&](const std::vector<float>& v, GLuint tex,
+                              float r, float g, float b,
+                              int begin, int count) {
+        if (count <= 0) return;
         GLuint tvao, tvbo;
         glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
         glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
         glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
-                     tv.data(), GL_STREAM_DRAW);
+                     static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_STREAM_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
                               5 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
@@ -1752,15 +1801,30 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
                               5 * sizeof(float),
                               (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
-
+        glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    0.95f, 0.95f, 0.95f, 1.0f);
-        glDrawArrays(GL_TRIANGLES, 0, title_count);
-        glDrawArrays(GL_TRIANGLES, title_count, yes_count);
-        glDrawArrays(GL_TRIANGLES, title_count + yes_count, no_count);
-
+                    r, g, b, 1.0f);
+        glDrawArrays(GL_TRIANGLES, begin, count);
         glBindVertexArray(0);
         glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);
+    };
+
+    // Title in Cinzel, warm cream.
+    if (!title_v.empty()) {
+        draw_text_buf(title_v, g_title_font_tex,
+                      0.95f, 0.91f, 0.78f,
+                      0, static_cast<int>(title_v.size() / 5));
+    }
+    // Yes label sits on the cream block — use a near-black so the
+    // word reads against the light surface.
+    if (!body_v.empty()) {
+        draw_text_buf(body_v, g_font_tex,
+                      0.10f, 0.10f, 0.10f,
+                      0, yes_end);
+        // No label on the dark block — use cream/white.
+        draw_text_buf(body_v, g_font_tex,
+                      0.95f, 0.95f, 0.95f,
+                      yes_end, no_end - yes_end);
     }
 
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
@@ -3063,7 +3127,9 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     const float challenge_y = btn_challenge_y(chessnut_connected);
     const float puzzle_y    = btn_puzzle_y(chessnut_connected);
     const float options_y   = btn_options_y(chessnut_connected);
+#ifndef __EMSCRIPTEN__
     const float quit_y      = btn_quit_y(chessnut_connected);
+#endif
     int multi_end = subtitle_end;
     if (chessnut_connected) {
         std::string mp_text = "Multiplayer";
@@ -3114,98 +3180,62 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
     glEnableVertexAttribArray(1);
 
-    // Button backgrounds
-    glUseProgram(g_highlight_program);
-    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-    {
-        std::vector<float> bg;
-        auto push_quad = [&](float top) {
-            float v[18] = {
-                BTN_X, top - BTN_H, 0, BTN_X + BTN_W, top - BTN_H, 0,
-                BTN_X + BTN_W, top, 0,
-                BTN_X, top - BTN_H, 0, BTN_X + BTN_W, top, 0,
-                BTN_X, top, 0
-            };
-            bg.insert(bg.end(), v, v + 18);
-        };
-        push_quad(start_y);
-        push_quad(challenge_y);
-        push_quad(puzzle_y);
-        push_quad(options_y);
-        push_quad(quit_y);
-        if (chessnut_connected) push_quad(btn_multiplayer_y());
-        GLuint bvao, bvbo;
-        glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
-        glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(bg.size() * sizeof(float)),
-                     bg.data(), GL_STREAM_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.4f,0.8f, hover_button==1?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.2f,0.6f,0.3f, hover_button==3?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 6, 6);
-        // Puzzles — teal so it sits between Challenges (green) and
-        // Options (purple) without clashing.
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.20f,0.55f,0.60f, hover_button==6?0.55f:0.30f);
-        glDrawArrays(GL_TRIANGLES, 12, 6);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.5f,0.4f,0.7f, hover_button==4?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 18, 6);
+    // Button backgrounds — chamfered walnut blocks shared with all
+    // other UI screens via render_internal::draw_wood_button.
+    if (chessnut_connected)
+        draw_wood_button(BTN_X, btn_multiplayer_y(), BTN_W, BTN_H,
+                         hover_button == 5);
+    draw_wood_button(BTN_X, start_y,     BTN_W, BTN_H, hover_button == 1);
+    draw_wood_button(BTN_X, challenge_y, BTN_W, BTN_H, hover_button == 3);
+    draw_wood_button(BTN_X, puzzle_y,    BTN_W, BTN_H, hover_button == 6);
+    draw_wood_button(BTN_X, options_y,   BTN_W, BTN_H, hover_button == 4);
 #ifndef __EMSCRIPTEN__
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.6f,0.15f,0.15f, hover_button==2?0.5f:0.3f);
-        glDrawArrays(GL_TRIANGLES, 24, 6);
+    draw_wood_button(BTN_X, quit_y,      BTN_W, BTN_H, hover_button == 2);
 #endif
-        if (chessnut_connected) {
-            // Multiplayer button — warm amber so it stands out
-            // visually as the "physical board involved" option.
-            glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                        0.85f, 0.55f, 0.20f, hover_button == 5 ? 0.55f : 0.35f);
-            // Index varies: with quit (desktop) we're at offset 30,
-            // without (web) at offset 24.
-#ifdef __EMSCRIPTEN__
-            glDrawArrays(GL_TRIANGLES, 24, 6);
-#else
-            glDrawArrays(GL_TRIANGLES, 30, 6);
-#endif
-        }
-        glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
-    }
 
     glUseProgram(g_text_program);
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glActiveTexture(GL_TEXTURE0);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
     glBindVertexArray(uvao);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1,0.9f,0.6f,1);
+    // Title + subtitle: bind the Cinzel atlas (display face) so the
+    // brand identity stays Roman-inscriptional. Soft gold matches
+    // the rest of the warm palette.
+    glBindTexture(GL_TEXTURE_2D, g_title_font_tex);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.95f, 0.84f, 0.50f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
     if (subtitle_end > title_count) {
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f,0.7f,0.7f,0.8f);
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.88f, 0.82f, 0.65f, 0.85f);
         glDrawArrays(GL_TRIANGLES, title_count, subtitle_end - title_count);
     }
+    // Switch to the body atlas (Inter) for the menu options — the
+    // sans face is cleaner at small sizes and pairs well with the
+    // serif title.
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    // All button labels share one gold palette — hover lifts the
+    // luminance a touch (1.0 vs 0.85) instead of swapping hues.
+    auto label_color = [&](bool hovered) {
+        float k = hovered ? 1.00f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
+    };
     if (multi_end > subtitle_end) {
-        float mi = hover_button == 5 ? 1.0f : 0.92f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), mi, mi, mi, 1);
+        label_color(hover_button == 5);
         glDrawArrays(GL_TRIANGLES, subtitle_end, multi_end - subtitle_end);
     }
-    float si = hover_button==1 ? 1.0f : 0.85f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), si,si,si,1);
+    label_color(hover_button == 1);
     glDrawArrays(GL_TRIANGLES, multi_end, start_end - multi_end);
-    float ci = hover_button==3 ? 1.0f : 0.85f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), ci,ci,ci,1);
+    label_color(hover_button == 3);
     glDrawArrays(GL_TRIANGLES, start_end, ch_end - start_end);
-    float pi = hover_button==6 ? 1.0f : 0.85f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), pi,pi,pi,1);
+    label_color(hover_button == 6);
     glDrawArrays(GL_TRIANGLES, ch_end, puz_end - ch_end);
-    float oi = hover_button==4 ? 1.0f : 0.85f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), oi,oi,oi,1);
+    label_color(hover_button == 4);
     glDrawArrays(GL_TRIANGLES, puz_end, opt_end - puz_end);
 #ifndef __EMSCRIPTEN__
-    float qi = hover_button==2 ? 1.0f : 0.85f;
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), qi,qi,qi,1);
+    label_color(hover_button == 2);
     glDrawArrays(GL_TRIANGLES, opt_end, quit_end - opt_end);
 #endif
 

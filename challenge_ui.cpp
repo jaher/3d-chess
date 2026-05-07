@@ -73,37 +73,17 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
         bg_verts.insert(bg_verts.end(), {x, y-h, 0,  x+w, y-h, 0,  x+w, y, 0,
                                           x, y-h, 0,  x+w, y, 0,  x, y, 0});
     };
-    add_quad(CS_BACK_X, CS_BACK_Y, CS_BACK_W, CS_BACK_H);
+    // Walnut buttons for Back + every challenge entry — same wood +
+    // gold language the main menu uses.
+    (void)bg_verts;  // unused now
+    (void)add_quad;
+    draw_wood_button(CS_BACK_X, CS_BACK_Y, CS_BACK_W, CS_BACK_H,
+                     hover_index == -2);
     for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
         float bw = cs_button_width_for(challenge_names[i]);
-        add_quad(-bw * 0.5f, by, bw, CS_BTN_H);
+        draw_wood_button(-bw * 0.5f, by, bw, CS_BTN_H, hover_index == i);
     }
-
-    GLuint bvao, bvbo;
-    glGenVertexArrays(1, &bvao); glGenBuffers(1, &bvbo);
-    glBindVertexArray(bvao); glBindBuffer(GL_ARRAY_BUFFER, bvbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(bg_verts.size()*sizeof(float)),
-                 bg_verts.data(), GL_STREAM_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    glUseProgram(g_highlight_program);
-    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, id.m);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
-    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-
-    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                0.4f, 0.4f, 0.4f, hover_index == -2 ? 0.6f : 0.4f);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-
-    for (int i = 0; i < static_cast<int>(challenge_names.size()); i++) {
-        bool h = (hover_index == i);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                    0.2f, 0.6f, 0.3f, h ? 0.6f : 0.35f);
-        glDrawArrays(GL_TRIANGLES, 6 + i*6, 6);
-    }
-    glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
 
     std::vector<float> text_verts;
 
@@ -147,19 +127,26 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     glUseProgram(g_text_program);
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.6f, 1.0f);
+    // Title in Cinzel + gold to match the main menu.
+    glBindTexture(GL_TEXTURE_2D, g_title_font_tex);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.95f, 0.84f, 0.50f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    auto gold_label = [&](bool hovered) {
+        float k = hovered ? 1.00f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
+    };
+    gold_label(hover_index == -2);
     glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
 
     int prev = back_end;
     for (int i = 0; i < static_cast<int>(name_ends.size()); i++) {
-        float bri = (hover_index == i) ? 1.0f : 0.85f;
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), bri, bri, bri, 1.0f);
+        gold_label(hover_index == i);
         glDrawArrays(GL_TRIANGLES, prev, name_ends[i] - prev);
         prev = name_ends[i];
     }
@@ -534,12 +521,18 @@ void renderer_draw_challenge_summary(const std::string& challenge_name,
     glUseProgram(g_text_program);
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.4f, 1.0f);
+    // Title in Cinzel + warm gold for brand consistency.
+    glBindTexture(GL_TEXTURE_2D, g_title_font_tex);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.95f, 0.84f, 0.50f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
+
+    // Body in Inter.
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.88f, 0.82f, 0.65f, 0.85f);
     glDrawArrays(GL_TRIANGLES, title_count, subtitle_end - title_count);
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.5f, 0.9f, 0.95f, 1.0f);
     glDrawArrays(GL_TRIANGLES, subtitle_end, table_start - subtitle_end);

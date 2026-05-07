@@ -695,6 +695,118 @@ void main() {
 )";
 
 // ---------------------------------------------------------------------------
+// Wood-grain menu button shader. Replaces the flat-colored button
+// quads on the main menu with chamfered walnut blocks. The vertex
+// shader passes through the local UV (0..1 within the button) so
+// the fragment shader can sample the walnut diffuse texture and
+// also compute distance-to-nearest-edge for a faux 3D bevel:
+//
+//   * top edge falls off into a bright highlight (key light hits
+//     the upward-facing chamfer face),
+//   * bottom edge into a soft shadow (downward-facing face),
+//   * sides into a subtler darken (side faces, halfway-lit).
+//
+// uHoverBoost lifts the surface a touch on the hovered button so
+// the user gets clear feedback without the old per-button hue
+// differentiation (start=blue, options=purple, etc.) — all buttons
+// now share the same warm walnut palette as the board frame.
+// ---------------------------------------------------------------------------
+const char* wood_button_vs_src = GLSL_VERSION R"(
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUV;
+
+uniform mat4 uMVP;
+
+out vec2 vUV;
+
+void main() {
+    vUV = aUV;
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+)";
+
+const char* wood_button_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vUV;
+
+out vec4 FragColor;
+
+uniform sampler2D uWoodTex;
+uniform vec2  uButtonSize;     // (W, H) in NDC — used to scale the
+                                // wood UVs so grain density doesn't
+                                // depend on aspect.
+uniform float uChamferSize;    // chamfer width in NDC units
+uniform float uHoverBoost;     // 0.0 idle, ~0.18 hover
+
+void main() {
+    // The walnut diffuse has its natural grain running vertically
+    // in the source image. We want the grain to read horizontally
+    // across the button (a walnut plank cut along the width), so
+    // we swap U/V before sampling. A small height-modulated horizontal
+    // wobble (sin term) breaks the dead-straight tiling into the
+    // soft cathedral curves real walnut planks show; the second
+    // sample at a different scale + a heavier wobble adds the long-
+    // wavelength figure that makes the grain feel like a single
+    // continuous board rather than a repeating texture.
+    float aspect = uButtonSize.x / uButtonSize.y;
+    vec2 base_uv = vec2(vUV.y, vUV.x);
+
+    // Layer A — fine grain (the close-spaced pencil-line streaks).
+    // Sampled at high frequency along the button's long axis so we
+    // get many streaks across; the warp curves them into shallow
+    // arcs instead of dead-straight ruler strokes.
+    vec2 uv_a = base_uv * vec2(2.4, aspect * 2.0);
+    uv_a.x += 0.12 * sin(vUV.x * 6.2831 * 1.5 + vUV.y * 2.4);
+    uv_a.y += 0.04 * sin(vUV.x * 6.2831 * 3.0);
+    vec3 wood_a = texture(uWoodTex, uv_a).rgb;
+
+    // Layer B — long-wavelength figure (the broader light/dark
+    // banding that makes one half of the plank read warmer than
+    // the other). Lower freq, bigger warp; heavier offset so the
+    // sample lands somewhere uncorrelated with layer A.
+    vec2 uv_b = base_uv * vec2(0.42, aspect * 0.32)
+              + vec2(0.31, 0.17);
+    uv_b.x += 0.18 * sin(vUV.x * 6.2831 + vUV.y * 1.1 + 0.7);
+    vec3 wood_b = texture(uWoodTex, uv_b).rgb;
+
+    vec3 wood = mix(wood_a, wood_b, 0.40);
+    // A tiny luminance-only contrast lift sharpens the grain so the
+    // streaks read at button scale without darkening the body.
+    float l = dot(wood, vec3(0.299, 0.587, 0.114));
+    wood = mix(vec3(l), wood, 1.05);
+    wood = (wood - 0.5) * 1.12 + 0.5;
+
+    // Distance from each edge in NDC units, then collapse to the
+    // single nearest-edge distance — we want a symmetric inset
+    // bevel (same shadow + lit-rim pattern on all four sides), not
+    // a directional one.
+    float d_left  = vUV.x        * uButtonSize.x;
+    float d_right = (1.0 - vUV.x) * uButtonSize.x;
+    float d_bot   = vUV.y        * uButtonSize.y;
+    float d_top   = (1.0 - vUV.y) * uButtonSize.y;
+    float d_min   = min(min(d_left, d_right), min(d_top, d_bot));
+
+    // The chamfer is split into two visible bands:
+    //   * outer 25% — a thin, near-perimeter shadow line ("rabbet"
+    //     where the chamfer drops away into the void),
+    //   * next 50% — a soft lit ramp peaking mid-chamfer (the
+    //     bevel face catching the studio rig from above),
+    //   * remainder — flat plank top, unchanged.
+    float t = clamp(d_min / uChamferSize, 0.0, 1.0);
+    float edge_dark = (1.0 - smoothstep(0.0, 0.25, t)) * 0.55;
+    float bevel_lit = smoothstep(0.20, 0.55, t) * (1.0 - smoothstep(0.55, 1.0, t)) * 0.45;
+    float shading   = 1.0 - edge_dark + bevel_lit;
+    shading         = max(shading, 0.30);
+
+    // Slight overall warm tint and a hover-time lift so the wood
+    // doesn't read as muddy.
+    vec3 color = wood * shading * (1.05 + uHoverBoost);
+    color = clamp(color, 0.0, 1.0);
+
+    FragColor = vec4(color, 1.0);
+}
+)";
+
+// ---------------------------------------------------------------------------
 // Cartoon-outline post-process shaders. Toggled by pressing 'S' in
 // a live game. Samples the offscreen scene color + depth textures,
 // does a 4-tap neighbour depth comparison, and darkens the pixel

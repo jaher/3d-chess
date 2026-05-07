@@ -29,7 +29,7 @@ LDFLAGS   := \
     --preload-file ../challenges@/challenges \
     --preload-file ../puzzles@/puzzles \
     --preload-file ../sounds@/sounds \
-    --preload-file DejaVuSans-Bold.ttf@/DejaVuSans-Bold.ttf \
+    --preload-file ../fonts@/fonts \
     --shell-file index.html
 
 # Sources compiled from the parent dir (shared with desktop build).

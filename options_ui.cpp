@@ -148,6 +148,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         bg.insert(bg.end(), {x, y-h, 0,  x+w, y-h, 0,  x+w, y, 0,
                               x, y-h, 0,  x+w, y, 0,  x, y, 0});
     };
+    // Back is drawn below as a walnut button — leave its slot empty
+    // here, but emit a placeholder quad so the per-toggle vertex
+    // offsets below stay correct without rewriting them.
     add_quad(OPT_BACK_X, OPT_BACK_Y, OPT_BACK_W, OPT_BACK_H);
     if (continuous_voice_supported) {
         add_quad(OPT_TOG_X, OPT_TOG_VOICE_Y, OPT_TOG_W, OPT_TOG_H); // row 1
@@ -187,9 +190,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
     glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
 
-    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
-                0.4f, 0.4f, 0.4f, hover == 1 ? 0.6f : 0.4f);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    // Skip the Back quad — drawn as a walnut button after the
+    // toggles below so it lands on the same wood + gold language
+    // as the rest of the menu screens.
+    (void)0;
 
     // Toggle tints green when ON, grey when OFF; brighter on hover.
     auto draw_toggle = [&](bool on, int hover_id, int vert_offset) {
@@ -257,6 +261,10 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         }
     }
     glBindVertexArray(0); glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // Walnut "Back" button (replaces the flat-grey Back quad).
+    draw_wood_button(OPT_BACK_X, OPT_BACK_Y, OPT_BACK_W, OPT_BACK_H,
+                     hover == 1);
 
     // --- Text ---
     std::vector<float> text_verts;
@@ -401,13 +409,23 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     glUseProgram(g_text_program);
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.6f, 1.0f);
+    // Title in Cinzel + warm gold for brand consistency.
+    glBindTexture(GL_TEXTURE_2D, g_title_font_tex);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.95f, 0.84f, 0.50f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
 
-    glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.85f, 0.85f, 1.0f);
+    // Back to Inter for body text.
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    {
+        // "Back" sits on a walnut button — match the gold label
+        // colour the main menu uses.
+        float k = hover == 1 ? 1.00f : 0.85f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
+    }
     glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
 
     auto draw_label_span = [&](int hover_id, int span_begin, int span_end) {

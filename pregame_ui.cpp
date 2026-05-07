@@ -178,8 +178,8 @@ void renderer_draw_pregame(bool human_plays_white,
         regions.push_back({start, 6, r, g, b, a});
     };
 
-    add_quad(-0.95f, 0.93f, 0.20f, 0.07f,
-             0.25f, 0.35f, 0.55f, hover == 2 ? 0.55f : 0.30f);
+    // Back + Start are drawn as walnut buttons after the bg pass —
+    // skip their colored quads here so they don't double-draw.
 
     if (human_plays_white) {
         add_quad(PG_TOGGLE_X, PG_TOGGLE_Y, PG_TOGGLE_W, PG_TOGGLE_H,
@@ -189,8 +189,7 @@ void renderer_draw_pregame(bool human_plays_white,
                  0.12f, 0.12f, 0.14f, hover == 3 ? 0.95f : 0.78f);
     }
 
-    add_quad(PG_START_X, PG_START_Y, PG_START_W, PG_START_H,
-             0.20f, 0.60f, 0.30f, hover == 1 ? 0.75f : 0.55f);
+    // (Start drawn below as a walnut button.)
 
     // Games-count row of 4 buttons. Selected gets a brighter slate
     // tint; hovered gets a small alpha bump.
@@ -245,6 +244,14 @@ void renderer_draw_pregame(bool human_plays_white,
     }
     glBindVertexArray(0);
     glDeleteBuffers(1, &bvbo); glDeleteVertexArrays(1, &bvao);
+
+    // ----- Walnut Back + Start buttons -----
+    // Same chamfered-wood look the main menu uses, so the pregame
+    // screen reads as part of the same "wood + gold" palette
+    // instead of dropping back to flat-coloured quads.
+    draw_wood_button(-0.95f, 0.93f, 0.20f, 0.07f, hover == 2);
+    draw_wood_button(PG_START_X, PG_START_Y, PG_START_W, PG_START_H,
+                     hover == 1);
 
     // ----- Pill-shaped progress slider -----
     //
@@ -505,12 +512,15 @@ void renderer_draw_pregame(bool human_plays_white,
     glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
                        1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_font_tex);
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
+    // Title in Cinzel + warm gold to match the main menu's brand.
+    glBindTexture(GL_TEXTURE_2D, g_title_font_tex);
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                1.0f, 0.9f, 0.6f, 1.0f);
+                0.95f, 0.84f, 0.50f, 1.0f);
     glDrawArrays(GL_TRIANGLES, 0, title_count);
+    // Body text uses the Inter atlas.
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
 
     if (human_plays_white) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
@@ -560,16 +570,19 @@ void renderer_draw_pregame(bool human_plays_white,
     }
 
     {
-        float b = hover == 1 ? 1.0f : 0.92f;
+        // "Start" label — same warm gold the main menu uses for its
+        // button labels.
+        float k = hover == 1 ? 1.00f : 0.85f;
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    b, b, b, 1.0f);
+                    0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
         glDrawArrays(GL_TRIANGLES, elo_end, start_end - elo_end);
     }
 
     {
-        float b = hover == 2 ? 1.0f : 0.85f;
+        // "Back" label — gold like Start.
+        float k = hover == 2 ? 1.00f : 0.85f;
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
-                    b, b, b, 1.0f);
+                    0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
         glDrawArrays(GL_TRIANGLES, start_end, back_end - start_end);
     }
 
