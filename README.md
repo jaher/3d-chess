@@ -6,9 +6,9 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 
 ![Chess Board](https://img.shields.io/badge/OpenGL-3.3-blue) ![GTK](https://img.shields.io/badge/GTK-3.0-green) ![C++17](https://img.shields.io/badge/C++-17-orange)
 
-![Game Screenshot](screenshots/Game.png)
+![Main Menu](screenshots/Menu.png)
 
-![Analysis Mode](screenshots/Game2.png)
+![Game Screenshot](screenshots/Game.png)
 
 ## Features
 
