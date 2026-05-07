@@ -12,7 +12,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 
 ## Features
 
-- **3D rendered chess board** with PBR (Physically Based Rendering), shadow mapping, and procedural wood grain textures
+- **3D rendered chess board** with PBR (Physically Based Rendering), shadow mapping, walnut wood texture (diffuse + specular maps triplanar-projected onto the frame), and lacquered glossy squares with environment reflections
 - **AI opponent** powered by Stockfish (UCI), strength configurable from ~1320 to ~2850 Elo via an in-app slider
 - **Pre-game setup screen** — choose your side (White or Black), pick Stockfish strength, pick a time control, and pick how many parallel games to play (1–4) before the game starts
 - **Multi-game mode** — set "Games" in pregame to 2, 3, or 4 to start that many simultaneous games against Stockfish in a 2×2 grid. Play sequentially: make a move on the active board, Stockfish replies, the active board rotates to the next non-finished game. Clocks tick only on the active board; the others freeze until they come around again. Two-player and Chessnut paths force a single board
@@ -777,6 +777,9 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               to the v1.0.0 tag of
                               huggingface.co/rhasspy/piper-voices.
   models/                  -- High-res STL piece models (desktop build)
+  models/board/            -- Chessboard meshes + walnut textures (Sketchfab
+                              CC-BY model, see Credits). Loaded by both
+                              desktop and web builds.
   models-web/              -- Decimated STL pieces (~80k tris, intermediate)
   models-web-packed/       -- Gzipped indexed-mesh packed pieces (~4 MB total,
                               preloaded by the web build)
@@ -849,6 +852,21 @@ git add third_party/stockfish
 git commit -m "Bump Stockfish"
 ```
 
+## Credits & third-party licenses
+
+- The chessboard model and walnut texture maps under `models/board/`
+  (`squares_light.stl`, `squares_dark.stl`, `frame.stl`,
+  `walnut_diffuse.jpg`, `walnut_specular.png`) are derived from the
+  CC-BY 4.0 ["Chess set"](https://sketchfab.com/3d-models/chess-set-a2664ea4fcaa4a64ad077667d9d0c7fb)
+  model by [Brendan Wood](https://sketchfab.com/brendanwood872) on
+  Sketchfab. The pieces were stripped, the geometry re-scaled to
+  the project's coordinate system, and the squares grid was split
+  by material in Blender; the diffuse + specular textures are
+  unmodified.
+- `third_party/stb_image.h` is Sean Barrett's public-domain image
+  loader, used to decode the walnut JPEG / PNG at startup.
+
 ## License
 
-MIT
+MIT (project source). Bundled assets keep their original licenses
+— see "Credits & third-party licenses" above.

@@ -4,6 +4,7 @@
 #include "render_internal.h"
 #include "shader.h"
 #include "shatter_transition.h"
+#include "stl_model.h"
 #include "text_atlas.h"
 
 #include <algorithm>
@@ -11,7 +12,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifndef __EMSCRIPTEN__
@@ -37,8 +41,24 @@ static inline gint64 g_get_monotonic_time() {
 // GL state
 // ---------------------------------------------------------------------------
 static PieceGPU g_pieces[PIECE_COUNT];
-static GLuint g_board_vao = 0, g_board_vbo = 0;
-static int g_board_light_count = 0, g_board_dark_count = 0;
+// Board meshes — the chessboard ships as three pre-baked STLs
+// derived from a CC-BY Sketchfab model:
+//   models/board/squares_light.stl  — 32 light squares
+//   models/board/squares_dark.stl   — 32 dark squares
+//   models/board/frame.stl          — walnut wooden frame
+// The walnut frame additionally samples two raw textures
+// (diffuse + specular) via triplanar projection in the fragment
+// shader; STL doesn't carry UVs but triplanar sidesteps that.
+static GLuint g_board_squares_light_vao = 0,
+              g_board_squares_light_vbo = 0;
+static int    g_board_squares_light_count = 0;
+static GLuint g_board_squares_dark_vao = 0,
+              g_board_squares_dark_vbo = 0;
+static int    g_board_squares_dark_count = 0;
+static GLuint g_board_frame_vao = 0, g_board_frame_vbo = 0;
+static int    g_board_frame_count = 0;
+static GLuint g_wood_diffuse_tex  = 0;
+static GLuint g_wood_specular_tex = 0;
 // Shared between board_renderer.cpp and the per-screen render
 // modules (challenge_ui.cpp, …) via render_internal.h. Intentionally
 // non-static so those TUs can link against them; no other module
@@ -295,46 +315,233 @@ static void build_ring_mesh(float r_inner, float r_outer, int segments,
     glBindVertexArray(0);
 }
 
-static std::vector<float> build_board_mesh(int& light_verts, int& dark_verts) {
-    std::vector<float> light, dark;
-    float y = BOARD_Y;
-    for (int row = 0; row < 8; row++) {
-        for (int col = 0; col < 8; col++) {
-            float cx, cz; square_center(col, row, cx, cz);
-            float h = SQ / 2.0f;
-            float x0 = cx - h, x1 = cx + h, z0 = cz - h, z1 = cz + h;
-            // Standard chess square colors: a1 is dark (both player's
-            // left-hand corner is a dark square). Internal col 7 = a-file,
-            // so a1 is (row=0, col=7) where (row+col)%2=1; we want that in
-            // the dark buffer, and squares where (row+col)%2=0 are light.
-            // This also puts queens on their own color: d1 (row=0, col=4)
-            // is light, d8 (row=7, col=4) is dark.
-            auto& buf = ((row + col) % 2 == 0) ? light : dark;
-            buf.insert(buf.end(), {0,1,0, x0,y,z0}); buf.insert(buf.end(), {0,1,0, x1,y,z0});
-            buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z0});
-            buf.insert(buf.end(), {0,1,0, x1,y,z1}); buf.insert(buf.end(), {0,1,0, x0,y,z1});
+// Build a (normal, position) interleaved vertex buffer from a
+// pre-positioned STL, preserving the source model's world
+// coordinates. Used by the chessboard load path: the three STLs
+// under models/board/ are pre-scaled to project units (8 × SQ
+// across, top face at Y = 0) by the Blender splitter at
+// tools/blender_split_board.py — we just need to wire them
+// straight into the GL buffer.
+//
+// Smooth normals via angle-weighted neighbour averaging with a
+// crease angle of `crease_deg` so the wooden frame's right-angle
+// edges stay sharp.
+static std::vector<float>
+build_buffer_from_stl_world(const StlModel& m, float crease_deg) {
+    const auto& tris = m.triangles();
+    const size_t T = tris.size();
+    std::vector<float> buf;
+    buf.reserve(T * 6 * 3);
+
+    if (crease_deg <= 0.0f) {
+        // Flat-shaded fast path.
+        for (const auto& tri : tris) {
+            const Vertex* verts[3] = {&tri.v0, &tri.v1, &tri.v2};
+            for (int i = 0; i < 3; ++i) {
+                buf.push_back(tri.normal.x);
+                buf.push_back(tri.normal.y);
+                buf.push_back(tri.normal.z);
+                buf.push_back(verts[i]->x);
+                buf.push_back(verts[i]->y);
+                buf.push_back(verts[i]->z);
+            }
+        }
+        return buf;
+    }
+
+    // Quantize positions for neighbour grouping.
+    auto bb = m.bounding_box();
+    float ext_x = bb.max.x - bb.min.x;
+    float ext_y = bb.max.y - bb.min.y;
+    float ext_z = bb.max.z - bb.min.z;
+    float quant = std::max({ext_x, ext_y, ext_z}) * 1e-4f;
+    if (quant <= 0.0f) quant = 1e-5f;
+
+    auto quant_key = [&](float x, float y, float z) {
+        return ((static_cast<int64_t>(std::round(x / quant)) & 0x1fffff) << 42) |
+               ((static_cast<int64_t>(std::round(y / quant)) & 0x1fffff) << 21) |
+               ((static_cast<int64_t>(std::round(z / quant)) & 0x1fffff));
+    };
+
+    struct Vec3f { float x, y, z; };
+    auto sub = [](Vec3f a, Vec3f b) -> Vec3f { return {a.x-b.x, a.y-b.y, a.z-b.z}; };
+    auto cross = [](Vec3f a, Vec3f b) -> Vec3f {
+        return {a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x};
+    };
+    auto dot = [](Vec3f a, Vec3f b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
+    auto len = [](Vec3f a) { return std::sqrt(a.x*a.x + a.y*a.y + a.z*a.z); };
+    auto norm = [&](Vec3f a) -> Vec3f {
+        float L = len(a);
+        if (L < 1e-20f) return {0, 0, 0};
+        return {a.x / L, a.y / L, a.z / L};
+    };
+
+    std::vector<Vec3f> face_n(T);
+    std::vector<float> corner_w(T * 3);
+    for (size_t t = 0; t < T; ++t) {
+        const Triangle& tri = tris[t];
+        Vec3f v0{tri.v0.x, tri.v0.y, tri.v0.z};
+        Vec3f v1{tri.v1.x, tri.v1.y, tri.v1.z};
+        Vec3f v2{tri.v2.x, tri.v2.y, tri.v2.z};
+        Vec3f geo = cross(sub(v1, v0), sub(v2, v0));
+        face_n[t] = (len(geo) > 1e-20f)
+            ? norm(geo)
+            : norm({tri.normal.x, tri.normal.y, tri.normal.z});
+        auto angle_at = [&](Vec3f a, Vec3f b, Vec3f c) -> float {
+            Vec3f e1 = norm(sub(b, a));
+            Vec3f e2 = norm(sub(c, a));
+            float d = dot(e1, e2);
+            if (d > 1.0f) { d = 1.0f; }
+            if (d < -1.0f) { d = -1.0f; }
+            return std::acos(d);
+        };
+        corner_w[t * 3 + 0] = angle_at(v0, v1, v2);
+        corner_w[t * 3 + 1] = angle_at(v1, v2, v0);
+        corner_w[t * 3 + 2] = angle_at(v2, v0, v1);
+    }
+
+    std::unordered_map<int64_t, std::vector<std::pair<uint32_t, uint8_t>>> groups;
+    groups.reserve(T * 3);
+    for (size_t t = 0; t < T; ++t) {
+        const Vertex* verts[3] = {&tris[t].v0, &tris[t].v1, &tris[t].v2};
+        for (uint8_t i = 0; i < 3; ++i) {
+            groups[quant_key(verts[i]->x, verts[i]->y, verts[i]->z)]
+                .push_back({static_cast<uint32_t>(t), i});
         }
     }
-    float thickness = 0.45f, bmin = -4.0f * SQ, bmax = 4.0f * SQ, ybot = y - thickness;
-    // Bottom
-    light.insert(light.end(), {0,-1,0, bmin,ybot,bmin}); light.insert(light.end(), {0,-1,0, bmax,ybot,bmin});
-    light.insert(light.end(), {0,-1,0, bmax,ybot,bmax}); light.insert(light.end(), {0,-1,0, bmin,ybot,bmin});
-    light.insert(light.end(), {0,-1,0, bmax,ybot,bmax}); light.insert(light.end(), {0,-1,0, bmin,ybot,bmax});
-    // 4 sides
-    auto side = [&](float nx, float ny, float nz, float x0, float z0, float x1, float z1) {
-        dark.insert(dark.end(), {nx,ny,nz, x0,ybot,z0}); dark.insert(dark.end(), {nx,ny,nz, x1,ybot,z1});
-        dark.insert(dark.end(), {nx,ny,nz, x1,y,z1});    dark.insert(dark.end(), {nx,ny,nz, x0,ybot,z0});
-        dark.insert(dark.end(), {nx,ny,nz, x1,y,z1});    dark.insert(dark.end(), {nx,ny,nz, x0,y,z0});
-    };
-    side(0,0,1, bmin,bmax, bmax,bmax); side(0,0,-1, bmax,bmin, bmin,bmin);
-    side(1,0,0, bmax,bmin, bmax,bmax); side(-1,0,0, bmin,bmax, bmin,bmin);
 
-    light_verts = static_cast<int>(light.size() / 6);
-    dark_verts = static_cast<int>(dark.size() / 6);
-    std::vector<float> all;
-    all.insert(all.end(), light.begin(), light.end());
-    all.insert(all.end(), dark.begin(), dark.end());
-    return all;
+    float crease_cos = std::cos(crease_deg *
+                                static_cast<float>(M_PI) / 180.0f);
+    for (size_t t = 0; t < T; ++t) {
+        const Triangle& tri = tris[t];
+        const Vertex* verts[3] = {&tri.v0, &tri.v1, &tri.v2};
+        const Vec3f& fn = face_n[t];
+        for (uint8_t i = 0; i < 3; ++i) {
+            int64_t k = quant_key(verts[i]->x, verts[i]->y, verts[i]->z);
+            const auto& grp = groups[k];
+            Vec3f sum{0, 0, 0};
+            for (const auto& [ot, oi] : grp) {
+                const Vec3f& ofn = face_n[ot];
+                if (dot(fn, ofn) < crease_cos) continue;
+                float w = corner_w[ot * 3 + oi];
+                sum.x += ofn.x * w;
+                sum.y += ofn.y * w;
+                sum.z += ofn.z * w;
+            }
+            Vec3f n = (len(sum) < 1e-20f) ? fn : norm(sum);
+            buf.push_back(n.x);
+            buf.push_back(n.y);
+            buf.push_back(n.z);
+            buf.push_back(verts[i]->x);
+            buf.push_back(verts[i]->y);
+            buf.push_back(verts[i]->z);
+        }
+    }
+    return buf;
+}
+
+// Single-file image loader (vendored under third_party/). We
+// only need the C interface from one TU.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_LINEAR
+#define STBI_NO_HDR
+#include "third_party/stb_image.h"
+
+// Decode `path` into a GL_RGB8 GL_TEXTURE_2D and return the
+// handle, or 0 on failure. Mip chain is generated; min filter
+// uses the trilinear chain so triplanar projection at varying
+// distances doesn't shimmer. Wrap is REPEAT so the seamless
+// walnut tiles cleanly across world coordinates.
+static GLuint gl_load_texture(const std::string& path) {
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels =
+        stbi_load(path.c_str(), &w, &h, &ch, 3 /*force RGB*/);
+    if (!pixels) {
+        std::fprintf(stderr,
+            "[board] texture load failed: %s — %s\n",
+            path.c_str(), stbi_failure_reason() ? stbi_failure_reason() : "?");
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, w, h, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    stbi_image_free(pixels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    std::fprintf(stderr,
+        "[board] loaded texture %s — %dx%d (orig %d ch)\n",
+        path.c_str(), w, h, ch);
+    return tex;
+}
+
+// Load the three board STLs and the two walnut textures from
+// `dir`. `dir` is "models/board" relative to the working
+// directory at runtime (or "/models/board" inside the
+// preload-FS for the web build, which is mounted at /). On any
+// load failure the affected mesh / texture is left as 0 — the
+// draw path falls back to the in-shader procedural wood for the
+// frame, and a missing square mesh just won't render that side.
+static void load_board_assets(const std::string& dir) {
+    auto load_one = [&](const std::string& name,
+                        GLuint& vao, GLuint& vbo, int& count,
+                        float crease) -> bool {
+        StlModel m;
+        std::string path = dir + "/" + name;
+        try {
+            m.load(path);
+        } catch (...) {
+            std::fprintf(stderr,
+                "[board] failed to read %s\n", path.c_str());
+            return false;
+        }
+        if (m.triangle_count() == 0) {
+            std::fprintf(stderr,
+                "[board] %s has no triangles\n", path.c_str());
+            return false;
+        }
+        std::vector<float> buf = build_buffer_from_stl_world(m, crease);
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(buf.size() * sizeof(float)),
+                     buf.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float),
+                              (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glBindVertexArray(0);
+        count = static_cast<int>(buf.size() / 6);
+        std::fprintf(stderr,
+            "[board] loaded %s — %zu tris → %d verts\n",
+            path.c_str(), m.triangle_count(), count);
+        return true;
+    };
+
+    load_one("squares_light.stl",
+             g_board_squares_light_vao, g_board_squares_light_vbo,
+             g_board_squares_light_count, /*crease_deg=*/30.0f);
+    load_one("squares_dark.stl",
+             g_board_squares_dark_vao, g_board_squares_dark_vbo,
+             g_board_squares_dark_count, /*crease_deg=*/30.0f);
+    load_one("frame.stl",
+             g_board_frame_vao, g_board_frame_vbo,
+             g_board_frame_count, /*crease_deg=*/45.0f);
+
+    g_wood_diffuse_tex  = gl_load_texture(dir + "/walnut_diffuse.jpg");
+    g_wood_specular_tex = gl_load_texture(dir + "/walnut_specular.png");
 }
 
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
@@ -544,18 +751,15 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     for (int i = 0; i < PIECE_COUNT; i++)
         upload_piece(g_pieces[i], loaded_models[i]);
 
-    int lv, dv;
-    auto board_buf = build_board_mesh(lv, dv);
-    g_board_light_count = lv; g_board_dark_count = dv;
-    glGenVertexArrays(1, &g_board_vao); glGenBuffers(1, &g_board_vbo);
-    glBindVertexArray(g_board_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_board_vbo);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(board_buf.size() * sizeof(float)), board_buf.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindVertexArray(0);
+    // Board geometry + walnut textures. Shared across desktop
+    // (loaded from "models/board" relative to cwd) and the web
+    // build (the Emscripten preload-FS mounts the same path at
+    // /models/board — see web/Makefile's --preload-file).
+#ifdef __EMSCRIPTEN__
+    load_board_assets("/models/board");
+#else
+    load_board_assets("models/board");
+#endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
     build_ring_mesh(0.38f, 0.48f, 48, g_ring_vao, g_ring_vbo, g_ring_vertex_count);
@@ -2087,8 +2291,15 @@ void renderer_draw(GameState& gs,
 
     Mat4 board_model = mat4_identity();
     glUniformMatrix4fv(smod, 1, GL_FALSE, board_model.m);
-    glBindVertexArray(g_board_vao);
-    glDrawArrays(GL_TRIANGLES, 0, g_board_light_count + g_board_dark_count);
+    // Shadow pass — draw all three board meshes so pieces cast a
+    // shadow onto whichever surface they're sitting on (squares
+    // grid + walnut frame).
+    glBindVertexArray(g_board_squares_light_vao);
+    glDrawArrays(GL_TRIANGLES, 0, g_board_squares_light_count);
+    glBindVertexArray(g_board_squares_dark_vao);
+    glDrawArrays(GL_TRIANGLES, 0, g_board_squares_dark_count);
+    glBindVertexArray(g_board_frame_vao);
+    glDrawArrays(GL_TRIANGLES, 0, g_board_frame_count);
     glBindVertexArray(0);
 
     for (const auto& bp : gs.pieces) {
@@ -2155,11 +2366,54 @@ void renderer_draw(GameState& gs,
     float bnm[9]; mat4_normal_matrix(board_model, bnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, board_model.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, bnm);
-    glBindVertexArray(g_board_vao);
-    set_material(g_program, 0.85f,0.75f,0.55f, 0,0.45f,1, 1);
-    glDrawArrays(GL_TRIANGLES, 0, g_board_light_count);
-    set_material(g_program, 0.45f,0.25f,0.13f, 0,0.35f,1, 1);
-    glDrawArrays(GL_TRIANGLES, g_board_light_count, g_board_dark_count);
+    // --- Squares: flat lacquered colors, no texture sampling.
+    // Roughness held at ~0.08 so the IBL env-reflection term in
+    // the shader (scales as 1 - roughness) lets the overhead
+    // softbox glint along the fragment's reflection vector and
+    // the squares read as polished lacquer.
+    glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+
+    glBindVertexArray(g_board_squares_light_vao);
+    set_material(g_program, 0.86f, 0.80f, 0.65f, 0.0f, 0.08f, 1.0f, 0);
+    glDrawArrays(GL_TRIANGLES, 0, g_board_squares_light_count);
+
+    glBindVertexArray(g_board_squares_dark_vao);
+    set_material(g_program, 0.10f, 0.06f, 0.04f, 0.0f, 0.08f, 1.0f, 0);
+    glDrawArrays(GL_TRIANGLES, 0, g_board_squares_dark_count);
+
+    // --- Walnut frame: triplanar-sample the diffuse + specular
+    // textures the model ships when both are loaded; fall back
+    // to the shader's procedural wood grain (uWoodEffect=1) if
+    // either map is missing (file-not-found, sandbox, etc.).
+    if (g_wood_diffuse_tex && g_wood_specular_tex) {
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, g_wood_diffuse_tex);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, g_wood_specular_tex);
+        // Texture unit 0 stays bound to the shadow map, which
+        // the main pass relies on; leave it alone.
+        glActiveTexture(GL_TEXTURE0);
+
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 1);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodDiffuse"), 2);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodSpecular"), 3);
+        // ~3 tiles per project unit — tweak for denser grain.
+        glUniform1f(glGetUniformLocation(g_program, "uWoodScale"), 0.35f);
+
+        glBindVertexArray(g_board_frame_vao);
+        // uAlbedo doubles as a tint multiplier on the texture
+        // result; (1,1,1) shows the texture untinted.
+        set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.30f, 1.0f, 0);
+        glDrawArrays(GL_TRIANGLES, 0, g_board_frame_count);
+
+        // Reset so the piece draws below don't sample the wood
+        // texture by accident.
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+    } else {
+        glBindVertexArray(g_board_frame_vao);
+        set_material(g_program, 0.32f, 0.18f, 0.10f, 0.0f, 0.20f, 1.0f, 1);
+        glDrawArrays(GL_TRIANGLES, 0, g_board_frame_count);
+    }
     glBindVertexArray(0);
 
     // Pieces (with AI animation)
@@ -2352,7 +2606,7 @@ void renderer_draw(GameState& gs,
         glBindTexture(GL_TEXTURE_2D, g_font_tex);
         glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
         glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, vp.m);
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.85f, 0.80f, 0.70f, 0.8f);
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.0f, 0.0f, 0.0f, 0.95f);
 
         glBindVertexArray(g_label_vao);
         glDrawArrays(GL_TRIANGLES, 0, g_label_vertex_count);

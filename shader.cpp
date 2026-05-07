@@ -88,6 +88,17 @@ uniform float uRoughness;
 uniform float uAO;         // ambient occlusion
 uniform int uWoodEffect;
 
+// Optional textured-wood path (used by the imported Sketchfab
+// frame). uWoodTextureMode == 1 → sample uWoodDiffuse and (if
+// available) uWoodSpecular via triplanar projection from world
+// position. STL has no UVs; triplanar sidesteps that without
+// adding an attribute. uWoodScale tunes how many texture
+// repeats across one project unit.
+uniform int uWoodTextureMode;
+uniform sampler2D uWoodDiffuse;
+uniform sampler2D uWoodSpecular;
+uniform float uWoodScale;
+
 // =========================================================================
 // Procedural noise for wood grain
 // =========================================================================
@@ -270,6 +281,36 @@ void main() {
         // Wood grain affects roughness slightly
         float grainVar = fbm(vWorldPos.xz * 20.0) * 0.1;
         roughness = clamp(roughness + grainVar, 0.05, 1.0);
+    }
+
+    // Textured-wood path — STL has no UVs so we triplanar-project
+    // the walnut diffuse + spec maps from world position. Blend
+    // weights are |normal| normalised so the three samples sum to
+    // one and faces tilted between axes don't go dark.
+    if (uWoodTextureMode != 0) {
+        vec3 wp = vWorldPos * uWoodScale;
+        vec3 absN = abs(N);
+        float sum = max(absN.x + absN.y + absN.z, 1e-3);
+        absN /= sum;
+        vec3 diffX = texture(uWoodDiffuse, wp.zy).rgb;
+        vec3 diffY = texture(uWoodDiffuse, wp.xz).rgb;
+        vec3 diffZ = texture(uWoodDiffuse, wp.xy).rgb;
+        vec3 woodDiffuse = diffX * absN.x + diffY * absN.y + diffZ * absN.z;
+        // uAlbedo doubles as a tint multiplier; pass (1,1,1) for
+        // pure-texture display, or a warm tone to bias.
+        albedo = woodDiffuse * uAlbedo;
+
+        float specX = texture(uWoodSpecular, wp.zy).g;
+        float specY = texture(uWoodSpecular, wp.xz).g;
+        float specZ = texture(uWoodSpecular, wp.xy).g;
+        float spec  = specX * absN.x + specY * absN.y + specZ * absN.z;
+        // Sketchfab's spec map is bright = shiny → low roughness.
+        // Bend it into a [0.15, 0.55] band centered around the
+        // user-provided uRoughness so a polished walnut stays
+        // glossy where the grain is dense.
+        float specRoughness = mix(0.55, 0.15, spec);
+        roughness = clamp(mix(uRoughness, specRoughness, 0.7),
+                          0.05, 1.0);
     }
 
     // Base reflectance (dielectric = 0.04, metallic = albedo)

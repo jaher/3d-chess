@@ -25,6 +25,7 @@ LDFLAGS   := \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
     -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js \
     --preload-file ../models-web-packed@/models \
+    --preload-file ../models/board@/models/board \
     --preload-file ../challenges@/challenges \
     --preload-file ../puzzles@/puzzles \
     --preload-file ../sounds@/sounds \
