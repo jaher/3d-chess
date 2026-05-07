@@ -59,6 +59,15 @@ static GLuint g_board_frame_vao = 0, g_board_frame_vbo = 0;
 static int    g_board_frame_count = 0;
 static GLuint g_wood_diffuse_tex  = 0;
 static GLuint g_wood_specular_tex = 0;
+
+// Planar-reflection FBO. The squares fragment shader samples
+// this in screen space to show piece reflections on the lacquer
+// surface. Recreated on viewport resize.
+static GLuint g_reflection_fbo       = 0;
+static GLuint g_reflection_color_tex = 0;
+static GLuint g_reflection_depth_rbo = 0;
+static int    g_reflection_w         = 0;
+static int    g_reflection_h         = 0;
 // Shared between board_renderer.cpp and the per-screen render
 // modules (challenge_ui.cpp, …) via render_internal.h. Intentionally
 // non-static so those TUs can link against them; no other module
@@ -161,6 +170,41 @@ static void ensure_scene_fbo(int w, int h) {
 
     g_scene_fbo_w = w;
     g_scene_fbo_h = h;
+}
+
+// Planar-reflection FBO — color (sampled by the squares' shader)
+// + depth renderbuffer (used during the mirrored pass; not
+// sampled). Recreated lazily when (w, h) change.
+static void ensure_reflection_fbo(int w, int h) {
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    if (g_reflection_fbo &&
+        g_reflection_w == w && g_reflection_h == h) return;
+
+    if (g_reflection_fbo == 0)       glGenFramebuffers(1, &g_reflection_fbo);
+    if (g_reflection_color_tex == 0) glGenTextures(1, &g_reflection_color_tex);
+    if (g_reflection_depth_rbo == 0) glGenRenderbuffers(1, &g_reflection_depth_rbo);
+
+    glBindTexture(GL_TEXTURE_2D, g_reflection_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindRenderbuffer(GL_RENDERBUFFER, g_reflection_depth_rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_reflection_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, g_reflection_color_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, g_reflection_depth_rbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    g_reflection_w = w;
+    g_reflection_h = h;
 }
 
 // Multisample FBO used as the actual 3D-pass target. Color +
@@ -2314,6 +2358,97 @@ void renderer_draw(GameState& gs,
     }
 
     glDisable(GL_POLYGON_OFFSET_FILL);
+
+    // ----- Planar-reflection pass -----
+    // Render the pieces (and only the pieces) with the camera
+    // mirrored about Y = 0 (the play surface) into a half-res
+    // FBO. The squares' fragment shader samples this in screen
+    // space to show piece reflections like glass / piano lacquer.
+    //
+    // Critical: glClearColor is global GL state. We save the
+    // existing clear color before changing it for the reflection
+    // FBO and restore it before returning, otherwise the main
+    // FB's clear at the top of the main pass would inherit the
+    // reflection-pass background and the menu / multi-game
+    // backdrop would change colour mid-frame.
+    bool reflection_ready = false;
+    {
+        GLfloat saved_clear[4];
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, saved_clear);
+
+        const int rw = std::max(1, width  / 2);
+        const int rh = std::max(1, height / 2);
+        ensure_reflection_fbo(rw, rh);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_reflection_fbo);
+        glViewport(0, 0, rw, rh);
+        // Match the same dark blue-grey the original menu uses
+        // (renderer_init's initial clear) so empty regions of
+        // the reflection FB don't read as a hard black hole.
+        glClearColor(0.12f, 0.12f, 0.15f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+
+        // V_reflect = V_main * S(1, -1, 1).
+        Mat4 view_mirror = mat4_multiply(view, mat4_scale(1.0f, -1.0f, 1.0f));
+
+        glUseProgram(g_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uView"),
+                           1, GL_FALSE, view_mirror.m);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uProjection"),
+                           1, GL_FALSE, proj.m);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uLightSpaceMatrix"),
+                           1, GL_FALSE, light_space.m);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_shadow_tex);
+        glUniform1i(glGetUniformLocation(g_program, "uShadowMap"), 0);
+        // Mirrored view-pos so the BRDF's V vector lines up with
+        // the mirrored geometry.
+        float view_pos_mirror[3] = {view_pos[0], -view_pos[1], view_pos[2]};
+        glUniform3fv(glGetUniformLocation(g_program, "uViewPos"),
+                     1, view_pos_mirror);
+        // Same studio rig as the main pass — kept literal here so
+        // the reflection pass doesn't depend on a variable that
+        // the main pass declares further down.
+        const float lpos_r[12] = {0.4f,1,0.6f, -0.5f,0.8f,-0.4f,
+                                  0,0.5f,-1, 0,0.5f,1};
+        const float lcol_r[12] = {2.5f,2.3f,2, 1,1.1f,1.3f,
+                                  0.8f,0.7f,0.6f, 0.8f,0.7f,0.6f};
+        glUniform3fv(glGetUniformLocation(g_program, "uLightPositions"),
+                     4, lpos_r);
+        glUniform3fv(glGetUniformLocation(g_program, "uLightColors"),
+                     4, lcol_r);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+
+        for (const auto& bp : gs.pieces) {
+            if (!bp.alive) continue;
+            float wx, wz; square_center(bp.col, bp.row, wx, wz);
+            float s = BASE_PIECE_SCALE * piece_scale[bp.type];
+            // Use static positions even mid-AI-animation — the
+            // hovering-arc lift on the moving piece is small
+            // relative to the reflection's blur and the savings
+            // (no per-frame state plumbing) are worth it.
+            Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, rot_z_to_y);
+            float pnm[9]; mat4_normal_matrix(pm, pnm);
+            glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"),
+                               1, GL_FALSE, pm.m);
+            glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"),
+                               1, GL_FALSE, pnm);
+            if (bp.is_white) set_material(g_program, 0.97f, 0.95f, 0.90f, 0, 0.28f, 1, 0);
+            else             set_material(g_program, 0.02f, 0.02f, 0.02f, 0, 0.35f, 1, 0);
+            glBindVertexArray(g_pieces[bp.type].vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_pieces[bp.type].num_vertices);
+            glBindVertexArray(0);
+        }
+        reflection_ready = true;
+
+        // Restore the saved clear color so the main pass /
+        // multi-game backdrop / menu clears keep their original
+        // colour.
+        glClearColor(saved_clear[0], saved_clear[1],
+                     saved_clear[2], saved_clear[3]);
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);
 
     // --- Main pass ---
@@ -2366,20 +2501,46 @@ void renderer_draw(GameState& gs,
     float bnm[9]; mat4_normal_matrix(board_model, bnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, board_model.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, bnm);
-    // --- Squares: flat lacquered colors, no texture sampling.
-    // Roughness held at ~0.08 so the IBL env-reflection term in
-    // the shader (scales as 1 - roughness) lets the overhead
-    // softbox glint along the fragment's reflection vector and
-    // the squares read as polished lacquer.
+    // --- Squares: flat lacquered colors + a screen-space sample
+    // of the planar-reflection texture. Roughness held at ~0.08
+    // so the IBL env term still gives ambient sheen, while the
+    // reflection texture (the prior mirrored-camera pass)
+    // delivers the actual piece silhouettes.
     glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
 
+    if (reflection_ready) {
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, g_reflection_color_tex);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 1);
+        glUniform1i(glGetUniformLocation(g_program, "uReflectionTex"), 4);
+        float vp_w = static_cast<float>(width);
+        float vp_h = static_cast<float>(height);
+        glUniform2f(glGetUniformLocation(g_program, "uViewportSize"),
+                    vp_w, vp_h);
+    } else {
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+    }
+
+    // Light squares: warm cream lacquer, glossy reflection.
+    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.85f);
     glBindVertexArray(g_board_squares_light_vao);
-    set_material(g_program, 0.86f, 0.80f, 0.65f, 0.0f, 0.08f, 1.0f, 0);
+    set_material(g_program, 0.78f, 0.70f, 0.50f, 0.0f, 0.08f, 1.0f, 0);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_light_count);
 
+    // Dark squares: near-pure-black albedo + tamer reflection so
+    // they actually read as black instead of grey-from-reflection.
+    // Roughness bumped a touch (0.08 → 0.18) so the surface sheen
+    // is softer too, which sells the matte-black feel.
+    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.35f);
     glBindVertexArray(g_board_squares_dark_vao);
-    set_material(g_program, 0.10f, 0.06f, 0.04f, 0.0f, 0.08f, 1.0f, 0);
+    set_material(g_program, 0.015f, 0.012f, 0.010f, 0.0f, 0.18f, 1.0f, 0);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_dark_count);
+
+    // Squares done — clear the planar-reflection mode so the
+    // frame and pieces below don't sample the reflection texture
+    // by accident.
+    glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
 
     // --- Walnut frame: triplanar-sample the diffuse + specular
     // textures the model ships when both are loaded; fall back
@@ -2449,14 +2610,14 @@ void renderer_draw(GameState& gs,
                                     mat4_multiply(mat4_scale(s,s,s), orient));
             // Material picks up the piece colour so a white piece
             // doesn't render black mid-flight.
-            if (bp.is_white) set_material(g_program, 0.92f,0.88f,0.78f, 0,0.28f,1, 0);
+            if (bp.is_white) set_material(g_program, 0.97f,0.95f,0.90f, 0,0.28f,1, 0);
             else             set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
             draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
             continue;
         }
 
         Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, rot_z_to_y);
-        if (bp.is_white) set_material(g_program, 0.92f,0.88f,0.78f, 0,0.28f,1, 0);
+        if (bp.is_white) set_material(g_program, 0.97f,0.95f,0.90f, 0,0.28f,1, 0);
         else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
         draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
     }
@@ -2474,7 +2635,7 @@ void renderer_draw(GameState& gs,
             if (bp.is_white) { px = 5.2f + ci*0.7f; pz = 3.5f - ri*0.7f; }
             else { px = -5.2f - ci*0.7f; pz = -3.5f + ri*0.7f; }
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
-            if (bp.is_white) set_material(g_program, 0.7f,0.65f,0.55f, 0,0.4f,0.7f, 0);
+            if (bp.is_white) set_material(g_program, 0.85f,0.82f,0.74f, 0,0.4f,0.7f, 0);
             else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.45f,0.7f, 0);
             draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
             cnt++;

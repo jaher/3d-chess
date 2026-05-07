@@ -145,7 +145,11 @@ $(STOCKFISH_BIN):
 	fi
 	$(MAKE) -C $(STOCKFISH_DIR)/src -j build
 
-$(WHISPER_LIBS): $(WHISPER_LIB)
+# The ggml static libs are built as side-effects of building
+# libwhisper.a — they share the same CMake invocation. Filter
+# WHISPER_LIB out of the dependents so we don't say "libwhisper.a:
+# libwhisper.a", which make rightly flags as a circular dependency.
+$(filter-out $(WHISPER_LIB),$(WHISPER_LIBS)): $(WHISPER_LIB)
 
 $(WHISPER_LIB):
 	@if [ ! -f $(WHISPER_DIR)/CMakeLists.txt ]; then \

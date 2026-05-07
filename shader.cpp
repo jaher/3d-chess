@@ -99,6 +99,17 @@ uniform sampler2D uWoodDiffuse;
 uniform sampler2D uWoodSpecular;
 uniform float uWoodScale;
 
+// Planar-reflection path (used by the lacquered squares).
+// uPlanarReflectionMode != 0 → mix the env-spec lookup with a
+// screen-space sample of uReflectionTex (the prior pass that
+// rendered the pieces with the camera mirrored about Y = 0).
+// gl_FragCoord is divided by uViewportSize to land the right
+// texel.
+uniform int uPlanarReflectionMode;
+uniform sampler2D uReflectionTex;
+uniform vec2 uViewportSize;
+uniform float uReflectionStrength;
+
 // =========================================================================
 // Procedural noise for wood grain
 // =========================================================================
@@ -390,6 +401,24 @@ void main() {
     // Dropped from 0.4 to 0.30 so specular highlights on white
     // pieces don't clip to pure white.
     vec3 specularIBL = envSpec * F_env * (1.0 - roughness) * 0.30;
+
+    // Planar reflection — when the prior pass dropped a mirrored
+    // render of the pieces into uReflectionTex, replace the env-
+    // spec sample with a screen-space lookup. Squares with low
+    // roughness pick this up and pieces appear reflected on the
+    // glassy surface like lacquer / piano black.
+    if (uPlanarReflectionMode != 0) {
+        vec2 ruv = gl_FragCoord.xy / max(uViewportSize, vec2(1.0));
+        vec3 planarRefl = texture(uReflectionTex, ruv).rgb;
+        // Strength is weighted by Fresnel so reflections are
+        // subtle at normal incidence and stronger at grazing
+        // angles, the way real glass behaves.
+        float fresnelW = pow(1.0 - clamp(NdotV, 0.0, 1.0), 4.0);
+        float w = clamp(uReflectionStrength *
+                        ((1.0 - roughness) * 0.6 + fresnelW * 0.4),
+                        0.0, 1.0);
+        specularIBL = mix(specularIBL, planarRefl, w);
+    }
 
     // Darken ambient slightly in shadowed areas (contact shadow approx)
     float ambientShadow = 1.0 - shadow * 0.18;
