@@ -15,6 +15,8 @@ extern const char* highlight_vs_src;
 extern const char* highlight_fs_src;
 extern const char* text_vs_src;
 extern const char* text_fs_src;
+extern const char* etched_vs_src;
+extern const char* etched_fs_src;
 extern const char* shatter_vs_src;
 extern const char* shatter_fs_src;
 extern const char* outline_vs_src;

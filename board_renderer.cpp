@@ -84,6 +84,7 @@ static int    g_reflection_h         = 0;
 // non-static so those TUs can link against them; no other module
 // should touch these symbols.
 GLuint g_text_program = 0;
+GLuint g_etched_label_program = 0;
 GLuint g_highlight_program = 0;
 GLuint g_font_tex = 0;
 
@@ -749,6 +750,7 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_highlight_program = create_program(highlight_vs_src, highlight_fs_src);
     g_shadow_program = create_program(shadow_vs_src, shadow_fs_src);
     g_text_program = create_program(text_vs_src, text_fs_src);
+    g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
     g_outline_program = create_program(outline_vs_src, outline_fs_src);
     shatter_init();
 
@@ -2836,17 +2838,39 @@ void renderer_draw(GameState& gs,
     }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND);
 
-    // --- Board coordinate labels (a-h, 1-8) using font texture ---
+    // --- Board coordinate labels (a-h, 1-8): faux-engraved on wood.
+    // The etched shader uses the same font alpha texture but adds
+    // soft inner shadow + a thin lit/shadow rim along the +Z/-Z edges
+    // of each glyph so the labels read as carved into the walnut
+    // frame instead of painted on top. Atlas dims (768 × 288) come
+    // from text_atlas.cpp's CELL_SIZE × ATLAS_COLS / ATLAS_ROWS; the
+    // texel size is precomputed for the rim taps.
     {
-        glUseProgram(g_text_program);
+        glUseProgram(g_etched_label_program);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g_font_tex);
-        glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
-        glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"), 1, GL_FALSE, vp.m);
-        glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.0f, 0.0f, 0.0f, 0.95f);
+        glUniform1i(glGetUniformLocation(g_etched_label_program, "uFontTex"), 0);
+        glUniformMatrix4fv(glGetUniformLocation(g_etched_label_program, "uMVP"),
+                           1, GL_FALSE, vp.m);
+        glUniform2f(glGetUniformLocation(g_etched_label_program, "uTexelSize"),
+                    1.0f / 768.0f, 1.0f / 288.0f);
+        // Very dark walnut stain for the body — keep it warm so it
+        // doesn't read as blue/grey ink.
+        glUniform3f(glGetUniformLocation(g_etched_label_program, "uEtchTint"),
+                    0.04f, 0.025f, 0.012f);
+        // Lit rim catches the warm cream of the key light bouncing
+        // off the upward-facing wall of the engraved groove.
+        glUniform3f(glGetUniformLocation(g_etched_label_program, "uHighlight"),
+                    0.85f, 0.75f, 0.55f);
+        // Shadow rim is just deep brown — barely visible, but pushes
+        // the impression that the glyph dips below the surface.
+        glUniform3f(glGetUniformLocation(g_etched_label_program, "uShadowRim"),
+                    0.02f, 0.012f, 0.006f);
+        glUniform1f(glGetUniformLocation(g_etched_label_program, "uOpacity"),
+                    0.85f);
 
         glBindVertexArray(g_label_vao);
         glDrawArrays(GL_TRIANGLES, 0, g_label_vertex_count);

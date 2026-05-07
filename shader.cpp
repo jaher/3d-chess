@@ -624,6 +624,77 @@ void main() {
 )";
 
 // ---------------------------------------------------------------------------
+// Etched-label shader for the rank/file coordinates. Reads the same
+// font alpha texture as the regular text shader, but instead of
+// painting a flat color it fakes a recessed engraving on the wood:
+//
+//   * The body of each glyph blends a very dark stain over the wood
+//     so the underlying grain stays visible (wood × 0.15 + stain).
+//   * A bright tan rim runs along the glyph edge that faces the key
+//     light — the upward-facing wall of the engraved groove.
+//   * A near-black rim runs along the opposite edge — the downward-
+//     facing wall, in shadow.
+//
+// uTexelSize is 1.0 / atlas_dims, supplied by the caller; the rim
+// taps offset by ~1.5 texels in the world ±Z direction (which maps
+// to ∓v in the atlas because the quad's local-up axis is +v0/-v1).
+// ---------------------------------------------------------------------------
+const char* etched_vs_src = GLSL_VERSION R"(
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aTexCoord;
+
+uniform mat4 uMVP;
+
+out vec2 vTexCoord;
+
+void main() {
+    vTexCoord = aTexCoord;
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+)";
+
+const char* etched_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vTexCoord;
+
+out vec4 FragColor;
+
+uniform sampler2D uFontTex;
+uniform vec2 uTexelSize;
+uniform vec3 uEtchTint;
+uniform vec3 uHighlight;
+uniform vec3 uShadowRim;
+uniform float uOpacity;
+
+void main() {
+    float a = texture(uFontTex, vTexCoord).r;
+    if (a < 0.02) discard;
+
+    // The label quad is built so that v decreases toward world +Z
+    // ("top" of the glyph as the player reads it from white's side)
+    // and v increases toward world -Z. The studio rig's key light
+    // sits roughly above + behind the +Z half of the board, so the
+    // engraved wall facing world -Z catches the light and the wall
+    // facing world +Z stays in shadow.
+    float a_topward = texture(uFontTex,
+                               vTexCoord - vec2(0.0, uTexelSize.y * 1.5)).r;
+    float a_botward = texture(uFontTex,
+                               vTexCoord + vec2(0.0, uTexelSize.y * 1.5)).r;
+
+    float lit_rim    = clamp(a - a_botward, 0.0, 1.0);
+    float shadow_rim = clamp(a - a_topward, 0.0, 1.0);
+    float body       = max(a - max(lit_rim, shadow_rim), 0.0);
+
+    vec3 color = uEtchTint  * body
+               + uHighlight * lit_rim
+               + uShadowRim * shadow_rim;
+
+    // Cap alpha below 1 so the wood grain shows through the dark
+    // stain — pure-opaque body would read as paint, not engraving.
+    FragColor = vec4(color, a * uOpacity);
+}
+)";
+
+// ---------------------------------------------------------------------------
 // Cartoon-outline post-process shaders. Toggled by pressing 'S' in
 // a live game. Samples the offscreen scene color + depth textures,
 // does a 4-tap neighbour depth comparison, and darkens the pixel
