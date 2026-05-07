@@ -1524,10 +1524,20 @@ static void release_challenge(AppState& a, double mx, double my,
 
 static void release_puzzle(AppState& a, double mx, double my,
                            int width, int height) {
+    // Withdraw flag in the bottom-right doubles as the puzzle
+    // exit: clicking it returns to the main menu (same as
+    // pressing ESC). Goes before the board click so a click on
+    // the flag corner doesn't fall through to a piece selection.
+    double dx = mx - a.press_x, dy = my - a.press_y;
+    if (dx*dx + dy*dy < 25.0 &&
+        !a.flag.p.empty() &&
+        flag_hit_test(a.flag, mx, my, width, height)) {
+        app_enter_menu(a);
+        return;
+    }
     // Puzzle screen has no overlay buttons (no Try-Again / Next
     // here — wrong moves auto-reset, solved auto-advances). Just
     // forward small clicks to the board move handler.
-    double dx = mx - a.press_x, dy = my - a.press_y;
     if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
 }
 
@@ -2517,7 +2527,8 @@ static void tick_mistake_shake(AppState& a, int64_t now) {
 // stops a huge dt from dumping into the sim when the user reopens.
 static void tick_withdraw_flag(AppState& a, int64_t now) {
     GameState& gs = cur_gs(a);
-    const bool live = a.mode == MODE_PLAYING && !gs.game_over && !gs.analysis_mode &&
+    const bool live = (a.mode == MODE_PLAYING || a.mode == MODE_PUZZLE) &&
+                      !gs.game_over && !gs.analysis_mode &&
                       !a.withdraw_confirm_open && !a.flag.p.empty();
     if (live) {
         float dt;
@@ -2796,7 +2807,7 @@ static void render_board(AppState& a, int width, int height) {
 
         const bool is_active = (i == a.active_game);
         const bool draw_flag =
-            a.mode == MODE_PLAYING && is_active &&
+            (a.mode == MODE_PLAYING || a.mode == MODE_PUZZLE) && is_active &&
             !gs.game_over && !gs.analysis_mode && !a.withdraw_confirm_open;
 
         // Clock widget: visible on the active board only when its
