@@ -57,15 +57,26 @@ static GLuint g_board_squares_dark_vao = 0,
 static int    g_board_squares_dark_count = 0;
 static GLuint g_board_frame_vao = 0, g_board_frame_vbo = 0;
 static int    g_board_frame_count = 0;
+// Silver / chrome lining strip that runs along the frame's
+// inner edge in the original Sketchfab model. Pure-white
+// metallic in the source materials (Material.006 / .007).
+static GLuint g_board_lining_vao = 0, g_board_lining_vbo = 0;
+static int    g_board_lining_count = 0;
 static GLuint g_wood_diffuse_tex  = 0;
 static GLuint g_wood_specular_tex = 0;
 
 // Planar-reflection FBO. The squares fragment shader samples
 // this in screen space to show piece reflections on the lacquer
-// surface. Recreated on viewport resize.
+// surface. Color + depth are TEXTURES (not renderbuffers) — the
+// depth attachment isn't sampled, but matching the format of
+// g_scene_fbo (RGBA8 + DEPTH_COMPONENT24 textures) is the only
+// configuration we've verified works on both desktop and web
+// (WebGL2 quietly leaves a renderbuffer-depth + RGBA8-color FBO
+// incomplete on some implementations even though the spec
+// allows it).
 static GLuint g_reflection_fbo       = 0;
 static GLuint g_reflection_color_tex = 0;
-static GLuint g_reflection_depth_rbo = 0;
+static GLuint g_reflection_depth_tex = 0;
 static int    g_reflection_w         = 0;
 static int    g_reflection_h         = 0;
 // Shared between board_renderer.cpp and the per-screen render
@@ -173,8 +184,14 @@ static void ensure_scene_fbo(int w, int h) {
 }
 
 // Planar-reflection FBO — color (sampled by the squares' shader)
-// + depth renderbuffer (used during the mirrored pass; not
-// sampled). Recreated lazily when (w, h) change.
+// + depth texture (used during the mirrored pass). Both are
+// textures rather than the more conventional color-tex + depth-
+// renderbuffer pair, which mirrors the working g_scene_fbo
+// layout and sidesteps a WebGL2 quirk where some drivers leave
+// an RGBA8-color + DEPTH_COMPONENT24-renderbuffer FBO marked
+// incomplete (rendering succeeds on desktop GL — the symptom on
+// web is "reflections never appear" because the FBO silently
+// drops the pass). Recreated lazily when (w, h) change.
 static void ensure_reflection_fbo(int w, int h) {
     if (w <= 0) w = 1;
     if (h <= 0) h = 1;
@@ -183,7 +200,7 @@ static void ensure_reflection_fbo(int w, int h) {
 
     if (g_reflection_fbo == 0)       glGenFramebuffers(1, &g_reflection_fbo);
     if (g_reflection_color_tex == 0) glGenTextures(1, &g_reflection_color_tex);
-    if (g_reflection_depth_rbo == 0) glGenRenderbuffers(1, &g_reflection_depth_rbo);
+    if (g_reflection_depth_tex == 0) glGenTextures(1, &g_reflection_depth_tex);
 
     glBindTexture(GL_TEXTURE_2D, g_reflection_color_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
@@ -193,14 +210,25 @@ static void ensure_reflection_fbo(int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    glBindRenderbuffer(GL_RENDERBUFFER, g_reflection_depth_rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glBindTexture(GL_TEXTURE_2D, g_reflection_depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     glBindFramebuffer(GL_FRAMEBUFFER, g_reflection_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, g_reflection_color_tex, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                              GL_RENDERBUFFER, g_reflection_depth_rbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, g_reflection_depth_tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "ensure_reflection_fbo: incomplete FBO 0x%x at %dx%d\n",
+                st, w, h);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     g_reflection_w = w;
@@ -583,6 +611,12 @@ static void load_board_assets(const std::string& dir) {
     load_one("frame.stl",
              g_board_frame_vao, g_board_frame_vbo,
              g_board_frame_count, /*crease_deg=*/45.0f);
+    // The lining is optional — older builds of the asset pack
+    // don't have it; load_one logs and returns false in that
+    // case and we just skip the lining draw later on.
+    load_one("frame_lining.stl",
+             g_board_lining_vao, g_board_lining_vbo,
+             g_board_lining_count, /*crease_deg=*/30.0f);
 
     g_wood_diffuse_tex  = gl_load_texture(dir + "/walnut_diffuse.jpg");
     g_wood_specular_tex = gl_load_texture(dir + "/walnut_specular.png");
@@ -2333,17 +2367,28 @@ void renderer_draw(GameState& gs,
     GLint smod = glGetUniformLocation(g_shadow_program, "uModel");
     glUniformMatrix4fv(slsm, 1, GL_FALSE, light_space.m);
 
-    Mat4 board_model = mat4_identity();
+    // Rotate the imported Sketchfab board 90° around Y. The
+    // mesh's natural square parity placed a dark square at the
+    // bottom-right (h1 from white's perspective) — chess
+    // convention says h1 is light. The frame is square so the
+    // rotation isn't visually distinguishable, but the
+    // light/dark square parity shifts to match the game's
+    // expected orientation.
+    Mat4 board_model = mat4_rotate_y(static_cast<float>(M_PI) / 2.0f);
     glUniformMatrix4fv(smod, 1, GL_FALSE, board_model.m);
-    // Shadow pass — draw all three board meshes so pieces cast a
+    // Shadow pass — draw all board meshes so pieces cast a
     // shadow onto whichever surface they're sitting on (squares
-    // grid + walnut frame).
+    // grid + walnut frame + silver lining if present).
     glBindVertexArray(g_board_squares_light_vao);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_light_count);
     glBindVertexArray(g_board_squares_dark_vao);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_dark_count);
     glBindVertexArray(g_board_frame_vao);
     glDrawArrays(GL_TRIANGLES, 0, g_board_frame_count);
+    if (g_board_lining_count > 0) {
+        glBindVertexArray(g_board_lining_vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_board_lining_count);
+    }
     glBindVertexArray(0);
 
     for (const auto& bp : gs.pieces) {
@@ -2361,9 +2406,13 @@ void renderer_draw(GameState& gs,
 
     // ----- Planar-reflection pass -----
     // Render the pieces (and only the pieces) with the camera
-    // mirrored about Y = 0 (the play surface) into a half-res
-    // FBO. The squares' fragment shader samples this in screen
-    // space to show piece reflections like glass / piano lacquer.
+    // mirrored about Y = 0 (the play surface) into a screen-
+    // resolution FBO. The squares' fragment shader samples this
+    // in screen space to show piece reflections like glass /
+    // piano lacquer. Using full screen res (rather than the
+    // earlier half-res) keeps the reflection sharp — visible
+    // pixelation on the squares disappears once the texel
+    // density matches the surface.
     //
     // Critical: glClearColor is global GL state. We save the
     // existing clear color before changing it for the reflection
@@ -2376,8 +2425,8 @@ void renderer_draw(GameState& gs,
         GLfloat saved_clear[4];
         glGetFloatv(GL_COLOR_CLEAR_VALUE, saved_clear);
 
-        const int rw = std::max(1, width  / 2);
-        const int rh = std::max(1, height / 2);
+        const int rw = std::max(1, width);
+        const int rh = std::max(1, height);
         ensure_reflection_fbo(rw, rh);
         glBindFramebuffer(GL_FRAMEBUFFER, g_reflection_fbo);
         glViewport(0, 0, rw, rh);
@@ -2419,6 +2468,19 @@ void renderer_draw(GameState& gs,
                      4, lcol_r);
         glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+        // CRITICAL — WebGL2 flags a feedback loop whenever a sampler
+        // statically references a texture that is also a current FB
+        // attachment, regardless of whether the dynamic path actually
+        // samples it. We're rendering to g_reflection_fbo and the
+        // PBR shader's uReflectionTex sampler is otherwise still
+        // pointing to TEXTURE4 (where g_reflection_color_tex is
+        // bound from last frame's main pass). The driver then
+        // silently drops every glDrawArrays in this pass and the
+        // reflection FBO never gets populated. Redirect the sampler
+        // to TEXTURE0 (shadow map — completely unrelated to this
+        // FBO) for the duration of the pass; the squares' main-pass
+        // draw will set it back to TEXTURE4 before sampling.
+        glUniform1i(glGetUniformLocation(g_program, "uReflectionTex"), 0);
 
         for (const auto& bp : gs.pieces) {
             if (!bp.alive) continue;
@@ -2574,6 +2636,23 @@ void renderer_draw(GameState& gs,
         glBindVertexArray(g_board_frame_vao);
         set_material(g_program, 0.32f, 0.18f, 0.10f, 0.0f, 0.20f, 1.0f, 1);
         glDrawArrays(GL_TRIANGLES, 0, g_board_frame_count);
+    }
+
+    // --- Silver lining: pure-white metallic strip that runs
+    // along the frame's inner edge, restoring the chrome detail
+    // from the original Sketchfab model (Material.006/.007).
+    // metallic=1.0 + low roughness gives a polished chrome read;
+    // the IBL env-map term (sampleEnvironment) tints the
+    // reflection by the four-light studio rig so it picks up the
+    // warm-cream highlight from above.
+    if (g_board_lining_count > 0) {
+        glBindVertexArray(g_board_lining_vao);
+        set_material(g_program, 0.95f, 0.95f, 0.95f,
+                     /*metallic=*/1.0f,
+                     /*roughness=*/0.18f,
+                     /*ao=*/1.0f,
+                     /*wood=*/0);
+        glDrawArrays(GL_TRIANGLES, 0, g_board_lining_count);
     }
     glBindVertexArray(0);
 
