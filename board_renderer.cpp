@@ -1641,7 +1641,8 @@ static void draw_withdraw_flag_widget(const ClothFlag* flag,
 // Full-screen modal confirming surrender. Backdrop dim, outlined
 // panel, Yes (green) + No (red) buttons with hover tints, and the
 // "Withdraw from game?" title. withdraw_hover: 0 none, 1 Yes, 2 No.
-static void draw_withdraw_confirm_modal(int withdraw_hover) {
+static void draw_withdraw_confirm_modal(int withdraw_hover,
+                                        const char* title_text) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -1759,7 +1760,7 @@ static void draw_withdraw_confirm_modal(int withdraw_hover) {
     glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
     std::vector<float> title_v;
-    std::string title = "Withdraw from game?";
+    std::string title = title_text ? title_text : "Withdraw from game?";
     float tcw = 0.034f, tch = 0.052f;
     float tw  = title.size() * tcw * 0.7f;
     add_screen_string(title_v, -tw * 0.5f, 0.08f, tcw, tch, title);
@@ -2357,7 +2358,8 @@ void renderer_draw(GameState& gs,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
                    bool cartoon_outline,
-                   float shake_x) {
+                   float shake_x,
+                   const char* withdraw_confirm_title) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -2990,7 +2992,7 @@ void renderer_draw(GameState& gs,
     }
 
     if (withdraw_confirm_open) {
-        draw_withdraw_confirm_modal(withdraw_hover);
+        draw_withdraw_confirm_modal(withdraw_hover, withdraw_confirm_title);
     }
 
     draw_game_over_overlay(gs, endgame_menu_hover, continue_playing_hover);

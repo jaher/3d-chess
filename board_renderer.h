@@ -63,7 +63,8 @@ void renderer_draw(GameState& gs,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
                    bool cartoon_outline,
-                   float shake_x = 0.0f);
+                   float shake_x = 0.0f,
+                   const char* withdraw_confirm_title = "Withdraw from game?");
 
 // Draws a thin white border around the current viewport. Called
 // after renderer_draw in multi-game mode to mark the active board

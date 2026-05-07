@@ -2869,6 +2869,13 @@ static void render_board(AppState& a, int width, int height) {
         int64_t clock_ms = gs.white_turn ? gi.white_ms_left : gi.black_ms_left;
         bool clock_side_is_white = gs.white_turn;
 
+        // The dialog text changes per mode: live games "Withdraw
+        // from game?", puzzles "Go back to main menu?". Same modal
+        // body, just a different title string passed through.
+        const char* withdraw_title =
+            (a.mode == MODE_PUZZLE) ? "Go back to main menu?"
+                                    : "Withdraw from game?";
+
         renderer_draw(gs, sub_x, sub_y, sub_w, sub_h,
                       a.rot_x, a.rot_y, a.zoom,
                       a.human_plays_white,
@@ -2877,7 +2884,8 @@ static void render_board(AppState& a, int width, int height) {
                       a.withdraw_confirm_open && is_active, a.withdraw_hover,
                       draw_clock, clock_ms, clock_side_is_white,
                       a.cartoon_outline,
-                      is_active ? a.board_shake_x : 0.0f);
+                      is_active ? a.board_shake_x : 0.0f,
+                      withdraw_title);
 
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock
