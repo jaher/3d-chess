@@ -441,6 +441,16 @@ int chess_start(void) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    // Ask the browser to multisample the WebGL canvas. SDL2 on
+    // Emscripten translates these to `antialias = true` on the
+    // WebGL context attributes; the browser then picks the
+    // actual sample count (typically 4×). Without this the
+    // canvas comes back with antialias=false and SAMPLES=0,
+    // which is what was making the web build look noticeably
+    // jaggier than the native build (which gets MSAA via
+    // g_scene_ms_fbo).
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
 
     g_window = SDL_CreateWindow(
         "3D Chess",
