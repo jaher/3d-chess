@@ -2650,8 +2650,10 @@ void renderer_draw(GameState& gs,
         glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
     }
 
-    // Light squares: warm cream lacquer, glossy reflection.
-    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.85f);
+    // Light squares: warm cream lacquer, restrained reflection so
+    // the pieces' silhouettes hint at the surface without
+    // reading as a literal mirror (was 0.85, dropped to 0.55).
+    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.55f);
     glBindVertexArray(g_board_squares_light_vao);
     set_material(g_program, 0.78f, 0.70f, 0.50f, 0.0f, 0.08f, 1.0f, 0);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_light_count);
@@ -2659,8 +2661,10 @@ void renderer_draw(GameState& gs,
     // Dark squares: near-pure-black albedo + tamer reflection so
     // they actually read as black instead of grey-from-reflection.
     // Roughness bumped a touch (0.08 → 0.18) so the surface sheen
-    // is softer too, which sells the matte-black feel.
-    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.35f);
+    // is softer too, which sells the matte-black feel. Reflection
+    // dialed back a touch more (was 0.35) to match the lighter
+    // touch on the cream squares.
+    glUniform1f(glGetUniformLocation(g_program, "uReflectionStrength"), 0.22f);
     glBindVertexArray(g_board_squares_dark_vao);
     set_material(g_program, 0.015f, 0.012f, 0.010f, 0.0f, 0.18f, 1.0f, 0);
     glDrawArrays(GL_TRIANGLES, 0, g_board_squares_dark_count);
