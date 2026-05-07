@@ -1524,21 +1524,50 @@ static void release_challenge(AppState& a, double mx, double my,
 
 static void release_puzzle(AppState& a, double mx, double my,
                            int width, int height) {
-    // Withdraw flag in the bottom-right doubles as the puzzle
-    // exit: clicking it returns to the main menu (same as
-    // pressing ESC). Goes before the board click so a click on
-    // the flag corner doesn't fall through to a piece selection.
     double dx = mx - a.press_x, dy = my - a.press_y;
-    if (dx*dx + dy*dy < 25.0 &&
+    const bool is_click = dx*dx + dy*dy < 25.0;
+
+    // Withdraw-confirm modal eats every click while open: a click
+    // on Yes returns to the menu, No closes the modal, anything
+    // else is swallowed so the click can't fall through to the
+    // board behind it.
+    if (a.withdraw_confirm_open) {
+        if (is_click) {
+            int which = 0;
+            withdraw_confirm_hit_test(mx, my, width, height, &which);
+            if (which == 1) {            // Yes → leave the puzzle.
+                a.withdraw_confirm_open = false;
+                a.withdraw_hover = 0;
+                app_enter_menu(a);
+                return;
+            }
+            if (which == 2) {            // No → dismiss the modal.
+                a.withdraw_confirm_open = false;
+                a.withdraw_hover = 0;
+                queue_redraw(a);
+            }
+        }
+        return;
+    }
+
+    // Withdraw flag in the bottom-right doubles as the puzzle
+    // exit. Clicking it pops the same confirmation dialog the
+    // live game uses; Yes returns to the main menu (same as
+    // pressing ESC), No closes the dialog and stays in the
+    // puzzle. Sits before the board click so a click on the
+    // flag corner doesn't fall through to a piece selection.
+    if (is_click &&
         !a.flag.p.empty() &&
         flag_hit_test(a.flag, mx, my, width, height)) {
-        app_enter_menu(a);
+        a.withdraw_confirm_open = true;
+        a.withdraw_hover = 0;
+        queue_redraw(a);
         return;
     }
     // Puzzle screen has no overlay buttons (no Try-Again / Next
     // here — wrong moves auto-reset, solved auto-advances). Just
     // forward small clicks to the board move handler.
-    if (dx*dx + dy*dy < 25.0) handle_board_click(a, mx, my, width, height);
+    if (is_click) handle_board_click(a, mx, my, width, height);
 }
 
 static void release_playing(AppState& a, double mx, double my,
@@ -1802,9 +1831,18 @@ static void motion_challenge(AppState& a, double mx, double my,
 }
 
 static void motion_puzzle(AppState& a, double mx, double my,
-                          int /*width*/, int /*height*/) {
-    // Puzzle has no overlay buttons to hover-test; only camera
-    // drag is meaningful here.
+                          int width, int height) {
+    // Withdraw-confirm modal hover: light up Yes/No so the user
+    // sees which button their cursor is over.
+    if (a.withdraw_confirm_open) {
+        int which = 0;
+        withdraw_confirm_hit_test(mx, my, width, height, &which);
+        if (which != a.withdraw_hover) {
+            a.withdraw_hover = which;
+            queue_redraw(a);
+        }
+        return;
+    }
     apply_camera_drag(a, mx, my);
 }
 
@@ -1951,7 +1989,20 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
     if (a.mode == MODE_PUZZLE) {
-        if (key == KEY_ESCAPE) app_enter_menu(a);
+        if (key == KEY_ESCAPE) {
+            // First press opens the leave-confirmation dialog;
+            // second press (or No) dismisses it. Matches the
+            // click-the-flag UX so the keyboard and mouse paths
+            // both go through the same prompt.
+            if (a.withdraw_confirm_open) {
+                a.withdraw_confirm_open = false;
+                a.withdraw_hover = 0;
+            } else {
+                a.withdraw_confirm_open = true;
+                a.withdraw_hover = 0;
+            }
+            queue_redraw(a);
+        }
         return;
     }
 
