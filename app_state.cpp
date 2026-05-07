@@ -2763,7 +2763,7 @@ static void render_board(AppState& a, int width, int height) {
     // (Re)initialise the withdraw flag when the window size changes
     // or on the very first draw of a new game. Cheap (O(N) in grid
     // cells) so we don't guard against extra re-inits.
-    if (a.mode == MODE_PLAYING &&
+    if ((a.mode == MODE_PLAYING || a.mode == MODE_PUZZLE) &&
         (a.flag.inited_w != width || a.flag.inited_h != height)) {
         flag_init(a.flag, width, height);
         a.flag_last_update_us = 0;
