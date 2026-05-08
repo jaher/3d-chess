@@ -72,21 +72,27 @@ static int    g_board_lining_count = 0;
 // tools/convert_clock_uvmesh.py) so its diffuse texture lands on
 // the dial face correctly.
 struct ClockMesh { GLuint vao = 0, vbo = 0; int count = 0; };
-static ClockMesh g_clock_body;
-static ClockMesh g_clock_dial_l;
-static ClockMesh g_clock_dial_r;
+// Body sans needles (the original clock_body.uvmesh has the needle
+// geometry baked in; tools/split_clock_dials.py extracts each
+// needle into its own uvmesh so the renderer can rotate them
+// independently). Faces (clock_dial_l/r) stay STATIC — those are
+// the textured discs with numbers + knight icon, the user-visible
+// "background" of the clock that should not spin.
+static ClockMesh g_clock_body;       // clock_body_no_hands.uvmesh
+static ClockMesh g_clock_dial_l;     // dial face disc, static
+static ClockMesh g_clock_dial_r;     // dial face disc, static
+static ClockMesh g_clock_hand_l;     // left needle, rotates
+static ClockMesh g_clock_hand_r;     // right needle, rotates
 static ClockMesh g_clock_glass_l;
 static ClockMesh g_clock_glass_r;
 
-// Per-dial rotation pivots in mesh-local space (read directly from
-// the bbox centres of clock_dial_l/r.uvmesh). The export pipeline
-// applies one combined translation to all sub-meshes so each dial
-// keeps its physical position on the body — they're NOT centred at
-// the world origin. To spin a needle around its own centre we use
-// T(+pivot) · R_z(angle) · T(-pivot). Z is the dial face-normal
-// axis (the dials are flat circles in the local XY plane).
-static const float CLOCK_DIAL_L_PIVOT[3] = { -0.6456f, 0.6999f, 0.3836f };
-static const float CLOCK_DIAL_R_PIVOT[3] = {  0.6422f, 0.6999f, 0.3836f };
+// Per-needle rotation pivot in mesh-local space (X, Y match the
+// dial face centre; Z matches the needle's own bbox-centre Z so
+// its plane of rotation aligns with the visible needle). Rotation
+// happens around local Z, the dial-face normal. Numbers come from
+// tools/split_clock_dials.py.
+static const float CLOCK_HAND_L_PIVOT[3] = { -0.6456f, 0.6999f, 0.4224f };
+static const float CLOCK_HAND_R_PIVOT[3] = {  0.6422f, 0.6999f, 0.4224f };
 
 // Maps elapsed time (since the side's clock started ticking) to a
 // rotation angle. One full revolution per real-time minute — a
@@ -817,9 +823,17 @@ static void load_clock_assets(const std::string& dir) {
         return true;
     };
     const std::string uv_suffix = ".uvmesh";
+    // clock_body.uvmesh on disk is post-split (needles already
+    // extracted by tools/split_clock_dials.py into the two
+    // clock_hand_*.uvmesh files). The original-from-Blender body
+    // with needles baked in is regenerable via:
+    //   blender --background --python tools/convert_clock_uvmesh.py
+    //   python3 tools/split_clock_dials.py
     load_uvmesh("clock_body"   + uv_suffix, g_clock_body);
     load_uvmesh("clock_dial_l" + uv_suffix, g_clock_dial_l);
     load_uvmesh("clock_dial_r" + uv_suffix, g_clock_dial_r);
+    load_uvmesh("clock_hand_l" + uv_suffix, g_clock_hand_l);
+    load_uvmesh("clock_hand_r" + uv_suffix, g_clock_hand_r);
     load_one("clock_glass_r" + suffix, g_clock_glass_r, 30.0f);
     load_one("clock_glass_l" + suffix, g_clock_glass_l, 30.0f);
 
@@ -2969,46 +2983,75 @@ void renderer_draw(GameState& gs,
                      /*roughness=*/0.55f,
                      /*ao=*/1.0f,
                      /*wood=*/0);
-        // Animate each needle: right dial = white's clock, left =
-        // black's. Both spin around local Z (the dial face-normal)
-        // about their own pivot points. The model matrix is rebuilt
-        // per dial because each pivot is at a different X offset
-        // on the clock body.
+        // Dial faces draw STATIC with the body matrix — they're
+        // the textured discs (numbers + knight) the user reads,
+        // not the moving parts.
+        if (g_clock_dial_r.count > 0) {
+            glBindVertexArray(g_clock_dial_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_r.count);
+        }
+        if (g_clock_dial_l.count > 0) {
+            glBindVertexArray(g_clock_dial_l.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_l.count);
+        }
+        // Reset cursor texture mode so the needle draws below pick
+        // up the body's PBR maps (chrome / dark metal look) rather
+        // than the dial-face cursor texture.
+        glUniform1i(loc_clock_mode, 0);
+        glUniform1i(loc_clock_pbr_mode, 0);
+
+        // Needles — rotate each around its own pivot in the dial
+        // face's plane (local Z axis). Right needle = white's clock,
+        // left = black's.
         const float ang_white = dial_angle_rad(time_control_base_ms,
                                                white_ms_left);
         const float ang_black = dial_angle_rad(time_control_base_ms,
                                                black_ms_left);
-        auto dial_model = [&](const float pv[3], float angle) -> Mat4 {
+        auto hand_model = [&](const float pv[3], float angle) -> Mat4 {
             Mat4 m = mat4_multiply(clock_model,
                                    mat4_translate(pv[0], pv[1], pv[2]));
             m = mat4_multiply(m, mat4_rotate_z(angle));
             m = mat4_multiply(m, mat4_translate(-pv[0], -pv[1], -pv[2]));
             return m;
         };
-        if (g_clock_dial_r.count > 0) {
-            Mat4 m = dial_model(CLOCK_DIAL_R_PIVOT, ang_white);
+        // Needles use the body's PBR maps for a metallic, polished
+        // read consistent with the rest of the chrome detailing.
+        // Rebind clock_diffuse to TEXTURE5 — the dial-face block
+        // above swapped it out for clock_cursor, and we want the
+        // needles back on the body's wood/chrome diffuse.
+        if (g_clock_diffuse_tex) {
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, g_clock_diffuse_tex);
+            glUniform1i(loc_clock_diff, 5);
+            glActiveTexture(GL_TEXTURE0);
+        }
+        glUniform1i(loc_clock_pbr_mode, 1);
+        set_material(g_program,
+                     /*r=*/1.0f, /*g=*/1.0f, /*b=*/1.0f,
+                     /*metallic=*/1.0f,
+                     /*roughness=*/0.35f,
+                     /*ao=*/1.0f,
+                     /*wood=*/0);
+        if (g_clock_hand_r.count > 0) {
+            Mat4 m = hand_model(CLOCK_HAND_R_PIVOT, ang_white);
             float nm[9]; mat4_normal_matrix(m, nm);
             glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
             glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
-            glBindVertexArray(g_clock_dial_r.vao);
-            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_r.count);
+            glBindVertexArray(g_clock_hand_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_r.count);
         }
-        if (g_clock_dial_l.count > 0) {
-            Mat4 m = dial_model(CLOCK_DIAL_L_PIVOT, ang_black);
+        if (g_clock_hand_l.count > 0) {
+            Mat4 m = hand_model(CLOCK_HAND_L_PIVOT, ang_black);
             float nm[9]; mat4_normal_matrix(m, nm);
             glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
             glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
-            glBindVertexArray(g_clock_dial_l.vao);
-            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_l.count);
+            glBindVertexArray(g_clock_hand_l.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_l.count);
         }
-        // Restore the body model matrix + normal matrix so the
-        // glass dial draws below transform with the clock body
-        // again, not with the last dial's spin.
+        // Restore body matrix + PBR-mode so the glass dial draws
+        // below transform with the clock body again.
         glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);
         glUniformMatrix3fv(loc_normal, 1, GL_FALSE, cnm);
-        // Reset texture mode so glass + downstream pieces draws
-        // don't sample the clock textures.
-        glUniform1i(loc_clock_mode, 0);
         glUniform1i(loc_clock_pbr_mode, 0);
 
         // Glass dials — transparent + low roughness so the studio
