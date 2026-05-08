@@ -43,6 +43,12 @@ void main() {
 const char* vertex_shader_src = GLSL_VERSION R"(
 layout(location = 0) in vec3 aNormal;
 layout(location = 1) in vec3 aPos;
+// Optional UV channel — only enabled on meshes that ship with
+// per-vertex texture coords (the chess clock's `.uvmesh` body).
+// Other meshes (pieces, board, frame) leave location 2 disabled,
+// in which case vTexCoord lands at (0,0) and the texture-sample
+// branch in the fragment shader is gated off via uClockTextureMode.
+layout(location = 2) in vec2 aTexCoord;
 
 uniform mat4 uModel;
 uniform mat4 uView;
@@ -54,6 +60,7 @@ out vec3 vNormal;
 out vec3 vFragPos;
 out vec3 vWorldPos;
 out vec4 vLightSpacePos;
+out vec2 vTexCoord;
 
 void main() {
     vec4 worldPos = uModel * vec4(aPos, 1.0);
@@ -61,6 +68,7 @@ void main() {
     vWorldPos = worldPos.xyz;
     vNormal = normalize(uNormalMat * aNormal);
     vLightSpacePos = uLightSpaceMatrix * worldPos;
+    vTexCoord = aTexCoord;
     gl_Position = uProjection * uView * worldPos;
 }
 )";
@@ -98,6 +106,23 @@ uniform int uWoodTextureMode;
 uniform sampler2D uWoodDiffuse;
 uniform sampler2D uWoodSpecular;
 uniform float uWoodScale;
+
+// Per-draw opacity for the FragColor alpha — defaults to 1.0
+// (opaque). Used by the chess-clock glass dials (opacity ~0.25
+// + GL_BLEND on the caller side).
+uniform float uMaterialOpacity;
+
+// UV-mapped diffuse path (used by the chess-clock body + dials).
+// uClockTextureMode != 0 → albedo = sample(uClockDiffuse, uv) *
+// uAlbedo. uClockPbrMapsMode != 0 → also read roughness +
+// metalness from their respective maps so the body's metal
+// fittings catch reflections without the dial face going shiny.
+uniform int uClockTextureMode;
+uniform int uClockPbrMapsMode;
+uniform sampler2D uClockDiffuse;
+uniform sampler2D uClockRoughnessTex;
+uniform sampler2D uClockMetalnessTex;
+in vec2 vTexCoord;
 
 // Planar-reflection path (used by the lacquered squares).
 // uPlanarReflectionMode != 0 → mix the env-spec lookup with a
@@ -287,6 +312,25 @@ void main() {
     float roughness = uRoughness;
     float ao = uAO;
 
+    // UV-mapped diffuse for meshes that ship with explicit UVs
+    // (the chess clock body + dials). Flip V because PNG images
+    // load top-down but OpenGL UVs are bottom-up; without the
+    // flip the dial faces would render upside-down.
+    if (uClockTextureMode != 0) {
+        vec2 uv = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
+        vec3 tex = texture(uClockDiffuse, uv).rgb;
+        albedo = tex * uAlbedo;
+        if (uClockPbrMapsMode != 0) {
+            // Roughness + metalness sampled from their bundled
+            // grayscale maps. uMetallic / uRoughness pass-through
+            // as multipliers so the caller can still bias the
+            // overall feel from C++.
+            roughness = texture(uClockRoughnessTex, uv).r * uRoughness;
+            metallic  = texture(uClockMetalnessTex, uv).r * uMetallic;
+            roughness = clamp(roughness, 0.04, 1.0);
+        }
+    }
+
     if (uWoodEffect != 0) {
         albedo = woodColor(albedo, vWorldPos);
         // Wood grain affects roughness slightly
@@ -434,7 +478,11 @@ void main() {
     // Gamma correction
     color = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 2.2));
 
-    FragColor = vec4(color, 1.0);
+    // uMaterialOpacity defaults to 1.0 in glsl (which we set
+    // explicitly from the C++ side per-draw). Glass dials use
+    // ~0.25 with GL_BLEND for see-through.
+    float opacity = uMaterialOpacity > 0.0 ? uMaterialOpacity : 1.0;
+    FragColor = vec4(color, opacity);
 }
 )";
 

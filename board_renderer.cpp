@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -62,6 +64,23 @@ static int    g_board_frame_count = 0;
 // metallic in the source materials (Material.006 / .007).
 static GLuint g_board_lining_vao = 0, g_board_lining_vbo = 0;
 static int    g_board_lining_count = 0;
+// 3D chess-clock model — bundled-asset Sketchfab clock (the
+// CC-licensed "ChessClock" model). Each sub-object is its own
+// mesh so we can shade the walnut body, the metallic needles and
+// the transparent dial covers separately. The body ships with
+// per-vertex UVs (custom .uvmesh format produced by
+// tools/convert_clock_uvmesh.py) so its diffuse texture lands on
+// the dial face correctly.
+struct ClockMesh { GLuint vao = 0, vbo = 0; int count = 0; };
+static ClockMesh g_clock_body;
+static ClockMesh g_clock_dial_l;
+static ClockMesh g_clock_dial_r;
+static ClockMesh g_clock_glass_l;
+static ClockMesh g_clock_glass_r;
+static GLuint    g_clock_diffuse_tex   = 0;
+static GLuint    g_clock_cursor_tex    = 0;
+static GLuint    g_clock_roughness_tex = 0;
+static GLuint    g_clock_metalness_tex = 0;
 GLuint g_wood_diffuse_tex  = 0;
 static GLuint g_wood_specular_tex = 0;
 
@@ -679,6 +698,111 @@ static void load_board_assets(const std::string& dir) {
     g_wood_specular_tex = gl_load_texture(dir + "/walnut_specular.png");
 }
 
+// Load each chess-clock sub-mesh STL (body / needles / glass).
+// Web ships decimated body and full-res needles + glass. The
+// renderer draws each mesh with its own PBR material so the dial
+// covers can be transparent and the needles can be metallic.
+static void load_clock_assets(const std::string& dir) {
+    auto load_one = [&](const std::string& name, ClockMesh& out,
+                        float crease) -> bool {
+        StlModel m;
+        std::string path = dir + "/" + name;
+        try {
+            m.load(path);
+        } catch (...) {
+            std::fprintf(stderr, "[clock] failed to read %s\n", path.c_str());
+            return false;
+        }
+        if (m.triangle_count() == 0) {
+            std::fprintf(stderr, "[clock] %s has no triangles\n",
+                         path.c_str());
+            return false;
+        }
+        std::vector<float> buf = build_buffer_from_stl_world(m, crease);
+        glGenVertexArrays(1, &out.vao);
+        glGenBuffers(1, &out.vbo);
+        glBindVertexArray(out.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(buf.size() * sizeof(float)),
+                     buf.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
+                              6 * sizeof(float),
+                              (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glBindVertexArray(0);
+        out.count = static_cast<int>(buf.size() / 6);
+        std::fprintf(stderr,
+            "[clock] loaded %s — %zu tris → %d verts\n",
+            path.c_str(), m.triangle_count(), out.count);
+        return true;
+    };
+    const std::string suffix = ".stl";
+    // Body ships in the custom UV-mesh format so the diffuse
+    // texture can land on the dial face by UV instead of
+    // smearing under triplanar projection. Layout per vertex
+    // (8 floats, little-endian):
+    //   pos.xyz  normal.xyz  uv.xy
+    auto load_uvmesh = [&](const std::string& name, ClockMesh& out) -> bool {
+        std::string path = dir + "/" + name;
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) {
+            std::fprintf(stderr, "[clock] failed to open %s\n", path.c_str());
+            return false;
+        }
+        char magic[4]; uint32_t vcount = 0;
+        if (std::fread(magic, 1, 4, f) != 4 ||
+            std::memcmp(magic, "UVME", 4) != 0 ||
+            std::fread(&vcount, sizeof(vcount), 1, f) != 1) {
+            std::fprintf(stderr, "[clock] bad uvmesh header %s\n",
+                         path.c_str());
+            std::fclose(f);
+            return false;
+        }
+        std::vector<float> buf(vcount * 8);
+        if (std::fread(buf.data(), sizeof(float), buf.size(), f) !=
+            buf.size()) {
+            std::fclose(f); return false;
+        }
+        std::fclose(f);
+        glGenVertexArrays(1, &out.vao);
+        glGenBuffers(1, &out.vbo);
+        glBindVertexArray(out.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(buf.size() * sizeof(float)),
+                     buf.data(), GL_STATIC_DRAW);
+        const GLsizei stride = 8 * sizeof(float);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                              (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                              (void*)(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+        out.count = static_cast<int>(vcount);
+        std::fprintf(stderr, "[clock] loaded %s — %u verts\n",
+                     path.c_str(), vcount);
+        return true;
+    };
+    const std::string uv_suffix = ".uvmesh";
+    load_uvmesh("clock_body"   + uv_suffix, g_clock_body);
+    load_uvmesh("clock_dial_l" + uv_suffix, g_clock_dial_l);
+    load_uvmesh("clock_dial_r" + uv_suffix, g_clock_dial_r);
+    load_one("clock_glass_r" + suffix, g_clock_glass_r, 30.0f);
+    load_one("clock_glass_l" + suffix, g_clock_glass_l, 30.0f);
+
+    g_clock_diffuse_tex   = gl_load_texture(dir + "/clock_diffuse.png");
+    g_clock_cursor_tex    = gl_load_texture(dir + "/clock_cursor.png");
+    g_clock_roughness_tex = gl_load_texture(dir + "/clock_roughness.png");
+    g_clock_metalness_tex = gl_load_texture(dir + "/clock_metalness.png");
+}
+
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
     // Always smooth per-vertex normals via build_vertex_buffer's
     // angle-weighted average. The pieces are still visibly faceted
@@ -894,8 +1018,10 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // /models/board — see web/Makefile's --preload-file).
 #ifdef __EMSCRIPTEN__
     load_board_assets("/models/board");
+    load_clock_assets("/models/clock");
 #else
     load_board_assets("models/board");
+    load_clock_assets("models/clock");
 #endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
@@ -2727,6 +2853,132 @@ void renderer_draw(GameState& gs,
         glDrawArrays(GL_TRIANGLES, 0, g_board_lining_count);
     }
     glBindVertexArray(0);
+
+    // ----- 3D chess clock — sits alongside the right side of the
+    // board with its long base parallel to the board's edge.
+    //
+    //   * The mesh's local origin has Y=0 on its base and is
+    //     centred on X/Z, with long axis along X (3 units),
+    //     height along Y (1.3 units), depth along Z (0.95 units).
+    //   * Rotating +90° around Y swings the long axis to lie
+    //     along world Z (parallel to the board's right edge) and
+    //     swings the dial face to point in the -X direction —
+    //     toward the chessboard, as the player at either end of
+    //     the board would expect.
+    //   * Translating to X = +5.7 keeps the clock close to the
+    //     board's right rank — the bezel ends ~0.3 game units
+    //     from the frame, comfortably alongside without touching.
+    //   * Y = -0.608 drops the clock's base flush with the bottom
+    //     of the walnut frame (the frame STL spans Y from -0.608
+    //     to -0.020, so the clock sits on the same notional table
+    //     surface as the board instead of floating on the play
+    //     plane).
+    if (g_clock_body.count > 0) {
+        Mat4 clock_model = mat4_multiply(
+            mat4_translate(5.7f, -0.608f, 0.0f),
+            mat4_rotate_y(-static_cast<float>(M_PI) * 0.5f));
+        float cnm[9]; mat4_normal_matrix(clock_model, cnm);
+        GLint loc_model    = glGetUniformLocation(g_program, "uModel");
+        GLint loc_normal   = glGetUniformLocation(g_program, "uNormalMat");
+        GLint loc_wood     = glGetUniformLocation(g_program, "uWoodTextureMode");
+        GLint loc_opacity  = glGetUniformLocation(g_program, "uMaterialOpacity");
+        glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);
+        glUniformMatrix3fv(loc_normal, 1, GL_FALSE, cnm);
+        glUniform1i(loc_wood, 0);
+
+        // Body — UV-mapped diffuse + roughness + metalness maps
+        // from the bundled Sketchfab textures. uAlbedo stays
+        // (1,1,1) so the texture comes through unmodified.
+        GLint loc_clock_mode      = glGetUniformLocation(g_program, "uClockTextureMode");
+        GLint loc_clock_diff      = glGetUniformLocation(g_program, "uClockDiffuse");
+        GLint loc_clock_rough     = glGetUniformLocation(g_program, "uClockRoughnessTex");
+        GLint loc_clock_metal     = glGetUniformLocation(g_program, "uClockMetalnessTex");
+        GLint loc_clock_pbr_mode  = glGetUniformLocation(g_program, "uClockPbrMapsMode");
+        glUniform1f(loc_opacity, 1.0f);
+        glUniform1i(loc_clock_mode, 1);
+        glUniform1i(loc_clock_pbr_mode, 1);
+        if (g_clock_diffuse_tex) {
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, g_clock_diffuse_tex);
+            glUniform1i(loc_clock_diff, 5);
+        }
+        if (g_clock_roughness_tex) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, g_clock_roughness_tex);
+            glUniform1i(loc_clock_rough, 6);
+        }
+        if (g_clock_metalness_tex) {
+            glActiveTexture(GL_TEXTURE7);
+            glBindTexture(GL_TEXTURE_2D, g_clock_metalness_tex);
+            glUniform1i(loc_clock_metal, 7);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        set_material(g_program,
+                     /*r=*/1.0f, /*g=*/1.0f, /*b=*/1.0f,
+                     /*metallic=*/1.0f,
+                     /*roughness=*/1.0f,
+                     /*ao=*/1.0f,
+                     /*wood=*/0);
+        glBindVertexArray(g_clock_body.vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_clock_body.count);
+
+        // Dial faces — flat circular meshes (Cursore.dx/sx in
+        // the source, the inner discs visible behind the glass).
+        // Use clock_cursor.png as the diffuse — that's the
+        // texture with the numbers + knight icon. PBR maps off
+        // here since the dial is a uniform matte surface.
+        if (g_clock_cursor_tex) {
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, g_clock_cursor_tex);
+            glUniform1i(loc_clock_diff, 5);
+            glActiveTexture(GL_TEXTURE0);
+        }
+        glUniform1i(loc_clock_pbr_mode, 0);
+        set_material(g_program,
+                     /*r=*/1.0f, /*g=*/1.0f, /*b=*/1.0f,
+                     /*metallic=*/0.0f,
+                     /*roughness=*/0.55f,
+                     /*ao=*/1.0f,
+                     /*wood=*/0);
+        if (g_clock_dial_r.count > 0) {
+            glBindVertexArray(g_clock_dial_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_r.count);
+        }
+        if (g_clock_dial_l.count > 0) {
+            glBindVertexArray(g_clock_dial_l.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_l.count);
+        }
+        // Reset texture mode so glass + downstream pieces draws
+        // don't sample the clock textures.
+        glUniform1i(loc_clock_mode, 0);
+        glUniform1i(loc_clock_pbr_mode, 0);
+
+        // Glass dials — transparent + low roughness so the studio
+        // rig glints off them. Drawn last with GL_BLEND on so the
+        // body + needles already in the depth buffer show through.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glUniform1f(loc_opacity, 0.28f);
+        set_material(g_program,
+                     /*r=*/0.78f, /*g=*/0.78f, /*b=*/0.80f,
+                     /*metallic=*/0.0f,
+                     /*roughness=*/0.05f,
+                     /*ao=*/1.0f,
+                     /*wood=*/0);
+        if (g_clock_glass_r.count > 0) {
+            glBindVertexArray(g_clock_glass_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_glass_r.count);
+        }
+        if (g_clock_glass_l.count > 0) {
+            glBindVertexArray(g_clock_glass_l.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_glass_l.count);
+        }
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glUniform1f(loc_opacity, 1.0f);
+        glBindVertexArray(0);
+    }
 
     // Pieces (with AI animation)
     float ai_anim_t = 0.0f;
