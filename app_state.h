@@ -179,6 +179,11 @@ struct GameInstance {
     // re-fires only when the distance or sign changes.
     std::string pending_move_mate_in;
     int last_announced_mate_in = 0;
+    // Pawn-structure label (IQP, hanging pawns, passed pawn,
+    // doubled pawns). One-shot semantics — same label suppressed
+    // until the structure name changes.
+    std::string pending_move_pawn_structure;
+    std::string last_announced_pawn_structure;
 };
 
 // ===========================================================================

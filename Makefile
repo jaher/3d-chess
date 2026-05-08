@@ -25,7 +25,7 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             compression.cpp menu_physics.cpp menu_input.cpp \
             challenge_ui.cpp pregame_ui.cpp shatter_transition.cpp \
             text_atlas.cpp options_ui.cpp puzzle.cpp openings.cpp \
-            endgame.cpp tactics.cpp \
+            endgame.cpp tactics.cpp pawn_structure.cpp \
             voice_input.cpp voice_whisper.cpp \
             voice_tts.cpp voice_tts_native.cpp \
             chessnut_bridge.cpp phantom_bridge.cpp
