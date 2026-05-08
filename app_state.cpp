@@ -2283,6 +2283,10 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 utterance += ". ";
                 utterance += cur(a).pending_move_critical;
             }
+            if (!cur(a).pending_move_tablebase.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_tablebase;
+            }
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
@@ -2293,6 +2297,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_pawn_structure.clear();
             cur(a).pending_move_pawn_family.clear();
             cur(a).pending_move_critical.clear();
+            cur(a).pending_move_tablebase.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2377,6 +2382,38 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             // No forced mate any more — clear so a future re-entry
             // into mate territory re-fires the announcement.
             cur(a).last_announced_mate_in = 0;
+        }
+    }
+
+    // ----- Tablebase-style verdict for low-material positions.
+    // Real tablebase queries against the lichess endpoint would
+    // be more accurate but cost an async fetch per move. Instead
+    // we use Stockfish's eval magnitude as a proxy when total
+    // piece count drops to ≤ 7 (the tablebase territory) — a
+    // long-search Stockfish at this material level is essentially
+    // tablebase-perfect anyway. Announce the verdict (winning /
+    // drawn / losing) once on entry and again when it flips.
+    {
+        int piece_count = 0;
+        for (const auto& p : gs.pieces) if (p.alive) ++piece_count;
+        std::string verdict;
+        if (piece_count <= 7 && cur(a).pending_move_mate_in.empty()) {
+            // Player-relative cp so "winning for the side that just
+            // moved" reads naturally; we don't actually need that
+            // sign here since the verdict text names the side.
+            const int gate_cp = 300;        // ~3 pawns of advantage
+            const int draw_band = 25;
+            if (cp >= gate_cp) {
+                verdict = "Theoretically winning for white";
+            } else if (cp <= -gate_cp) {
+                verdict = "Theoretically winning for black";
+            } else if (std::abs(cp) <= draw_band) {
+                verdict = "Theoretically drawn";
+            }
+        }
+        if (!verdict.empty() && verdict != cur(a).last_announced_tablebase) {
+            cur(a).pending_move_tablebase = verdict;
+            cur(a).last_announced_tablebase = verdict;
         }
     }
 
@@ -2619,6 +2656,13 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             utterance += ". ";
             utterance += cur(a).pending_move_critical;
         }
+        // Tablebase-style verdict (≤ 7-piece territory) — slots
+        // in after the named-position label since it's the
+        // ultimate "what's the result of this position" reading.
+        if (!cur(a).pending_move_tablebase.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_tablebase;
+        }
         if (cur(a).pending_move_speech_was_human &&
             !cur(a).pending_move_classification.empty()) {
             utterance += ". ";
@@ -2634,6 +2678,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_pawn_structure.clear();
         cur(a).pending_move_pawn_family.clear();
         cur(a).pending_move_critical.clear();
+        cur(a).pending_move_tablebase.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 

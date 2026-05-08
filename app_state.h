@@ -195,6 +195,14 @@ struct GameInstance {
     // recognised template; same one-shot semantics.
     std::string pending_move_critical;
     std::string last_announced_critical;
+    // Tablebase-style verdict for low-material positions
+    // (≤ 7 pieces total). Announces "Theoretically winning for
+    // white/black" or "Theoretically drawn" the first time we
+    // enter the territory and again only when the verdict flips.
+    // last_announced_tablebase tracks the verdict text so a
+    // bounce between drawn ↔ winning doesn't repeat itself.
+    std::string pending_move_tablebase;
+    std::string last_announced_tablebase;
 };
 
 // ===========================================================================

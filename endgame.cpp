@@ -212,7 +212,7 @@ std::string classify_critical_position(const GameState& gs) {
 
     auto file = [](int c) { return internal_col_to_file(c); };
     int wP_file = (wP_c >= 0) ? file(wP_c) : -1;
-    int bP_file = black_has_pawn ? file(bP_c) : -1;
+    (void)bP_c; (void)bP_r;     // black-pawn coords not used
 
     // ----- Vancura defence: black has no pawn, white pawn is on
     // the a-file (a-pawn) advanced past the 6th rank, black rook
