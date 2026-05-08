@@ -3001,8 +3001,14 @@ void renderer_draw(GameState& gs,
         glUniform1i(loc_clock_pbr_mode, 0);
 
         // Needles — rotate each around its own pivot in the dial
-        // face's plane (local Z axis). Right needle = white's clock,
-        // left = black's.
+        // face's plane (local Z axis). The active player should
+        // see THEIR own dial spinning (the one closest to their
+        // side of the board): with the clock placed at world X=+5.7
+        // and the rotate_y(-π/2) orientation, the clock's mesh-
+        // local +X dial sits at world Z=+0.6 (the white side of
+        // the board). User feedback says my first mapping had the
+        // wrong needle ticking — flipping so left dial = white,
+        // right dial = black.
         const float ang_white = dial_angle_rad(time_control_base_ms,
                                                white_ms_left);
         const float ang_black = dial_angle_rad(time_control_base_ms,
@@ -3032,21 +3038,21 @@ void renderer_draw(GameState& gs,
                      /*roughness=*/0.35f,
                      /*ao=*/1.0f,
                      /*wood=*/0);
-        if (g_clock_hand_r.count > 0) {
-            Mat4 m = hand_model(CLOCK_HAND_R_PIVOT, ang_white);
-            float nm[9]; mat4_normal_matrix(m, nm);
-            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
-            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
-            glBindVertexArray(g_clock_hand_r.vao);
-            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_r.count);
-        }
         if (g_clock_hand_l.count > 0) {
-            Mat4 m = hand_model(CLOCK_HAND_L_PIVOT, ang_black);
+            Mat4 m = hand_model(CLOCK_HAND_L_PIVOT, ang_white);
             float nm[9]; mat4_normal_matrix(m, nm);
             glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
             glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
             glBindVertexArray(g_clock_hand_l.vao);
             glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_l.count);
+        }
+        if (g_clock_hand_r.count > 0) {
+            Mat4 m = hand_model(CLOCK_HAND_R_PIVOT, ang_black);
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
+            glBindVertexArray(g_clock_hand_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_r.count);
         }
         // Restore body matrix + PBR-mode so the glass dial draws
         // below transform with the clock body again.
