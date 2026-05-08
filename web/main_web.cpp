@@ -41,6 +41,8 @@ namespace web_ai {
     extern int         eval_cp;
     extern int         eval_index;
     extern std::string eval_best_uci;
+    extern std::string eval_second_uci;
+    extern int         eval_second_cp;
     extern int         eval_game_id;
 }
 
@@ -368,7 +370,8 @@ static void poll_ai_results() {
     if (web_ai::eval_ready) {
         web_ai::eval_ready = false;
         app_eval_ready(g_app, web_ai::eval_cp, web_ai::eval_index,
-                       web_ai::eval_best_uci, web_ai::eval_game_id);
+                       web_ai::eval_best_uci, web_ai::eval_game_id,
+                       web_ai::eval_second_uci, web_ai::eval_second_cp);
     }
 }
 

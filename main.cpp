@@ -56,8 +56,14 @@ struct AiMoveArrived {
 struct EvalArrived {
     int cp;
     int score_index;
-    std::string best_uci;  // empty when engine returned (none)
+    std::string best_uci;    // empty when engine returned (none)
     int         game_id;
+    // Second-best PV — drives the "Great move" / "Miss"
+    // classifications. Empty UCI / 0 cp means we didn't get a
+    // second PV (either MultiPV=1 or the position has only one
+    // legal move).
+    std::string second_uci;
+    int         second_cp = 0;
 };
 
 static gboolean on_ai_move_ready(gpointer data) {
@@ -69,7 +75,8 @@ static gboolean on_ai_move_ready(gpointer data) {
 
 static gboolean on_eval_ready(gpointer data) {
     auto* r = static_cast<EvalArrived*>(data);
-    app_eval_ready(g_app, r->cp, r->score_index, r->best_uci, r->game_id);
+    app_eval_ready(g_app, r->cp, r->score_index, r->best_uci, r->game_id,
+                   r->second_uci, r->second_cp);
     delete r;
     return G_SOURCE_REMOVE;
 }
@@ -92,9 +99,11 @@ static void plat_trigger_eval(const char* fen_c, int movetime, int idx,
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
     std::thread([fen, mt, idx, game_id]() {
-        std::string best;
-        int cp = stockfish_eval(fen, mt, best);
-        auto* r = new EvalArrived{cp, idx, std::move(best), game_id};
+        std::string best, second;
+        int second_cp = 0;
+        int cp = stockfish_eval(fen, mt, best, &second, &second_cp);
+        auto* r = new EvalArrived{cp, idx, std::move(best), game_id,
+                                  std::move(second), second_cp};
         g_idle_add(on_eval_ready, r);
     }).detach();
 }

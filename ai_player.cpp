@@ -264,11 +264,25 @@ public:
 
     // Returns centipawns from white's perspective, or INT_MIN on failure.
     int eval_position(const std::string& fen, int movetime_ms,
-                      std::string* out_best_uci = nullptr) {
+                      std::string* out_best_uci = nullptr,
+                      std::string* out_second_uci = nullptr,
+                      int* out_second_cp = nullptr) {
         if (out_best_uci) out_best_uci->clear();
+        if (out_second_uci) out_second_uci->clear();
+        if (out_second_cp)  *out_second_cp = 0;
+        const bool want_second = (out_second_uci || out_second_cp);
         if (!write_line("ucinewgame")) { stop(); return INT_MIN; }
         if (!write_line("isready"))    { stop(); return INT_MIN; }
         if (wait_for_contains("readyok", 2000).empty()) { stop(); return INT_MIN; }
+        // Bump MultiPV to 2 when the caller wants the second-best PV
+        // (move-classification pass), drop back to 1 for the cheaper
+        // hint-only / score-only paths so we don't pay for an extra
+        // search line we'll throw away.
+        if (!write_line(want_second
+                            ? std::string("setoption name MultiPV value 2")
+                            : std::string("setoption name MultiPV value 1"))) {
+            stop(); return INT_MIN;
+        }
         if (!write_line("position fen " + fen)) { stop(); return INT_MIN; }
         if (!write_line("go movetime " + std::to_string(movetime_ms))) {
             stop(); return INT_MIN;
@@ -282,8 +296,15 @@ public:
                 black_to_move = true;
         }
 
-        int best_score = 0;
-        int best_depth = -1;
+        // Track the best score per multipv slot (1 and 2), keeping
+        // the deepest line we've seen for each. For multipv=1 we
+        // also remember the first move of the PV — the bestmove
+        // line at the end is authoritative for that, but the PV
+        // gives us multipv=2's first move directly (Stockfish's
+        // bestmove output only names #1).
+        int best_score    = 0;   int best_depth    = -1;
+        int second_score  = 0;   int second_depth  = -1;
+        std::string second_first_move;
         bool got_any = false;
 
         int deadline_budget = movetime_ms + 3000;
@@ -292,9 +313,6 @@ public:
             if (!line_opt) { stop(); return INT_MIN; }
             const std::string& line = *line_opt;
             if (line.rfind("bestmove ", 0) == 0) {
-                // Capture the bestmove for the hint pipeline. Format is
-                // "bestmove e7e5 ponder d2d4" or "bestmove (none)" /
-                // "bestmove 0000" for mate/stalemate.
                 if (out_best_uci) {
                     std::istringstream bm(line);
                     std::string keyword, move;
@@ -309,15 +327,21 @@ public:
 
             if (line.rfind("info ", 0) != 0) continue;
 
-            // Parse "... depth N ... score cp X" or "score mate X"
+            // Parse "info ... depth N multipv M ... score cp/mate X
+            // ... pv first_move ...". multipv is 1-indexed; absent
+            // means 1.
             int depth = -1;
+            int multipv = 1;
             int score = 0;
             bool have_score = false;
+            std::string first_pv_move;
             std::istringstream iss(line);
             std::string tok;
             while (iss >> tok) {
                 if (tok == "depth") {
                     iss >> depth;
+                } else if (tok == "multipv") {
+                    iss >> multipv;
                 } else if (tok == "score") {
                     std::string kind;
                     iss >> kind;
@@ -331,17 +355,41 @@ public:
                         score = (n >= 0 ? 1 : -1) * (30000 - absn);
                         have_score = true;
                     }
+                } else if (tok == "pv") {
+                    iss >> first_pv_move;
+                    // Drain the rest of the PV — we only need the
+                    // first move for the second-PV classification
+                    // hook.
+                    std::string rest;
+                    while (iss >> rest) { /* discard */ }
+                    break;
                 }
             }
-            if (have_score && depth >= best_depth) {
+            if (!have_score) continue;
+            if (multipv == 1 && depth >= best_depth) {
                 best_score = score;
                 best_depth = depth;
                 got_any = true;
+            } else if (multipv == 2 && depth >= second_depth) {
+                second_score = score;
+                second_depth = depth;
+                if (first_pv_move.size() >= 4) {
+                    second_first_move = first_pv_move.substr(0, 4);
+                }
             }
         }
 
         if (!got_any) return 0;
-        if (black_to_move) best_score = -best_score;
+        if (black_to_move) {
+            best_score   = -best_score;
+            second_score = -second_score;
+        }
+        if (out_second_uci && !second_first_move.empty()) {
+            *out_second_uci = second_first_move;
+        }
+        if (out_second_cp && second_depth >= 0) {
+            *out_second_cp = second_score;
+        }
         return best_score;
     }
 
@@ -518,11 +566,19 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
 }
 
 int stockfish_eval(const std::string& fen, int movetime_ms,
-                   std::string& out_best_uci) {
+                   std::string& out_best_uci,
+                   std::string* out_second_uci,
+                   int* out_second_cp) {
     std::lock_guard<std::mutex> lk(g_engine_mu);
     StockfishEngine* eng = get_engine_locked();
-    if (!eng) { out_best_uci.clear(); return INT_MIN; }
-    return eng->eval_position(fen, movetime_ms, &out_best_uci);
+    if (!eng) {
+        out_best_uci.clear();
+        if (out_second_uci) out_second_uci->clear();
+        if (out_second_cp)  *out_second_cp = 0;
+        return INT_MIN;
+    }
+    return eng->eval_position(fen, movetime_ms, &out_best_uci,
+                              out_second_uci, out_second_cp);
 }
 
 void ai_player_set_elo(int elo) {

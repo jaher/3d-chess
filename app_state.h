@@ -132,8 +132,19 @@ struct GameInstance {
     // Per-game eval / hint cache. Each instance has its own
     // Stockfish bestmove history; the hint feature keys off the
     // active instance's prev_eval_best_uci to brand "Best" moves.
+    // The second-best UCI + cp pair drives the chess.com-style
+    // "Great move" / "Miss" classifications: when the gap between
+    // best and second-best is large, the best move was the only
+    // way to keep the advantage and earns / forfeits a louder
+    // label depending on whether the player found it.
     std::string last_eval_best_uci;
+    std::string last_eval_second_uci;
+    int         last_eval_best_cp     = 0;
+    int         last_eval_second_cp   = 0;
     std::string prev_eval_best_uci;
+    std::string prev_eval_second_uci;
+    int         prev_eval_best_cp     = 0;
+    int         prev_eval_second_cp   = 0;
     bool hint_request_pending = false;
     bool hint_confirm_pending = false;
 
@@ -559,7 +570,9 @@ void app_render(AppState& a, int width, int height);
 void app_ai_move_ready(AppState& a, const char* uci, int game_id);
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci = std::string(),
-                    int game_id = 0);
+                    int game_id = 0,
+                    const std::string& second_uci = std::string(),
+                    int second_cp = 0);
 
 // Platform calls this with the JSON body returned by the chess.com
 // /pub/puzzle endpoint (daily=true) or /pub/puzzle/random

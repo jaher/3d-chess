@@ -2133,7 +2133,8 @@ void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
 }
 
 void app_eval_ready(AppState& a, int cp, int score_index,
-                    const std::string& best_uci, int game_id) {
+                    const std::string& best_uci, int game_id,
+                    const std::string& second_uci, int second_cp) {
     // Validate the response is for a real game. For N=1 game_id is
     // always 0; for N>1 a stale response (from before a reset)
     // gets dropped. The body still mutates cur(a) — fine because
@@ -2190,8 +2191,14 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // player JUST moved out of (i.e. what they should have
     // played).
     if (!best_uci.empty()) {
-        cur(a).prev_eval_best_uci = cur(a).last_eval_best_uci;
-        cur(a).last_eval_best_uci = best_uci;
+        cur(a).prev_eval_best_uci   = cur(a).last_eval_best_uci;
+        cur(a).prev_eval_best_cp    = cur(a).last_eval_best_cp;
+        cur(a).prev_eval_second_uci = cur(a).last_eval_second_uci;
+        cur(a).prev_eval_second_cp  = cur(a).last_eval_second_cp;
+        cur(a).last_eval_best_uci   = best_uci;
+        cur(a).last_eval_best_cp    = cp;
+        cur(a).last_eval_second_uci = second_uci;
+        cur(a).last_eval_second_cp  = second_cp;
     }
 
     // Move-quality classification — speak a category ("Best move",
@@ -2215,6 +2222,25 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             ? (cp_before - cp_after)
             : (cp_after - cp_before);
         if (cp_loss < 0) cp_loss = 0;  // can't help yourself by moving
+
+        // Centipawn → win-percentage logistic (chess.com / lichess
+        // style). The same 100 cp swing matters very differently at
+        // +800 (already winning) vs at +50 (still uncertain), so
+        // bucket on win-percentage swing rather than raw cp_loss.
+        // Coefficient 0.00368 matches lichess's published model.
+        auto cp_to_wp = [](int cp) -> float {
+            float k = -0.00368f * static_cast<float>(cp);
+            float w = 50.0f + 50.0f * (2.0f / (1.0f + std::exp(k)) - 1.0f);
+            if (w < 0.0f) return 0.0f;
+            if (w > 100.0f) return 100.0f;
+            return w;
+        };
+        // Player-relative cp at each endpoint (positive = good for
+        // the side that just moved).
+        int cp_pl_before = white_just_moved ? cp_before : -cp_before;
+        int cp_pl_after  = white_just_moved ? cp_after  : -cp_after;
+        float wp_loss = cp_to_wp(cp_pl_before) - cp_to_wp(cp_pl_after);
+        if (wp_loss < 0.0f) wp_loss = 0.0f;
 
         bool was_best = !cur(a).prev_eval_best_uci.empty() &&
                         gs.move_history.back() == cur(a).prev_eval_best_uci;
@@ -2260,33 +2286,91 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             (eval_before * eval_after > 0.0f) &&
             (std::abs(eval_before) >= 50.0f) &&
             (std::abs(eval_after)  >= 50.0f);
+        (void)both_mate_same_side;
 
-        // Pick the most-distinctive applicable label. Order
+        // --- chess.com-style "only-move" / Great-move detection.
+        // The pre-move position's MultiPV=2 split tells us how
+        // much better the engine's #1 was vs its #2. A large gap
+        // means the player either had to find the precise move
+        // (Great if they did) or had a clearly better option they
+        // didn't take (Miss).
+        const bool have_second_pv =
+            !cur(a).prev_eval_second_uci.empty();
+        float pv_gap_wp = 0.0f;
+        if (have_second_pv) {
+            int best_pl   = white_just_moved ? cur(a).prev_eval_best_cp
+                                              : -cur(a).prev_eval_best_cp;
+            int second_pl = white_just_moved ? cur(a).prev_eval_second_cp
+                                              : -cur(a).prev_eval_second_cp;
+            pv_gap_wp = cp_to_wp(best_pl) - cp_to_wp(second_pl);
+            if (pv_gap_wp < 0.0f) pv_gap_wp = 0.0f;
+        }
+        const bool only_move = have_second_pv && pv_gap_wp >= 8.0f;
+
+        // --- Brilliant: chess.com-style "you put real material on
+        // the line and the engine still picked the move." Detect
+        // by checking the just-moved piece's destination square
+        // for opponent attacks. If our minor-or-better piece sits
+        // on a square the opponent can capture from, AND the
+        // engine still rates the move #1, AND we're past the
+        // opening book, AND the position is still at least equal
+        // afterwards, that's the working definition of a sacrifice
+        // brilliant. Cheap proxy — doesn't model defenders, but
+        // most false positives end up filtered by the was_best gate
+        // anyway (the engine wouldn't pick a real hang).
+        bool brilliant = false;
+        if (was_best && cat_after >= 0 && !in_opening &&
+            !both_mate_same_side &&
+            !gs.move_history.empty()) {
+            int from_c, from_r, to_c, to_r;
+            if (parse_uci_move(gs.move_history.back(),
+                               from_c, from_r, to_c, to_r)) {
+                static const float values[PIECE_COUNT] = {
+                    0.0f, 9.0f, 3.25f, 3.0f, 5.0f, 1.0f
+                };
+                int dst_idx = gs.grid[to_r][to_c];
+                if (dst_idx >= 0 &&
+                    static_cast<size_t>(dst_idx) < gs.pieces.size()) {
+                    const BoardPiece& moved = gs.pieces[dst_idx];
+                    bool attacked = is_square_attacked(gs, to_c, to_r,
+                                                       !moved.is_white);
+                    if (attacked && values[moved.type] >= 3.0f) {
+                        brilliant = true;
+                    }
+                }
+            }
+        }
+
+        // --- Pick the most-distinctive applicable label. Order
         // matters: Book first so opening moves don't get branded
-        // "Best"; Brilliant/Great/Missed-Win next because they
-        // describe *what changed*; cp-loss thresholds last as
-        // the routine commentary.
+        // "Best"; Brilliant / Great / Missed-Win next because they
+        // describe *what changed*; ΔWP buckets last as routine
+        // commentary.
         const char* phrase = nullptr;
         if (in_opening && cp_loss <= 20)        phrase = "Book move";
-        else if (was_best && cat_delta >= 2)    phrase = "Brilliant move";
-        else if (was_best && cat_delta == 1)    phrase = "Great move";
+        else if (brilliant)                     phrase = "Brilliant move";
+        else if (was_best && only_move)         phrase = "Great move";
+        else if (was_best && cat_delta >= 1)    phrase = "Great move";
         else if (missed_win)                    phrase = "Missed win";
-        else if (was_best && cp_loss <= 10)     phrase = "Best move";
-        else if (cp_loss <= 15)                 phrase = "Excellent move";
-        else if (cp_loss <= 50)                 phrase = "Good move";
-        // Inaccuracy band (50 < cp_loss ≤ 100): intentionally
-        // silent. Per user preference, we don't call out small
-        // concessions — only Good and the louder Mistake/Blunder
-        // labels speak. The move text alone still gets announced.
-        else if (cp_loss <= 100)                phrase = nullptr;
-        else if (cp_loss <= 200)                phrase = "Mistake";
+        else if (!was_best && only_move &&
+                 wp_loss >= 5.0f)               phrase = "Miss";
+        else if (was_best && wp_loss <= 1.0f)   phrase = "Best move";
+        else if (wp_loss <= 2.0f)               phrase = "Excellent move";
+        else if (wp_loss <= 5.0f)               phrase = "Good move";
+        // Inaccuracy band (5% < ΔWP ≤ 10%): intentionally silent.
+        // Per user preference, we don't call out small concessions
+        // — only Good and the louder Mistake/Blunder labels speak.
+        else if (wp_loss <= 10.0f)              phrase = nullptr;
+        else if (wp_loss <= 20.0f)              phrase = "Mistake";
         else                                    phrase = "Blunder";
 
         std::fprintf(stderr,
-            "[classify] %s (cp_loss=%d, was_best=%d, "
+            "[classify] %s (cp_loss=%d wp_loss=%.1f%% pv_gap=%.1f%% "
+            "brilliant=%d was_best=%d only_move=%d "
             "before=%.2f after=%.2f cat=%d→%d ply=%zu "
             "white_moved=%d)\n",
-            phrase ? phrase : "<none>", cp_loss, was_best ? 1 : 0,
+            phrase ? phrase : "<none>", cp_loss, wp_loss, pv_gap_wp,
+            brilliant ? 1 : 0, was_best ? 1 : 0, only_move ? 1 : 0,
             eval_before, eval_after,
             cat_before, cat_after,
             gs.move_history.size(),

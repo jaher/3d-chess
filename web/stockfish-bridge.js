@@ -25,7 +25,10 @@ window.StockfishBridge = (function () {
   // Each queued entry: { kind: 'move'|'eval', fen, movetime, idx, game_id }
   const queue = [];
   let active = null;          // currently-running entry, or null
-  let bestEval = 0;           // running best eval score for the active eval search
+  let bestEval = 0;           // running best eval score for the active eval search (multipv=1)
+  let secondEval = 0;         // running second-best eval score (multipv=2)
+  let secondPv = '';          // first move of the multipv=2 PV (UCI, "" if none)
+  let multipvMode = 1;        // last MultiPV setting we sent to the engine
   let handshakeDone = false;  // becomes true once 'readyok' arrives
   let pendingElo = 1400;      // latched until the worker exists
 
@@ -54,6 +57,17 @@ window.StockfishBridge = (function () {
     ensureWorker();
     active = queue.shift();
     bestEval = 0;
+    secondEval = 0;
+    secondPv = '';
+    // Eval queries get MultiPV=2 so the C++ side can detect
+    // "Great move" / "Miss" classifications (gap between #1 and
+    // #2). Move queries stay on MultiPV=1 — the AI only needs the
+    // top line.
+    var wantMultiPv = (active.kind === 'eval') ? 2 : 1;
+    if (wantMultiPv !== multipvMode) {
+      worker.postMessage('setoption name MultiPV value ' + wantMultiPv);
+      multipvMode = wantMultiPv;
+    }
     worker.postMessage('ucinewgame');
     worker.postMessage('position fen ' + active.fen);
     worker.postMessage('go movetime ' + active.movetime);
@@ -97,32 +111,49 @@ window.StockfishBridge = (function () {
     }
 
     if (active.kind === 'eval') {
-      // Track the latest score from the search's info lines.
-      const m = line.match(/score (cp|mate) (-?\d+)/);
-      if (m) {
-        let cp = parseInt(m[2], 10);
-        if (m[1] === 'mate') {
+      // Track per-MultiPV slot: depth + score (and first move of
+      // the PV for slot 2). multipv defaults to 1 if absent.
+      const mPv = line.match(/\bmultipv\s+(\d+)/);
+      const mScore = line.match(/score (cp|mate) (-?\d+)/);
+      if (mScore) {
+        let cp = parseInt(mScore[2], 10);
+        if (mScore[1] === 'mate') {
           const sign = cp >= 0 ? 1 : -1;
           cp = sign * (30000 - Math.abs(cp));
         }
-        bestEval = cp;
+        const slot = mPv ? parseInt(mPv[1], 10) : 1;
+        if (slot === 1) {
+          bestEval = cp;
+        } else if (slot === 2) {
+          secondEval = cp;
+          // First move of the PV — the substring after the first
+          // "pv" token. Keep just the UCI head.
+          const pvIdx = line.indexOf(' pv ');
+          if (pvIdx !== -1) {
+            const tail = line.substring(pvIdx + 4).trim();
+            const space = tail.indexOf(' ');
+            let head = (space === -1) ? tail : tail.substring(0, space);
+            if (head.length > 4) head = head.substring(0, 4);
+            secondPv = head;
+          }
+        }
       }
       if (line.startsWith('bestmove ')) {
         // Negate if black-to-move so the C++ side gets white-relative cp.
         const sideBlack = fenSideToMove(active.fen);
         const cp = sideBlack ? -bestEval : bestEval;
+        const secondCp = sideBlack ? -secondEval : secondEval;
         const idx = active.idx;
-        // Capture the bestmove UCI alongside the cp score — drives
-        // the hint feature on the C++ side. Format: "bestmove e7e5
-        // ponder d2d4" / "bestmove (none)" / "bestmove 0000".
         const parts = line.split(/\s+/);
         let bestUci = parts.length >= 2 ? parts[1] : '';
         if (bestUci === '(none)' || bestUci === '0000') bestUci = '';
         const gameId = active.game_id | 0;
+        const secondUci = secondPv;
         finishActive(function () {
           safe_ccall('on_eval_from_js', null,
-                     ['number', 'number', 'string', 'number'],
-                     [cp, idx, bestUci, gameId]);
+                     ['number', 'number', 'string', 'number',
+                      'string', 'number'],
+                     [cp, idx, bestUci, gameId, secondUci, secondCp]);
         });
       }
       return;

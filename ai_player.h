@@ -48,9 +48,16 @@ int stockfish_eval(const std::string& fen, int movetime_ms = 150);
 // every `go movetime` query — same subprocess call, no extra cost).
 // Used by the hint feature to surface the optimal move on the user's
 // turn. `out_best_uci` may be empty if the engine returned no
-// bestmove (mate / stalemate position).
+// bestmove (mate / stalemate position). When out_second_uci /
+// out_second_cp are non-null, the engine is asked for MultiPV=2 and
+// the second-best PV's first move + score (white-relative
+// centipawns, mate scores encoded the same way as the headline) is
+// returned alongside. Empty string + 0 if the position has only one
+// legal move or MultiPV=2 wasn't honoured.
 int stockfish_eval(const std::string& fen, int movetime_ms,
-                   std::string& out_best_uci);
+                   std::string& out_best_uci,
+                   std::string* out_second_uci = nullptr,
+                   int* out_second_cp = nullptr);
 
 // Update the engine's UCI_Elo strength setting. If the engine is already
 // running this sends `setoption name UCI_Elo value N`, which takes effect
