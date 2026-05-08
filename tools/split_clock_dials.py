@@ -193,6 +193,59 @@ def find_match(comps, tris, dial_pivot, length_min, length_max=10.0):
     return candidates[0] if candidates else None
 
 
+def find_levers(comps, tris):
+    """Find the silver press-down levers on top of the clock.
+    Each lever has two components: a tall vertical stem (Y extent
+    ≈ 0.13, X extent ≈ 0.04, cen Y ≈ 1.08) and a small cap (cube-
+    ish, ext ≈ 0.028, cen Y ≈ 1.13). Group by X column: the two
+    components per side share an X coordinate. Returns a dict:
+    {side: ([component idx lists], merged_tris, bbox_centre)}."""
+    cap_y_min   = 1.10
+    stem_y_min  = 1.00
+    stem_y_max  = 1.10
+    candidates_by_x = defaultdict(list)
+    for ci, idxs in enumerate(comps):
+        ext, cen, _ = comp_info(tris, idxs)
+        # Match the stem (vertical thin post)
+        is_stem = (stem_y_min < cen[1] < stem_y_max
+                   and ext[1] > 0.10 and ext[0] < 0.08
+                   and ext[2] < 0.05)
+        # Match the cap (small cube-ish)
+        is_cap  = (cen[1] > cap_y_min
+                   and 0.02 < ext[0] < 0.05
+                   and 0.02 < ext[1] < 0.05)
+        if not (is_stem or is_cap):
+            continue
+        # Group by X (snap to nearest 0.05 so cap+stem at same
+        # column merge regardless of small Y offset).
+        x_bucket = round(cen[0] / 0.05) * 0.05
+        candidates_by_x[x_bucket].append(
+            (ci, idxs, ext, cen, "stem" if is_stem else "cap"))
+
+    # Should be exactly two columns: one negative-X, one positive-X.
+    # Sort by X.
+    keys = sorted(candidates_by_x.keys())
+    if len(keys) != 2:
+        return {}, None, None
+    levers = {}
+    for side, x_bucket in zip(("L", "R"), keys):
+        items = candidates_by_x[x_bucket]
+        all_idxs = []
+        for ci, idxs, _ext, _cen, _kind in items:
+            all_idxs.extend(idxs)
+        # Combined bbox for the lever.
+        sub = [tris[i] for i in all_idxs]
+        xs = [v[0] for tri in sub for v in tri]
+        ys = [v[1] for tri in sub for v in tri]
+        zs = [v[2] for tri in sub for v in tri]
+        cen = ((min(xs)+max(xs))/2, (min(ys)+max(ys))/2, (min(zs)+max(zs))/2)
+        levers[side] = (all_idxs, sub, cen)
+        print(f"  lever {side}: {len(items)} pieces, "
+              f"{len(all_idxs)} tris, cen=({cen[0]:.4f},"
+              f"{cen[1]:.4f},{cen[2]:.4f})")
+    return levers
+
+
 def main():
     body_path = os.path.join(MODELS_DIR, "clock_body.uvmesh")
     print(f"reading {body_path}")
@@ -227,13 +280,18 @@ def main():
         print("ERROR: missing long-hand match; cannot continue.")
         sys.exit(1)
 
-    needle_picks = [m for m in (long_l, long_r, short_l, short_r) if m]
-    needle_idx_set = set()
-    for m in needle_picks:
-        needle_idx_set.update(m[1])
+    print("\nLooking for press-down levers on top of the clock:")
+    levers = find_levers(comps, tris)
 
-    # All tris NOT chosen as a hand stay in the body.
-    keep_idxs = [ti for ti in range(len(tris)) if ti not in needle_idx_set]
+    needle_picks = [m for m in (long_l, long_r, short_l, short_r) if m]
+    extracted_idx_set = set()
+    for m in needle_picks:
+        extracted_idx_set.update(m[1])
+    for side, info in levers.items():
+        extracted_idx_set.update(info[0])
+
+    # All tris NOT chosen as a hand or lever stay in the body.
+    keep_idxs = [ti for ti in range(len(tris)) if ti not in extracted_idx_set]
 
     # Write the body-without-hands back in place.
     write_uvmesh(os.path.join(MODELS_DIR, "clock_body.uvmesh"),
@@ -257,6 +315,14 @@ def main():
         write_uvmesh(os.path.join(MODELS_DIR, f"{name}.uvmesh"),
                      [tris[i] for i in m[1]])
 
+    # Lever output. Each side's mesh combines the cap + stem into
+    # one mesh so the renderer animates them rigidly together.
+    for side, info in levers.items():
+        all_idxs, _sub, _cen = info
+        out_path = os.path.join(MODELS_DIR,
+                                f"clock_lever_{side.lower()}.uvmesh")
+        write_uvmesh(out_path, [tris[i] for i in all_idxs])
+
     # Print pivots for the renderer to hard-code. The long hand's
     # pivot is the main dial centre at the hand's Z stack; the
     # short hand's pivot is the hand's own hub centroid.
@@ -273,6 +339,11 @@ def main():
     if short_r:
         print(f"  CLOCK_HAND_SHORT_R_PIVOT: ({short_r[4][0]:.4f}, "
               f"{short_r[4][1]:.4f}, {short_r[4][2]:.4f})")
+    for side in ("L", "R"):
+        if side in levers:
+            cen = levers[side][2]
+            print(f"  CLOCK_LEVER_{side}_CENTRE: "
+                  f"({cen[0]:.4f}, {cen[1]:.4f}, {cen[2]:.4f})")
 
 
 if __name__ == "__main__":

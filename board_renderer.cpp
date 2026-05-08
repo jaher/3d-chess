@@ -86,8 +86,15 @@ static ClockMesh g_clock_hand_long_l;
 static ClockMesh g_clock_hand_long_r;
 static ClockMesh g_clock_hand_short_l;
 static ClockMesh g_clock_hand_short_r;
+static ClockMesh g_clock_lever_l;     // silver press-down lever, slides on Y
+static ClockMesh g_clock_lever_r;
 static ClockMesh g_clock_glass_l;
 static ClockMesh g_clock_glass_r;
+
+// How far each lever travels when fully pressed (mesh-local units).
+// The stem is ~0.128 long, so 0.04 is a clearly visible click
+// without the cap disappearing into the body.
+static constexpr float CLOCK_LEVER_PRESS = 0.04f;
 
 // Rotation pivots in mesh-local space. Long hands pivot at the
 // main dial centre at the hand's Z stack; short hands pivot at
@@ -836,6 +843,8 @@ static void load_clock_assets(const std::string& dir) {
     load_uvmesh("clock_hand_long_r"  + uv_suffix, g_clock_hand_long_r);
     load_uvmesh("clock_hand_short_l" + uv_suffix, g_clock_hand_short_l);
     load_uvmesh("clock_hand_short_r" + uv_suffix, g_clock_hand_short_r);
+    load_uvmesh("clock_lever_l"      + uv_suffix, g_clock_lever_l);
+    load_uvmesh("clock_lever_r"      + uv_suffix, g_clock_lever_r);
     load_one("clock_glass_r" + suffix, g_clock_glass_r, 30.0f);
     load_one("clock_glass_l" + suffix, g_clock_glass_l, 30.0f);
 
@@ -2529,7 +2538,9 @@ void renderer_draw(GameState& gs,
                    float shake_x,
                    const char* withdraw_confirm_title,
                    int64_t white_thought_ms,
-                   int64_t black_thought_ms) {
+                   int64_t black_thought_ms,
+                   float white_lever_blend,
+                   float black_lever_blend) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -3054,6 +3065,32 @@ void renderer_draw(GameState& gs,
         draw_hand(g_clock_hand_short_l, CLOCK_HAND_SHORT_L_PIVOT, ang_short_white);
         draw_hand(g_clock_hand_long_r,  CLOCK_HAND_LONG_R_PIVOT,  ang_long_black);
         draw_hand(g_clock_hand_short_r, CLOCK_HAND_SHORT_R_PIVOT, ang_short_black);
+        // Silver press-down levers. Each side translates along Y
+        // by (blend - 1) × press_distance, so blend=1.0 (UP) leaves
+        // it where the source mesh has it, and blend=0.0 (DOWN)
+        // sinks the cap into the body. Left lever = white (matches
+        // the dial assignment). PBR maps stay enabled so the
+        // chrome detailing on the cap reads as polished metal.
+        const float yL = (white_lever_blend - 1.0f) * CLOCK_LEVER_PRESS;
+        const float yR = (black_lever_blend - 1.0f) * CLOCK_LEVER_PRESS;
+        if (g_clock_lever_l.count > 0) {
+            Mat4 m = mat4_multiply(clock_model,
+                                   mat4_translate(0.0f, yL, 0.0f));
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
+            glBindVertexArray(g_clock_lever_l.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_lever_l.count);
+        }
+        if (g_clock_lever_r.count > 0) {
+            Mat4 m = mat4_multiply(clock_model,
+                                   mat4_translate(0.0f, yR, 0.0f));
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
+            glBindVertexArray(g_clock_lever_r.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_clock_lever_r.count);
+        }
         // Restore body matrix + PBR-mode so the glass dial draws
         // below transform with the clock body again.
         glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);

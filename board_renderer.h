@@ -74,7 +74,14 @@ void renderer_draw(GameState& gs,
                    // Cumulative rather than ms_left so Fischer
                    // increments don't reset the needles on each move.
                    int64_t white_thought_ms = 0,
-                   int64_t black_thought_ms = 0);
+                   int64_t black_thought_ms = 0,
+                   // Per-side lever blend (1.0 = fully UP / your
+                   // turn, 0.0 = fully DOWN / just pressed). The
+                   // renderer translates each silver lever along Y.
+                   // Defaults: white UP, black DOWN — matches the
+                   // pre-first-move state of an analog chess clock.
+                   float white_lever_blend = 1.0f,
+                   float black_lever_blend = 0.0f);
 
 // Draws a thin white border around the current viewport. Called
 // after renderer_draw in multi-game mode to mark the active board

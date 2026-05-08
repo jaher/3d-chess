@@ -3052,6 +3052,23 @@ static void tick_clock(AppState& a, int64_t now) {
     }
     cur(a).prev_white_turn = cur_side;
 
+    // Lever press-down animation. Each side's lever blend factor
+    // exponentially eases toward 1.0 (UP, your clock running) or
+    // 0.0 (DOWN, opponent just pressed). Rate ≈12 /s gives ~80% of
+    // the motion in ~125 ms — fast enough to feel like a real
+    // chess clock click but smooth enough to not pop.
+    {
+        const float white_target = gs.white_turn ? 1.0f : 0.0f;
+        const float black_target = gs.white_turn ? 0.0f : 1.0f;
+        const float dt_s = static_cast<float>(dt_us) * 1e-6f;
+        const float blend_rate = 12.0f;
+        const float alpha = 1.0f - std::exp(-dt_s * blend_rate);
+        cur(a).white_lever_blend +=
+            (white_target - cur(a).white_lever_blend) * alpha;
+        cur(a).black_lever_blend +=
+            (black_target - cur(a).black_lever_blend) * alpha;
+    }
+
     if (cur(a).white_ms_left <= 0) {
         cur(a).white_ms_left = 0;
         gs.game_over = true;
@@ -3318,7 +3335,8 @@ static void render_board(AppState& a, int width, int height) {
                       a.cartoon_outline,
                       is_active ? a.board_shake_x : 0.0f,
                       withdraw_title,
-                      gi.white_thought_ms, gi.black_thought_ms);
+                      gi.white_thought_ms, gi.black_thought_ms,
+                      gi.white_lever_blend, gi.black_lever_blend);
 
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock

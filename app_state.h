@@ -135,6 +135,14 @@ struct GameInstance {
     // lands. Updated alongside the ms_left subtraction in tick_clock.
     int64_t white_thought_ms   = 0;
     int64_t black_thought_ms   = 0;
+    // Per-side lever blend factor for the 3D clock's silver
+    // press-down levers: 1.0 = fully UP (player's clock running),
+    // 0.0 = fully DOWN (opponent has just pressed). Smoothly
+    // animates toward target each frame so turn-flips look like
+    // the lever physically slides instead of popping. Initialised
+    // to "white up, black down" since white moves first.
+    float   white_lever_blend  = 1.0f;
+    float   black_lever_blend  = 0.0f;
 
     // Per-game eval / hint cache. Each instance has its own
     // Stockfish bestmove history; the hint feature keys off the
