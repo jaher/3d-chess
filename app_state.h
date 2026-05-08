@@ -151,9 +151,16 @@ struct GameInstance {
     // Per-game pending move announcement — set at execute_move
     // time, drained in app_eval_ready so the move text + the
     // classification phrase land as one combined utterance.
+    // pending_move_opening is non-empty only on the move that
+    // *transitions into* a newly named opening (transposition rows
+    // in the same opening's family don't repeat the announcement).
+    // last_announced_opening tracks what we said last so we can
+    // skip duplicates as the game stays inside one opening's tree.
     std::string pending_move_speech;
     bool        pending_move_speech_was_human = false;
     std::string pending_move_classification;
+    std::string pending_move_opening;
+    std::string last_announced_opening;
 };
 
 // ===========================================================================

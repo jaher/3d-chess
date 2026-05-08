@@ -28,6 +28,7 @@ LDFLAGS   := \
     --preload-file ../models/board@/models/board \
     --preload-file ../challenges@/challenges \
     --preload-file ../puzzles@/puzzles \
+    --preload-file ../openings@/openings \
     --preload-file ../sounds@/sounds \
     --preload-file ../fonts@/fonts \
     --shell-file index.html
@@ -58,7 +59,8 @@ SHARED_SRCS := \
     ../options_ui.cpp \
     ../voice_input.cpp \
     ../voice_tts.cpp \
-    ../puzzle.cpp
+    ../puzzle.cpp \
+    ../openings.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp

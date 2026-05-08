@@ -786,6 +786,12 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   sounds/                  -- WAVs (move / capture / check / mistake /
                               glass-break / intro music)
   challenges/              -- Puzzle definition files
+  openings/openings.tsv    -- Lichess chess-openings DB rebuilt to
+                              "<position-fen>\t<eco>\t<name>"; loaded
+                              by openings.cpp for opening-name TTS
+  fonts/                   -- Bundled OFL TTFs (Cinzel-Bold.ttf for
+                              menu titles, Inter-Bold.ttf for body
+                              text, plus their *-OFL.txt licences)
   screenshots/             -- Images used in this README
 
   # Tools
@@ -800,6 +806,13 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               it to ./puzzles/ (skips if the FEN is
                               already archived). Suggested cron line:
                                  0 */12 * * * /path/to/3d_chess/tools/fetch_daily_puzzle.py
+  tools/build_openings.py  -- Replays the lichess chess-openings TSVs
+                              (a..e.tsv) through python-chess and
+                              emits openings/openings.tsv keyed by
+                              the four-field FEN of each line's final
+                              position. Run only when refreshing the
+                              source data (`pip install --user
+                              chess`; sources fetched into /tmp).
 
   # Tests
   tests/                   -- doctest-based unit tests (chess rules,

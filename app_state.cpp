@@ -3,6 +3,7 @@
 #include "ai_player.h"
 #include "audio.h"
 #include "chess_rules.h"
+#include "openings.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -82,6 +83,22 @@ int env_int(const char* name, int fallback) {
         if (n > 0) return n;
     }
     return fallback;
+}
+
+// After a move has been committed, look up the resulting position
+// in the lichess openings DB and stash a one-shot announcement on
+// the current GameInstance if we just transitioned into a newly
+// named opening (transpositions inside the same opening's tree
+// don't repeat the call-out). Both the human and AI move paths
+// invoke this so either side's move can name an opening.
+void detect_opening_for_active(AppState& a) {
+    GameState& gs = cur_gs(a);
+    std::string fen = current_fen(gs, gs.white_turn);
+    std::string name = opening_name_for_position(fen);
+    if (!name.empty() && name != cur(a).last_announced_opening) {
+        cur(a).pending_move_opening = name;
+        cur(a).last_announced_opening = name;
+    }
 }
 
 } // namespace
@@ -511,6 +528,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                         tts_before, gs.move_history.back());
                     cur(a).pending_move_speech_was_human = true;
                 }
+                detect_opening_for_active(a);
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2153,9 +2171,15 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // regardless of whether Stockfish managed to score it.
     auto drain_pending_speech_no_classify = [&]() {
         if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
-            voice_tts_speak(cur(a).pending_move_speech);
+            std::string utterance = cur(a).pending_move_speech;
+            if (!cur(a).pending_move_opening.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_opening;
+            }
+            voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
+            cur(a).pending_move_opening.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2393,6 +2417,14 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // overlap them with each other or with the next move.
     if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
         std::string utterance = cur(a).pending_move_speech;
+        // Order: move text → opening name (a fact about the
+        // position, runs for either side) → quality label (human
+        // moves only). Opening before classification reads
+        // naturally: "Knight f3, King's Indian Attack, best move."
+        if (!cur(a).pending_move_opening.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_opening;
+        }
         if (cur(a).pending_move_speech_was_human &&
             !cur(a).pending_move_classification.empty()) {
             utterance += ". ";
@@ -2401,6 +2433,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         voice_tts_speak(utterance);
         cur(a).pending_move_speech.clear();
         cur(a).pending_move_classification.clear();
+        cur(a).pending_move_opening.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
@@ -2540,6 +2573,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
             cur(a).pending_move_speech_was_human =
                 a.two_player_mode || gs.ai_anim_trigger_ai_after;
         }
+        detect_opening_for_active(a);
         gs.ai_thinking = false;
         app_refresh_status(a);
         if (gs.ai_anim_skip_chessnut_sync) {
