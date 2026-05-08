@@ -3060,6 +3060,37 @@ static void tick_clock(AppState& a, int64_t now) {
         std::printf("White wins on time!\n");
         app_refresh_status(a);
     }
+
+    // ----- Time-pressure narrator. Whenever the side-to-move's
+    // clock crosses one of the warning thresholds for the first
+    // time this game, fire a short TTS line. The thresholds shrink
+    // as time runs out so a single drop from 65 s → 5 s still
+    // fires one announcement (the deepest one crossed) rather
+    // than three back-to-back lines.
+    if (a.voice_tts_enabled) {
+        struct Threshold { int ms; const char* phrase; };
+        static const Threshold THRESHOLDS[] = {
+            {10000, "Under ten seconds"},
+            {30000, "Under thirty seconds"},
+            {60000, "One minute remaining"},
+        };
+        auto check_side = [&](int64_t remaining, int& last_warned) {
+            for (const auto& t : THRESHOLDS) {
+                if (remaining < t.ms &&
+                    (last_warned == 0 || last_warned > t.ms)) {
+                    voice_tts_speak(t.phrase);
+                    last_warned = t.ms;
+                    break;          // only one announcement per tick
+                }
+            }
+        };
+        if (gs.white_turn) {
+            check_side(cur(a).white_ms_left, cur(a).last_time_warning_white_ms);
+        } else {
+            check_side(cur(a).black_ms_left, cur(a).last_time_warning_black_ms);
+        }
+    }
+
     queue_redraw(a);
 }
 

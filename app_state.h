@@ -209,6 +209,12 @@ struct GameInstance {
     // last announced so it follows the family-prefix matcher.
     std::string pending_move_opening_plan;
     std::string last_announced_opening_plan_for;
+    // Time-pressure narrator — remembers the last threshold (in
+    // ms) we already announced for each side, so each crossing
+    // ("under one minute", "under thirty seconds", "under ten
+    // seconds") fires once per side per game.
+    int last_time_warning_white_ms = 0;
+    int last_time_warning_black_ms = 0;
 };
 
 // ===========================================================================
