@@ -77,6 +77,32 @@ static ClockMesh g_clock_dial_l;
 static ClockMesh g_clock_dial_r;
 static ClockMesh g_clock_glass_l;
 static ClockMesh g_clock_glass_r;
+
+// Per-dial rotation pivots in mesh-local space (read directly from
+// the bbox centres of clock_dial_l/r.uvmesh). The export pipeline
+// applies one combined translation to all sub-meshes so each dial
+// keeps its physical position on the body — they're NOT centred at
+// the world origin. To spin a needle around its own centre we use
+// T(+pivot) · R_z(angle) · T(-pivot). Z is the dial face-normal
+// axis (the dials are flat circles in the local XY plane).
+static const float CLOCK_DIAL_L_PIVOT[3] = { -0.6456f, 0.6999f, 0.3836f };
+static const float CLOCK_DIAL_R_PIVOT[3] = {  0.6422f, 0.6999f, 0.3836f };
+
+// Maps elapsed time (since the side's clock started ticking) to a
+// rotation angle. One full revolution per real-time minute — a
+// "second-hand" sweep, so the motion is clearly visible on the
+// small on-screen clock (a true minute-hand rate of one rev per
+// hour is only 0.1°/s and looks static). Fischer increments
+// naturally show as a slight backward rotation.
+static float dial_angle_rad(int64_t base_ms, int64_t left_ms) {
+    // base_ms == 0 means "no time control active" (unlimited or
+    // pre-game) — clamp to rest pose so the needles don't sweep
+    // backward from a phantom -left_ms elapsed value.
+    if (base_ms <= 0) return 0.0f;
+    int64_t elapsed_ms = base_ms - left_ms;
+    return static_cast<float>(elapsed_ms)
+         * (2.0f * static_cast<float>(M_PI) / 60000.0f);
+}
 static GLuint    g_clock_diffuse_tex   = 0;
 static GLuint    g_clock_cursor_tex    = 0;
 static GLuint    g_clock_roughness_tex = 0;
@@ -2485,7 +2511,10 @@ void renderer_draw(GameState& gs,
                    bool clock_side_is_white,
                    bool cartoon_outline,
                    float shake_x,
-                   const char* withdraw_confirm_title) {
+                   const char* withdraw_confirm_title,
+                   int64_t white_ms_left,
+                   int64_t black_ms_left,
+                   int64_t time_control_base_ms) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -2940,14 +2969,43 @@ void renderer_draw(GameState& gs,
                      /*roughness=*/0.55f,
                      /*ao=*/1.0f,
                      /*wood=*/0);
+        // Animate each needle: right dial = white's clock, left =
+        // black's. Both spin around local Z (the dial face-normal)
+        // about their own pivot points. The model matrix is rebuilt
+        // per dial because each pivot is at a different X offset
+        // on the clock body.
+        const float ang_white = dial_angle_rad(time_control_base_ms,
+                                               white_ms_left);
+        const float ang_black = dial_angle_rad(time_control_base_ms,
+                                               black_ms_left);
+        auto dial_model = [&](const float pv[3], float angle) -> Mat4 {
+            Mat4 m = mat4_multiply(clock_model,
+                                   mat4_translate(pv[0], pv[1], pv[2]));
+            m = mat4_multiply(m, mat4_rotate_z(angle));
+            m = mat4_multiply(m, mat4_translate(-pv[0], -pv[1], -pv[2]));
+            return m;
+        };
         if (g_clock_dial_r.count > 0) {
+            Mat4 m = dial_model(CLOCK_DIAL_R_PIVOT, ang_white);
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
             glBindVertexArray(g_clock_dial_r.vao);
             glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_r.count);
         }
         if (g_clock_dial_l.count > 0) {
+            Mat4 m = dial_model(CLOCK_DIAL_L_PIVOT, ang_black);
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
             glBindVertexArray(g_clock_dial_l.vao);
             glDrawArrays(GL_TRIANGLES, 0, g_clock_dial_l.count);
         }
+        // Restore the body model matrix + normal matrix so the
+        // glass dial draws below transform with the clock body
+        // again, not with the last dial's spin.
+        glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);
+        glUniformMatrix3fv(loc_normal, 1, GL_FALSE, cnm);
         // Reset texture mode so glass + downstream pieces draws
         // don't sample the clock textures.
         glUniform1i(loc_clock_mode, 0);

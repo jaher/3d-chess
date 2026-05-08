@@ -3300,6 +3300,11 @@ static void render_board(AppState& a, int width, int height) {
             (a.mode == MODE_PUZZLE) ? "Go back to main menu?"
                                     : "Withdraw from game?";
 
+        // Per-side clock state for the 3D clock model's needles.
+        // Pass zeros when no time control is active so the
+        // needles stay at their rest pose.
+        const int64_t base_ms = a.clock_enabled
+            ? TIME_CONTROLS[a.time_control].base_ms : 0;
         renderer_draw(gs, sub_x, sub_y, sub_w, sub_h,
                       a.rot_x, a.rot_y, a.zoom,
                       a.human_plays_white,
@@ -3309,7 +3314,8 @@ static void render_board(AppState& a, int width, int height) {
                       draw_clock, clock_ms, clock_side_is_white,
                       a.cartoon_outline,
                       is_active ? a.board_shake_x : 0.0f,
-                      withdraw_title);
+                      withdraw_title,
+                      gi.white_ms_left, gi.black_ms_left, base_ms);
 
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock
