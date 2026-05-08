@@ -23,3 +23,10 @@
 // pending_move_pawn_structure / last_announced_pawn_structure so
 // the same label doesn't repeat while the structure persists.
 std::string classify_pawn_structure(const GameState& gs);
+
+// Named pawn-structure family detection — Carlsbad, Maroczy bind,
+// Stonewall, Hedgehog, Benoni, French chain, Caro-Kann chain.
+// Pattern-matches on the pawn skeleton only (other pieces ignored)
+// so transpositions match. Returns "" when no named family fits;
+// caller dedups via last_announced_pawn_family.
+std::string classify_pawn_family(const GameState& gs);

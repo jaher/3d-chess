@@ -184,6 +184,12 @@ struct GameInstance {
     // until the structure name changes.
     std::string pending_move_pawn_structure;
     std::string last_announced_pawn_structure;
+    // Named pawn-family label (Maroczy, Stonewall, Hedgehog,
+    // Carlsbad, French chain, Caro-Kann chain, King's Indian
+    // chain, Closed Sicilian, Benoni). Higher-level pattern than
+    // pawn_structure above; same one-shot semantics.
+    std::string pending_move_pawn_family;
+    std::string last_announced_pawn_family;
 };
 
 // ===========================================================================

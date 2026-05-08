@@ -182,3 +182,118 @@ std::string classify_pawn_structure(const GameState& gs) {
 
     return "";
 }
+
+namespace {
+
+// Helper: is there a friendly pawn at exactly (file, rank)?
+// File / rank in 0..7; rank 0 = white's home rank in BoardPiece
+// row indexing.
+bool pawn_at(const GameState& gs, int file, int rank, bool side_white) {
+    for (const auto& p : gs.pieces) {
+        if (!p.alive || p.type != PAWN || p.is_white != side_white) continue;
+        if (internal_col_to_file(p.col) == file && p.row == rank) return true;
+    }
+    return false;
+}
+
+// Helper: any friendly pawn on the given file? Convenience wrapper.
+bool any_pawn_on_file(const GameState& gs, int file, bool side_white) {
+    for (const auto& p : gs.pieces) {
+        if (!p.alive || p.type != PAWN || p.is_white != side_white) continue;
+        if (internal_col_to_file(p.col) == file) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::string classify_pawn_family(const GameState& gs) {
+    // ----- Maroczy bind: white pawns on c4 + e4, black has no
+    // d-pawn (or it's on d6). This is a Sicilian / English
+    // structure that strongly restricts black's …d5 break.
+    if (pawn_at(gs, 2, 3, true) && pawn_at(gs, 4, 3, true) &&
+        !pawn_at(gs, 3, 6, false) /* black d-pawn not on d7 */ &&
+        !pawn_at(gs, 3, 4, false) /* not on d5 either */) {
+        return "Maroczy bind";
+    }
+
+    // ----- Stonewall (white): pawns on c3 + d4 + e3 + f4. Black
+    // mirror would be c6+d5+e6+f5 — same name, just from the
+    // other side.
+    if (pawn_at(gs, 2, 2, true) && pawn_at(gs, 3, 3, true) &&
+        pawn_at(gs, 4, 2, true) && pawn_at(gs, 5, 3, true)) {
+        return "White has a Stonewall structure";
+    }
+    if (pawn_at(gs, 2, 5, false) && pawn_at(gs, 3, 4, false) &&
+        pawn_at(gs, 4, 5, false) && pawn_at(gs, 5, 4, false)) {
+        return "Black has a Stonewall structure";
+    }
+
+    // ----- Hedgehog (black): pawns on a6, b6, d6, e6 — the
+    // signature low-profile setup. The defining feature is the
+    // restrained d6/e6 + queenside fianchetto pawns; the
+    // standard Hedgehog has a6 + b6 + d6 + e6.
+    if (pawn_at(gs, 0, 5, false) && pawn_at(gs, 1, 5, false) &&
+        pawn_at(gs, 3, 5, false) && pawn_at(gs, 4, 5, false)) {
+        return "Black has a Hedgehog structure";
+    }
+    // Mirror for white.
+    if (pawn_at(gs, 0, 2, true) && pawn_at(gs, 1, 2, true) &&
+        pawn_at(gs, 3, 2, true) && pawn_at(gs, 4, 2, true)) {
+        return "White has a Hedgehog structure";
+    }
+
+    // ----- Benoni (black): white pawn on d5, black pawn on c5.
+    // The locked d-pawn imbalance is the signature.
+    if (pawn_at(gs, 3, 4, true) && pawn_at(gs, 2, 4, false) &&
+        !pawn_at(gs, 3, 6, false)) {
+        return "Benoni structure";
+    }
+
+    // ----- Carlsbad (white): pawns on a2, b2, c3, d4, e3, f2,
+    // g2, h2, with no e-file or c-file capture having occurred —
+    // signature pawn skeleton from the Queen's Gambit Declined
+    // Exchange Variation. Loose check: white has c3 + d4 + e3
+    // + no c4 or e4 pawn. Black mirror: c6 + d5 + e6.
+    if (pawn_at(gs, 2, 2, true) && pawn_at(gs, 3, 3, true) &&
+        pawn_at(gs, 4, 2, true) &&
+        !pawn_at(gs, 2, 3, true) && !pawn_at(gs, 4, 3, true) &&
+        pawn_at(gs, 2, 5, false) && pawn_at(gs, 3, 4, false) &&
+        pawn_at(gs, 4, 5, false)) {
+        return "Carlsbad structure";
+    }
+
+    // ----- French chain: white d4 + e5, black d5 + e6 — the
+    // "blocked" French Advance position.
+    if (pawn_at(gs, 3, 3, true) && pawn_at(gs, 4, 4, true) &&
+        pawn_at(gs, 3, 4, false) && pawn_at(gs, 4, 5, false)) {
+        return "French pawn chain";
+    }
+
+    // ----- Caro-Kann chain: white e5 (or e4), black has c6+d5+e6.
+    // The defining feature is the d5/c6/e6 triangle on black's
+    // side with white's e-pawn on e5.
+    if (pawn_at(gs, 4, 4, true) &&
+        pawn_at(gs, 2, 5, false) && pawn_at(gs, 3, 4, false) &&
+        pawn_at(gs, 4, 5, false)) {
+        return "Caro-Kann pawn chain";
+    }
+
+    // ----- King's Indian chain: white pawns on c4 + d5 + e4,
+    // black pawn on e5. Locked centre is the hallmark.
+    if (pawn_at(gs, 2, 3, true) && pawn_at(gs, 3, 4, true) &&
+        pawn_at(gs, 4, 3, true) && pawn_at(gs, 4, 4, false)) {
+        return "King's Indian pawn chain";
+    }
+
+    // ----- Closed Sicilian: white pawns on c3+d3+e4 (or c2+d3+e4),
+    // black on c5+d6+e5 — locked centre with both sides poised
+    // for slow-burn flank action.
+    if (pawn_at(gs, 4, 3, true) && pawn_at(gs, 3, 2, true) &&
+        pawn_at(gs, 2, 4, false) && pawn_at(gs, 3, 5, false) &&
+        pawn_at(gs, 4, 4, false)) {
+        return "Closed Sicilian structure";
+    }
+    (void)any_pawn_on_file;
+    return "";
+}
