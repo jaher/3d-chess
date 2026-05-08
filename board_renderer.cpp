@@ -93,8 +93,11 @@ static ClockMesh g_clock_glass_r;
 
 // How far each lever travels when fully pressed (mesh-local units).
 // The stem is ~0.128 long, so 0.04 is a clearly visible click
-// without the cap disappearing into the body.
-static constexpr float CLOCK_LEVER_PRESS = 0.04f;
+// without the cap disappearing into the body. Bumped from 0.04 to
+// 0.15 because the smaller value reads as static on the rendered
+// clock — pretty much the entire stem disappears into the body
+// at full press, but that's the same way a real chess clock looks.
+static constexpr float CLOCK_LEVER_PRESS = 0.15f;
 
 // Rotation pivots in mesh-local space. Long hands pivot at the
 // main dial centre at the hand's Z stack; short hands pivot at
