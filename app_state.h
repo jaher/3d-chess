@@ -171,6 +171,14 @@ struct GameInstance {
     // Pin, Skewer, Discovered check, Double check, Promotion).
     // No "last announced" memo — these fire per-move when present.
     std::string pending_move_tactic;
+    // "Mate in N" announcement — fires from app_eval_ready when
+    // the engine reports a forced mate. last_announced_mate_in is
+    // the distance we last said + sign for the mating side
+    // (positive = side that just moved is delivering mate;
+    // negative = other side). Stays 0 while no mate is forced;
+    // re-fires only when the distance or sign changes.
+    std::string pending_move_mate_in;
+    int last_announced_mate_in = 0;
 };
 
 // ===========================================================================

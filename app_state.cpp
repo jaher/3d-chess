@@ -2211,6 +2211,10 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 utterance += ". ";
                 utterance += cur(a).pending_move_tactic;
             }
+            if (!cur(a).pending_move_mate_in.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_mate_in;
+            }
             if (!cur(a).pending_move_opening.empty()) {
                 utterance += ". ";
                 utterance += cur(a).pending_move_opening;
@@ -2225,6 +2229,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_opening.clear();
             cur(a).pending_move_endgame.clear();
             cur(a).pending_move_tactic.clear();
+            cur(a).pending_move_mate_in.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2268,6 +2273,48 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).last_eval_best_cp    = cp;
         cur(a).last_eval_second_uci = second_uci;
         cur(a).last_eval_second_cp  = second_cp;
+    }
+
+    // ----- "Mate in N" announcement.
+    // Stockfish reports forced mate as cp = ±(30000 − N), where N
+    // is the move distance and the sign carries which side
+    // delivers (white-relative after the bridge negation). Pull
+    // out a signed distance: positive = side that just moved is
+    // delivering mate, negative = other side. Re-announce only
+    // when the magnitude or sign changes so we don't spam every
+    // half-move while the same mate sits on the engine's PV.
+    {
+        int signed_mate = 0;
+        const int mate_gate = 30000 - 100;
+        const bool white_just_moved_eval = !gs.white_turn;
+        if (cp >= mate_gate) {
+            int dist = 30000 - cp;
+            // Positive cp → white winning. Sign relative to "side
+            // that just moved" — if white moved last and white is
+            // mating, that's positive for the player.
+            signed_mate = white_just_moved_eval ? +dist : -dist;
+        } else if (cp <= -mate_gate) {
+            int dist = 30000 + cp;          // cp is negative
+            dist = -dist;                    // flip sign of the bound
+            // Above turns -29997 into +3. Negative cp → black
+            // winning, so:
+            signed_mate = white_just_moved_eval ? -dist : +dist;
+        }
+        if (signed_mate != cur(a).last_announced_mate_in &&
+            signed_mate != 0) {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf),
+                          (signed_mate > 0)
+                              ? "Mate in %d"
+                              : "Mate threat in %d",
+                          std::abs(signed_mate));
+            cur(a).pending_move_mate_in = buf;
+            cur(a).last_announced_mate_in = signed_mate;
+        } else if (signed_mate == 0) {
+            // No forced mate any more — clear so a future re-entry
+            // into mate territory re-fires the announcement.
+            cur(a).last_announced_mate_in = 0;
+        }
     }
 
     // Move-quality classification — speak a category ("Best move",
@@ -2472,6 +2519,13 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             utterance += ". ";
             utterance += cur(a).pending_move_tactic;
         }
+        // Mate-in-N is loud and timely; comes right after the
+        // tactic (since "Knight f6, fork, mate in 3" reads more
+        // dramatic than burying it after the opening label).
+        if (!cur(a).pending_move_mate_in.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_mate_in;
+        }
         if (!cur(a).pending_move_opening.empty()) {
             utterance += ". ";
             utterance += cur(a).pending_move_opening;
@@ -2491,6 +2545,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_opening.clear();
         cur(a).pending_move_endgame.clear();
         cur(a).pending_move_tactic.clear();
+        cur(a).pending_move_mate_in.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
