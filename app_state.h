@@ -203,6 +203,12 @@ struct GameInstance {
     // bounce between drawn ↔ winning doesn't repeat itself.
     std::string pending_move_tablebase;
     std::string last_announced_tablebase;
+    // Opening-plan suggestion — fires once per opening, the move
+    // after we announce the opening name. Pulled from the static
+    // table in opening_plans.cpp; keys off the opening name we
+    // last announced so it follows the family-prefix matcher.
+    std::string pending_move_opening_plan;
+    std::string last_announced_opening_plan_for;
 };
 
 // ===========================================================================

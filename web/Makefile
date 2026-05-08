@@ -63,7 +63,8 @@ SHARED_SRCS := \
     ../openings.cpp \
     ../endgame.cpp \
     ../tactics.cpp \
-    ../pawn_structure.cpp
+    ../pawn_structure.cpp \
+    ../opening_plans.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp

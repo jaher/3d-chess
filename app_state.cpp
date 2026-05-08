@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "chess_rules.h"
 #include "openings.h"
+#include "opening_plans.h"
 #include "endgame.h"
 #include "tactics.h"
 #include "pawn_structure.h"
@@ -101,6 +102,16 @@ void detect_opening_for_active(AppState& a) {
     if (!name.empty() && name != cur(a).last_announced_opening) {
         cur(a).pending_move_opening = name;
         cur(a).last_announced_opening = name;
+        // Look up the typical plan for this opening and queue it
+        // for the same utterance — fires once per opening (same
+        // dedup key as the opening itself, so a transposition
+        // inside the same family doesn't repeat the plan either).
+        std::string plan = opening_plan_for(name);
+        if (!plan.empty() &&
+            cur(a).last_announced_opening_plan_for != name) {
+            cur(a).pending_move_opening_plan = plan;
+            cur(a).last_announced_opening_plan_for = name;
+        }
     }
 }
 
@@ -2287,6 +2298,10 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 utterance += ". ";
                 utterance += cur(a).pending_move_tablebase;
             }
+            if (!cur(a).pending_move_opening_plan.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_opening_plan;
+            }
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
@@ -2298,6 +2313,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_pawn_family.clear();
             cur(a).pending_move_critical.clear();
             cur(a).pending_move_tablebase.clear();
+            cur(a).pending_move_opening_plan.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2663,6 +2679,14 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             utterance += ". ";
             utterance += cur(a).pending_move_tablebase;
         }
+        // Opening-plan tail — pairs with the opening name above
+        // and fires only once per opening family. Goes last among
+        // the position labels because it's the longest sentence
+        // and feels weird sandwiched between shorter items.
+        if (!cur(a).pending_move_opening_plan.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_opening_plan;
+        }
         if (cur(a).pending_move_speech_was_human &&
             !cur(a).pending_move_classification.empty()) {
             utterance += ". ";
@@ -2679,6 +2703,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_pawn_family.clear();
         cur(a).pending_move_critical.clear();
         cur(a).pending_move_tablebase.clear();
+        cur(a).pending_move_opening_plan.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
