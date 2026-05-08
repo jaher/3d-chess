@@ -72,27 +72,32 @@ static int    g_board_lining_count = 0;
 // tools/convert_clock_uvmesh.py) so its diffuse texture lands on
 // the dial face correctly.
 struct ClockMesh { GLuint vao = 0, vbo = 0; int count = 0; };
-// Body sans needles (the original clock_body.uvmesh has the needle
-// geometry baked in; tools/split_clock_dials.py extracts each
-// needle into its own uvmesh so the renderer can rotate them
-// independently). Faces (clock_dial_l/r) stay STATIC — those are
-// the textured discs with numbers + knight icon, the user-visible
-// "background" of the clock that should not spin.
-static ClockMesh g_clock_body;       // clock_body_no_hands.uvmesh
-static ClockMesh g_clock_dial_l;     // dial face disc, static
-static ClockMesh g_clock_dial_r;     // dial face disc, static
-static ClockMesh g_clock_hand_l;     // left needle, rotates
-static ClockMesh g_clock_hand_r;     // right needle, rotates
+// Body sans hands. tools/split_clock_dials.py extracts each hand
+// into its own uvmesh so the renderer can rotate them
+// independently. Two hands per dial: a long minute hand mounted at
+// the main dial pivot, and a short sub-dial hand mounted on its
+// own offset pivot at the lower-left of the dial face. The dial
+// faces (clock_dial_l/r) stay STATIC — those are the textured
+// discs (numbers + knight icon).
+static ClockMesh g_clock_body;
+static ClockMesh g_clock_dial_l;
+static ClockMesh g_clock_dial_r;
+static ClockMesh g_clock_hand_long_l;
+static ClockMesh g_clock_hand_long_r;
+static ClockMesh g_clock_hand_short_l;
+static ClockMesh g_clock_hand_short_r;
 static ClockMesh g_clock_glass_l;
 static ClockMesh g_clock_glass_r;
 
-// Per-needle rotation pivot in mesh-local space (X, Y match the
-// dial face centre; Z matches the needle's own bbox-centre Z so
-// its plane of rotation aligns with the visible needle). Rotation
-// happens around local Z, the dial-face normal. Numbers come from
-// tools/split_clock_dials.py.
-static const float CLOCK_HAND_L_PIVOT[3] = { -0.6456f, 0.6999f, 0.4224f };
-static const float CLOCK_HAND_R_PIVOT[3] = {  0.6422f, 0.6999f, 0.4224f };
+// Rotation pivots in mesh-local space. Long hands pivot at the
+// main dial centre at the hand's Z stack; short hands pivot at
+// their own hub centroid (the hub is at the lower-Y end of the
+// hand's bounding box). Rotation happens around local Z, the
+// dial-face normal. Numbers come from tools/split_clock_dials.py.
+static const float CLOCK_HAND_LONG_L_PIVOT[3]  = { -0.6456f, 0.6999f, 0.4224f };
+static const float CLOCK_HAND_LONG_R_PIVOT[3]  = {  0.6422f, 0.6999f, 0.4224f };
+static const float CLOCK_HAND_SHORT_L_PIVOT[3] = { -0.8003f, 0.5086f, 0.3930f };
+static const float CLOCK_HAND_SHORT_R_PIVOT[3] = {  0.4876f, 0.5086f, 0.3929f };
 
 // Maps cumulative thinking time on a side to a rotation angle.
 // One full revolution per real-time minute — a "second-hand"
@@ -820,17 +825,17 @@ static void load_clock_assets(const std::string& dir) {
         return true;
     };
     const std::string uv_suffix = ".uvmesh";
-    // clock_body.uvmesh on disk is post-split (needles already
-    // extracted by tools/split_clock_dials.py into the two
-    // clock_hand_*.uvmesh files). The original-from-Blender body
-    // with needles baked in is regenerable via:
+    // clock_body.uvmesh on disk is post-split (hands already
+    // extracted by tools/split_clock_dials.py). Re-generate via:
     //   blender --background --python tools/convert_clock_uvmesh.py
     //   python3 tools/split_clock_dials.py
-    load_uvmesh("clock_body"   + uv_suffix, g_clock_body);
-    load_uvmesh("clock_dial_l" + uv_suffix, g_clock_dial_l);
-    load_uvmesh("clock_dial_r" + uv_suffix, g_clock_dial_r);
-    load_uvmesh("clock_hand_l" + uv_suffix, g_clock_hand_l);
-    load_uvmesh("clock_hand_r" + uv_suffix, g_clock_hand_r);
+    load_uvmesh("clock_body"         + uv_suffix, g_clock_body);
+    load_uvmesh("clock_dial_l"       + uv_suffix, g_clock_dial_l);
+    load_uvmesh("clock_dial_r"       + uv_suffix, g_clock_dial_r);
+    load_uvmesh("clock_hand_long_l"  + uv_suffix, g_clock_hand_long_l);
+    load_uvmesh("clock_hand_long_r"  + uv_suffix, g_clock_hand_long_r);
+    load_uvmesh("clock_hand_short_l" + uv_suffix, g_clock_hand_short_l);
+    load_uvmesh("clock_hand_short_r" + uv_suffix, g_clock_hand_short_r);
     load_one("clock_glass_r" + suffix, g_clock_glass_r, 30.0f);
     load_one("clock_glass_l" + suffix, g_clock_glass_l, 30.0f);
 
@@ -2996,11 +3001,16 @@ void renderer_draw(GameState& gs,
         glUniform1i(loc_clock_mode, 0);
         glUniform1i(loc_clock_pbr_mode, 0);
 
-        // Needles — rotate each around its own pivot in the dial
-        // face's plane (local Z axis). Right needle = white's clock,
-        // left = black's.
-        const float ang_white = dial_angle_rad(white_thought_ms);
-        const float ang_black = dial_angle_rad(black_thought_ms);
+        // Needles — each rotates around its own pivot in the dial
+        // face's plane (local Z axis). Right dial = white's clock,
+        // left = black's. Long minute hands tick at 1 rev / minute
+        // for visibility; short sub-dial hands at 1/12 of that
+        // (1 rev / 12 minutes), mirroring an analog watch's
+        // hour-vs-minute hand ratio.
+        const float ang_long_white  = dial_angle_rad(white_thought_ms);
+        const float ang_long_black  = dial_angle_rad(black_thought_ms);
+        const float ang_short_white = ang_long_white  * (1.0f / 12.0f);
+        const float ang_short_black = ang_long_black  * (1.0f / 12.0f);
         auto hand_model = [&](const float pv[3], float angle) -> Mat4 {
             Mat4 m = mat4_multiply(clock_model,
                                    mat4_translate(pv[0], pv[1], pv[2]));
@@ -3008,11 +3018,19 @@ void renderer_draw(GameState& gs,
             m = mat4_multiply(m, mat4_translate(-pv[0], -pv[1], -pv[2]));
             return m;
         };
-        // Needles use the body's PBR maps for a metallic, polished
-        // read consistent with the rest of the chrome detailing.
-        // Rebind clock_diffuse to TEXTURE5 — the dial-face block
-        // above swapped it out for clock_cursor, and we want the
-        // needles back on the body's wood/chrome diffuse.
+        auto draw_hand = [&](ClockMesh& mesh, const float pv[3],
+                             float angle) {
+            if (mesh.count <= 0) return;
+            Mat4 m = hand_model(pv, angle);
+            float nm[9]; mat4_normal_matrix(m, nm);
+            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
+            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
+            glBindVertexArray(mesh.vao);
+            glDrawArrays(GL_TRIANGLES, 0, mesh.count);
+        };
+        // Needles use the body's PBR maps for a polished metal
+        // read. Rebind clock_diffuse to TEXTURE5 — the dial-face
+        // block above swapped it for clock_cursor.
         if (g_clock_diffuse_tex) {
             glActiveTexture(GL_TEXTURE5);
             glBindTexture(GL_TEXTURE_2D, g_clock_diffuse_tex);
@@ -3026,22 +3044,11 @@ void renderer_draw(GameState& gs,
                      /*roughness=*/0.35f,
                      /*ao=*/1.0f,
                      /*wood=*/0);
-        if (g_clock_hand_r.count > 0) {
-            Mat4 m = hand_model(CLOCK_HAND_R_PIVOT, ang_white);
-            float nm[9]; mat4_normal_matrix(m, nm);
-            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
-            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
-            glBindVertexArray(g_clock_hand_r.vao);
-            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_r.count);
-        }
-        if (g_clock_hand_l.count > 0) {
-            Mat4 m = hand_model(CLOCK_HAND_L_PIVOT, ang_black);
-            float nm[9]; mat4_normal_matrix(m, nm);
-            glUniformMatrix4fv(loc_model,  1, GL_FALSE, m.m);
-            glUniformMatrix3fv(loc_normal, 1, GL_FALSE, nm);
-            glBindVertexArray(g_clock_hand_l.vao);
-            glDrawArrays(GL_TRIANGLES, 0, g_clock_hand_l.count);
-        }
+        // Right dial = white's, left dial = black's.
+        draw_hand(g_clock_hand_long_r,  CLOCK_HAND_LONG_R_PIVOT,  ang_long_white);
+        draw_hand(g_clock_hand_short_r, CLOCK_HAND_SHORT_R_PIVOT, ang_short_white);
+        draw_hand(g_clock_hand_long_l,  CLOCK_HAND_LONG_L_PIVOT,  ang_long_black);
+        draw_hand(g_clock_hand_short_l, CLOCK_HAND_SHORT_L_PIVOT, ang_short_black);
         // Restore body matrix + PBR-mode so the glass dial draws
         // below transform with the clock body again.
         glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);
