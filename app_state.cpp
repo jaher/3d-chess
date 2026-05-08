@@ -5,6 +5,7 @@
 #include "chess_rules.h"
 #include "openings.h"
 #include "endgame.h"
+#include "tactics.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -114,6 +115,22 @@ void detect_endgame_for_active(AppState& a) {
     if (!label.empty() && label != cur(a).last_announced_endgame) {
         cur(a).pending_move_endgame = label;
         cur(a).last_announced_endgame = label;
+    }
+}
+
+// Per-move tactical-motif detection — runs on whatever move just
+// happened on the active board. Pulls the snapshot taken before
+// the move (snapshots[size-2]) and the post-move state from
+// gs.pieces, then runs them through tactics::classify_tactic.
+// Unlike opening / endgame this fires on every move that has a
+// motif, with no "last announced" memo.
+void detect_tactic_for_active(AppState& a) {
+    GameState& gs = cur_gs(a);
+    if (gs.snapshots.size() < 2 || gs.move_history.empty()) return;
+    const BoardSnapshot& prev = gs.snapshots[gs.snapshots.size() - 2];
+    std::string label = classify_tactic(gs, prev, gs.move_history.back());
+    if (!label.empty()) {
+        cur(a).pending_move_tactic = label;
     }
 }
 
@@ -546,6 +563,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                 }
                 detect_opening_for_active(a);
                 detect_endgame_for_active(a);
+                detect_tactic_for_active(a);
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2189,6 +2207,10 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     auto drain_pending_speech_no_classify = [&]() {
         if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
             std::string utterance = cur(a).pending_move_speech;
+            if (!cur(a).pending_move_tactic.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_tactic;
+            }
             if (!cur(a).pending_move_opening.empty()) {
                 utterance += ". ";
                 utterance += cur(a).pending_move_opening;
@@ -2202,6 +2224,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_classification.clear();
             cur(a).pending_move_opening.clear();
             cur(a).pending_move_endgame.clear();
+            cur(a).pending_move_tactic.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2439,15 +2462,16 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // overlap them with each other or with the next move.
     if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
         std::string utterance = cur(a).pending_move_speech;
-        // Order: move text → opening or endgame label (a fact
-        // about the position, runs for either side) → quality
-        // label (human moves only). Position label before
-        // classification reads naturally: "Knight f3, King's
-        // Indian Attack, best move." Opening and endgame are
-        // mutually exclusive by construction (one fires in the
-        // first ~16 plies, the other once material has dropped
-        // below ~24 points), so the rare "both" case still chains
-        // sanely.
+        // Order: move text → tactic motif (per-move event,
+        // matches the move) → opening / endgame phase label (a
+        // fact about the position, fires on transitions) → quality
+        // label (human moves only). The tactic comes right after
+        // the move because it describes *that move*; phase labels
+        // sit further out because they describe the position.
+        if (!cur(a).pending_move_tactic.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_tactic;
+        }
         if (!cur(a).pending_move_opening.empty()) {
             utterance += ". ";
             utterance += cur(a).pending_move_opening;
@@ -2466,6 +2490,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_classification.clear();
         cur(a).pending_move_opening.clear();
         cur(a).pending_move_endgame.clear();
+        cur(a).pending_move_tactic.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
@@ -2607,6 +2632,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         }
         detect_opening_for_active(a);
         detect_endgame_for_active(a);
+        detect_tactic_for_active(a);
         gs.ai_thinking = false;
         app_refresh_status(a);
         if (gs.ai_anim_skip_chessnut_sync) {

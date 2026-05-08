@@ -167,6 +167,10 @@ struct GameInstance {
     // again only if the game transitions to a different family.
     std::string pending_move_endgame;
     std::string last_announced_endgame;
+    // Per-move tactical motif label (Castles, En passant, Fork,
+    // Pin, Skewer, Discovered check, Double check, Promotion).
+    // No "last announced" memo — these fire per-move when present.
+    std::string pending_move_tactic;
 };
 
 // ===========================================================================
