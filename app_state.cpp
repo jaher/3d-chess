@@ -3025,8 +3025,13 @@ static void tick_clock(AppState& a, int64_t now) {
     // not the new side.
     if (dt_us > 0) {
         int64_t dt_ms = dt_us / 1000;
-        if (cur(a).prev_white_turn == 1) cur(a).white_ms_left -= dt_ms;
-        else                        cur(a).black_ms_left -= dt_ms;
+        if (cur(a).prev_white_turn == 1) {
+            cur(a).white_ms_left   -= dt_ms;
+            cur(a).white_thought_ms += dt_ms;
+        } else {
+            cur(a).black_ms_left   -= dt_ms;
+            cur(a).black_thought_ms += dt_ms;
+        }
     }
     // On turn flip, the side that just moved gets the Fischer
     // increment. Detected here (not inside execute_move) so the
@@ -3300,11 +3305,9 @@ static void render_board(AppState& a, int width, int height) {
             (a.mode == MODE_PUZZLE) ? "Go back to main menu?"
                                     : "Withdraw from game?";
 
-        // Per-side clock state for the 3D clock model's needles.
-        // Pass zeros when no time control is active so the
-        // needles stay at their rest pose.
-        const int64_t base_ms = a.clock_enabled
-            ? TIME_CONTROLS[a.time_control].base_ms : 0;
+        // Per-side cumulative thinking time for the 3D clock
+        // needles. Both zero before a game starts → needles at
+        // rest pose, which is what we want.
         renderer_draw(gs, sub_x, sub_y, sub_w, sub_h,
                       a.rot_x, a.rot_y, a.zoom,
                       a.human_plays_white,
@@ -3315,7 +3318,7 @@ static void render_board(AppState& a, int width, int height) {
                       a.cartoon_outline,
                       is_active ? a.board_shake_x : 0.0f,
                       withdraw_title,
-                      gi.white_ms_left, gi.black_ms_left, base_ms);
+                      gi.white_thought_ms, gi.black_thought_ms);
 
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock

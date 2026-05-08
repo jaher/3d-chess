@@ -128,6 +128,13 @@ struct GameInstance {
     int64_t black_ms_left      = 0;
     int64_t clock_last_tick_us = 0;
     int     prev_white_turn    = -1;  // -1 unset, 0 black, 1 white
+    // Monotonically-increasing cumulative thinking time per side.
+    // Unlike ms_left, this never gets refunded by Fischer
+    // increments, so the 3D clock's needles can be driven from a
+    // strictly increasing angle and never jump back when a move
+    // lands. Updated alongside the ms_left subtraction in tick_clock.
+    int64_t white_thought_ms   = 0;
+    int64_t black_thought_ms   = 0;
 
     // Per-game eval / hint cache. Each instance has its own
     // Stockfish bestmove history; the hint feature keys off the

@@ -65,15 +65,16 @@ void renderer_draw(GameState& gs,
                    bool cartoon_outline,
                    float shake_x = 0.0f,
                    const char* withdraw_confirm_title = "Withdraw from game?",
-                   // Per-side time-remaining + base time so the 3D
-                   // chess clock's needles can rotate as a real
-                   // analog minute hand (one full revolution per
-                   // hour). All zero → needles stay at rest pose,
-                   // which is the correct look for unlimited games
-                   // and non-playing screens.
-                   int64_t white_ms_left = 0,
-                   int64_t black_ms_left = 0,
-                   int64_t time_control_base_ms = 0);
+                   // Per-side cumulative thinking time so the 3D
+                   // chess clock's needles can rotate monotonically
+                   // (one full rev per real-time minute, sped up
+                   // from a true minute-hand rate so the motion is
+                   // visible on the small clock). Zero → needles
+                   // stay at rest pose for non-playing screens.
+                   // Cumulative rather than ms_left so Fischer
+                   // increments don't reset the needles on each move.
+                   int64_t white_thought_ms = 0,
+                   int64_t black_thought_ms = 0);
 
 // Draws a thin white border around the current viewport. Called
 // after renderer_draw in multi-game mode to mark the active board

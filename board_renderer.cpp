@@ -94,19 +94,16 @@ static ClockMesh g_clock_glass_r;
 static const float CLOCK_HAND_L_PIVOT[3] = { -0.6456f, 0.6999f, 0.4224f };
 static const float CLOCK_HAND_R_PIVOT[3] = {  0.6422f, 0.6999f, 0.4224f };
 
-// Maps elapsed time (since the side's clock started ticking) to a
-// rotation angle. One full revolution per real-time minute — a
-// "second-hand" sweep, so the motion is clearly visible on the
-// small on-screen clock (a true minute-hand rate of one rev per
-// hour is only 0.1°/s and looks static). Fischer increments
-// naturally show as a slight backward rotation.
-static float dial_angle_rad(int64_t base_ms, int64_t left_ms) {
-    // base_ms == 0 means "no time control active" (unlimited or
-    // pre-game) — clamp to rest pose so the needles don't sweep
-    // backward from a phantom -left_ms elapsed value.
-    if (base_ms <= 0) return 0.0f;
-    int64_t elapsed_ms = base_ms - left_ms;
-    return static_cast<float>(elapsed_ms)
+// Maps cumulative thinking time on a side to a rotation angle.
+// One full revolution per real-time minute — a "second-hand"
+// sweep, so the motion is clearly visible on the small on-screen
+// clock (a true minute-hand rate of one rev per hour is only
+// 0.1°/s and looks static). Driven from monotonically-increasing
+// `*_thought_ms` rather than `*_ms_left` so Fischer increments
+// don't reset the needle position when a move lands.
+static float dial_angle_rad(int64_t thought_ms) {
+    if (thought_ms <= 0) return 0.0f;
+    return static_cast<float>(thought_ms)
          * (2.0f * static_cast<float>(M_PI) / 60000.0f);
 }
 static GLuint    g_clock_diffuse_tex   = 0;
@@ -2526,9 +2523,8 @@ void renderer_draw(GameState& gs,
                    bool cartoon_outline,
                    float shake_x,
                    const char* withdraw_confirm_title,
-                   int64_t white_ms_left,
-                   int64_t black_ms_left,
-                   int64_t time_control_base_ms) {
+                   int64_t white_thought_ms,
+                   int64_t black_thought_ms) {
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -3003,10 +2999,8 @@ void renderer_draw(GameState& gs,
         // Needles — rotate each around its own pivot in the dial
         // face's plane (local Z axis). Right needle = white's clock,
         // left = black's.
-        const float ang_white = dial_angle_rad(time_control_base_ms,
-                                               white_ms_left);
-        const float ang_black = dial_angle_rad(time_control_base_ms,
-                                               black_ms_left);
+        const float ang_white = dial_angle_rad(white_thought_ms);
+        const float ang_black = dial_angle_rad(black_thought_ms);
         auto hand_model = [&](const float pv[3], float angle) -> Mat4 {
             Mat4 m = mat4_multiply(clock_model,
                                    mat4_translate(pv[0], pv[1], pv[2]));
