@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "chess_rules.h"
 #include "openings.h"
+#include "endgame.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -98,6 +99,21 @@ void detect_opening_for_active(AppState& a) {
     if (!name.empty() && name != cur(a).last_announced_opening) {
         cur(a).pending_move_opening = name;
         cur(a).last_announced_opening = name;
+    }
+}
+
+// Same one-shot semantics as detect_opening_for_active but for the
+// endgame phase classification. Runs after the opening lookup so
+// games that have a known opening label *and* enter a recognised
+// endgame on the same move (rare in practice — happens on
+// engine-played stuff that simplifies fast) get both announcements
+// chained in the same TTS utterance.
+void detect_endgame_for_active(AppState& a) {
+    GameState& gs = cur_gs(a);
+    std::string label = classify_endgame(gs);
+    if (!label.empty() && label != cur(a).last_announced_endgame) {
+        cur(a).pending_move_endgame = label;
+        cur(a).last_announced_endgame = label;
     }
 }
 
@@ -529,6 +545,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                     cur(a).pending_move_speech_was_human = true;
                 }
                 detect_opening_for_active(a);
+                detect_endgame_for_active(a);
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2176,10 +2193,15 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 utterance += ". ";
                 utterance += cur(a).pending_move_opening;
             }
+            if (!cur(a).pending_move_endgame.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_endgame;
+            }
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
             cur(a).pending_move_opening.clear();
+            cur(a).pending_move_endgame.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2417,13 +2439,22 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // overlap them with each other or with the next move.
     if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
         std::string utterance = cur(a).pending_move_speech;
-        // Order: move text → opening name (a fact about the
-        // position, runs for either side) → quality label (human
-        // moves only). Opening before classification reads
-        // naturally: "Knight f3, King's Indian Attack, best move."
+        // Order: move text → opening or endgame label (a fact
+        // about the position, runs for either side) → quality
+        // label (human moves only). Position label before
+        // classification reads naturally: "Knight f3, King's
+        // Indian Attack, best move." Opening and endgame are
+        // mutually exclusive by construction (one fires in the
+        // first ~16 plies, the other once material has dropped
+        // below ~24 points), so the rare "both" case still chains
+        // sanely.
         if (!cur(a).pending_move_opening.empty()) {
             utterance += ". ";
             utterance += cur(a).pending_move_opening;
+        }
+        if (!cur(a).pending_move_endgame.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_endgame;
         }
         if (cur(a).pending_move_speech_was_human &&
             !cur(a).pending_move_classification.empty()) {
@@ -2434,6 +2465,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_speech.clear();
         cur(a).pending_move_classification.clear();
         cur(a).pending_move_opening.clear();
+        cur(a).pending_move_endgame.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
@@ -2574,6 +2606,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
                 a.two_player_mode || gs.ai_anim_trigger_ai_after;
         }
         detect_opening_for_active(a);
+        detect_endgame_for_active(a);
         gs.ai_thinking = false;
         app_refresh_status(a);
         if (gs.ai_anim_skip_chessnut_sync) {

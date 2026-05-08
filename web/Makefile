@@ -60,7 +60,8 @@ SHARED_SRCS := \
     ../voice_input.cpp \
     ../voice_tts.cpp \
     ../puzzle.cpp \
-    ../openings.cpp
+    ../openings.cpp \
+    ../endgame.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp

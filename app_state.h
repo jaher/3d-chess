@@ -161,6 +161,12 @@ struct GameInstance {
     std::string pending_move_classification;
     std::string pending_move_opening;
     std::string last_announced_opening;
+    // Endgame label — same one-shot semantics as the opening one
+    // above. Fires on the first move into a recognised endgame
+    // family (King and pawn, Rook, Bishop, Knight, Queen, …) and
+    // again only if the game transitions to a different family.
+    std::string pending_move_endgame;
+    std::string last_announced_endgame;
 };
 
 // ===========================================================================
