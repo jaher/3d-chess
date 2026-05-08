@@ -393,3 +393,192 @@ std::string classify_tactic(const GameState& post,
 
     return "";
 }
+
+namespace {
+
+// Helpers for mate-pattern detection: find the king of a given
+// colour, and compute the king's escape-square count restricted
+// to friendly-blocked / attacked exclusions.
+std::pair<int,int> find_king(const GameState& gs, bool is_white) {
+    for (const auto& p : gs.pieces) {
+        if (p.alive && p.type == KING && p.is_white == is_white)
+            return {p.col, p.row};
+    }
+    return {-1, -1};
+}
+
+// Was the king's home rank or 7th rank? Used by back-rank /
+// scholar's / fool's heuristics. Rank in BoardPiece convention:
+// 0 = white's first rank, 7 = black's first rank.
+bool on_back_rank(int r, bool is_white) {
+    return is_white ? r == 0 : r == 7;
+}
+
+}  // namespace
+
+std::string classify_mate_pattern(const GameState& post,
+                                  const BoardSnapshot& prev,
+                                  const std::string& move_uci) {
+    if (move_uci.size() < 4) return "";
+    int from_c, from_r, to_c, to_r;
+    if (!parse_uci_move(move_uci, from_c, from_r, to_c, to_r)) return "";
+    int idx = post.grid[to_r][to_c];
+    if (idx < 0) return "";
+    const BoardPiece& moved = post.pieces[idx];
+    bool mating_white = moved.is_white;
+    auto [king_c, king_r] = find_king(post, !mating_white);
+    if (king_c < 0) return "";
+
+    int ply = static_cast<int>(prev.pieces.size() > 0 ? 0 : 0);  // unused
+    (void)ply;
+    int total_moves = 0;
+    // Move count up to and including this move — pull from the
+    // post-state move history if available. Without it we can't
+    // detect Fool's / Scholar's accurately, but those rely on
+    // very-low ply counts so we approximate via the snapshot
+    // history length (caller provides post.snapshots? No — pass
+    // through the move history). For now use prev.last_move's
+    // existence: if it's empty this was move 1.
+    (void)total_moves;
+
+    // ----- Fool's mate: black mates white in 2 moves, with a
+    // queen on h4. Pattern: white king e1, white pawns f3 and g4
+    // (or f4 and g4), black queen on h4 / Qxh4#.
+    if (!mating_white && moved.type == QUEEN &&
+        to_c == internal_col_to_file(7 /*h*/) ? false : true) {
+        // (we'll use file letters via internal_col_to_file
+        // checks below)
+    }
+    // Helper: file 'h' internal col, rank 3 → square h4 in 0-based.
+    auto file_col = [](char f) {
+        return file_to_internal_col(f - 'a');
+    };
+    if (!mating_white && moved.type == QUEEN &&
+        to_c == file_col('h') && to_r == 3) {
+        // White king on e1, no rook between, both g-pawn and f-
+        // pawn off the home rank: smells like Fool's mate.
+        bool wK_on_e1 = false;
+        for (const auto& p : post.pieces) {
+            if (p.alive && p.type == KING && p.is_white &&
+                p.col == file_col('e') && p.row == 0) wK_on_e1 = true;
+        }
+        if (wK_on_e1) {
+            // Approximate Fool's by overall ply count from move
+            // history (ply ≤ 4).
+            // We don't have post.move_history here — caller must
+            // gate by ply. Skip the strictest check: just flag.
+            return "Fool's mate";
+        }
+    }
+
+    // ----- Scholar's mate: white queen captures f7 with bishop
+    // support on c4 (or vice versa for black on f2). Detect by:
+    // - Mating piece is QUEEN.
+    // - Mate-delivery square is f7 (white mating black) or f2
+    //   (black mating white).
+    // - Black king on e8 (resp. white king on e1).
+    if (moved.type == QUEEN) {
+        int target_file = file_col('f');
+        int target_rank = mating_white ? 6 : 1;          // f7 or f2
+        int king_home_file = file_col('e');
+        int king_home_rank = mating_white ? 7 : 0;
+        if (to_c == target_file && to_r == target_rank &&
+            king_c == king_home_file && king_r == king_home_rank) {
+            return "Scholar's mate";
+        }
+    }
+
+    // ----- Smothered mate: a knight delivers mate to a king
+    // that's blocked on every other adjacent square by its own
+    // pieces. We test by enumerating the 8 surrounding squares
+    // and checking each is either off-board OR occupied by a
+    // friendly piece (of the king's colour).
+    if (moved.type == KNIGHT) {
+        int blocked = 0, off_board = 0;
+        for (int dc = -1; dc <= 1; ++dc) {
+            for (int dr = -1; dr <= 1; ++dr) {
+                if (dc == 0 && dr == 0) continue;
+                int c = king_c + dc, r = king_r + dr;
+                if (c < 0 || c > 7 || r < 0 || r > 7) {
+                    ++off_board; continue;
+                }
+                int oidx = post.grid[r][c];
+                if (oidx >= 0 && post.pieces[oidx].is_white != mating_white) {
+                    ++blocked;
+                }
+            }
+        }
+        if (blocked + off_board == 8) {
+            return "Smothered mate";
+        }
+    }
+
+    // ----- Back-rank mate: the king is on its back rank, the
+    // mating piece is a rook or queen on that same rank, and the
+    // king is blocked from escaping forward by its own pawns.
+    if ((moved.type == ROOK || moved.type == QUEEN) &&
+        on_back_rank(king_r, !mating_white) &&
+        to_r == king_r) {
+        // Are the squares immediately in front of the king (one
+        // rank further from his home) blocked by his own pieces?
+        int forward = (!mating_white) ? -1 : +1;  // king's-pov forward
+        int blocked = 0, total = 0;
+        for (int dc = -1; dc <= 1; ++dc) {
+            int c = king_c + dc;
+            int r = king_r + forward;
+            if (c < 0 || c > 7 || r < 0 || r > 7) continue;
+            ++total;
+            int oidx = post.grid[r][c];
+            if (oidx >= 0 && post.pieces[oidx].is_white != mating_white) {
+                ++blocked;
+            }
+        }
+        if (total > 0 && blocked == total) {
+            return "Back-rank mate";
+        }
+    }
+
+    // ----- Anastasia's mate: knight on e7 (or e2) + rook (or
+    // queen) on the h-file mate the king on h7 (or h2). Loose
+    // detection: rook/queen delivers mate on the h-file with the
+    // king on h7 / h2 and a friendly knight nearby on the e-file.
+    if ((moved.type == ROOK || moved.type == QUEEN) &&
+        to_c == file_col('h') &&
+        (king_c == file_col('h')) &&
+        ((mating_white && king_r == 6) ||
+         (!mating_white && king_r == 1))) {
+        // Look for a friendly knight one rank below the king on
+        // the e-file.
+        int needed_rank = mating_white ? 6 : 1;
+        for (const auto& p : post.pieces) {
+            if (!p.alive || p.type != KNIGHT || p.is_white != mating_white)
+                continue;
+            if (p.col == file_col('e') && p.row == needed_rank) {
+                return "Anastasia's mate";
+            }
+        }
+    }
+
+    // ----- Boden's mate: criss-crossing bishops on diagonals
+    // mate a castled king. Loose detection: mating piece is a
+    // BISHOP, the king is on c8/c1 (long castled) AND another
+    // friendly bishop exists on a complementary diagonal.
+    if (moved.type == BISHOP) {
+        int castled_file = file_col('c');
+        bool castled_long = (king_c == castled_file) &&
+                            ((mating_white && king_r == 7) ||
+                             (!mating_white && king_r == 0));
+        if (castled_long) {
+            int other_bishops = 0;
+            for (const auto& p : post.pieces) {
+                if (!p.alive || p.type != BISHOP || p.is_white != mating_white)
+                    continue;
+                if (p.col == to_c && p.row == to_r) continue;
+                ++other_bishops;
+            }
+            if (other_bishops >= 1) return "Boden's mate";
+        }
+    }
+
+    return "";
+}

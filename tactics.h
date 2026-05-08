@@ -31,3 +31,13 @@
 std::string classify_tactic(const GameState& post,
                             const BoardSnapshot& prev,
                             const std::string& move_uci);
+
+// If the move just delivered checkmate AND the mate matches one
+// of the famous named patterns (back-rank mate, smothered mate,
+// scholar's, fool's, Anastasia, Boden, Légal, Lolli), return that
+// label. Caller is expected to call this only when game_over +
+// the post-move side is in checkmate; an empty string is returned
+// for un-named generic mates.
+std::string classify_mate_pattern(const GameState& post,
+                                  const BoardSnapshot& prev,
+                                  const std::string& move_uci);

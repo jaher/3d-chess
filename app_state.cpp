@@ -129,6 +129,20 @@ void detect_tactic_for_active(AppState& a) {
     GameState& gs = cur_gs(a);
     if (gs.snapshots.size() < 2 || gs.move_history.empty()) return;
     const BoardSnapshot& prev = gs.snapshots[gs.snapshots.size() - 2];
+    // Named-mate classification beats the generic tactic — a
+    // game-ending Anastasia / Boden / Smothered / Back-rank /
+    // Scholar's / Fool's deserves the specific label. Only
+    // applicable when the move that just landed delivers
+    // checkmate (gs.game_over is set in execute_move's wake by
+    // check_game_over once the side-to-move has no legal reply).
+    if (gs.game_over) {
+        std::string named = classify_mate_pattern(
+            gs, prev, gs.move_history.back());
+        if (!named.empty()) {
+            cur(a).pending_move_tactic = named;
+            return;
+        }
+    }
     std::string label = classify_tactic(gs, prev, gs.move_history.back());
     if (!label.empty()) {
         cur(a).pending_move_tactic = label;
