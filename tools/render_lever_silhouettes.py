@@ -111,24 +111,27 @@ def main():
             d.polygon(pts, outline=(0, 0, 0), fill=(80, 120, 255))
         return img
 
+    # Only look at components that could be the side-mounted
+    # plunger levers: at extreme +/-X (far from the dial pivots).
     for ci, idxs in enumerate(comps):
         if ci > 25:
             break
         verts = [v for ti in idxs for v in tris[ti]]
+        xs = [v[0] for v in verts]
         ys = [v[1] for v in verts]
+        cx = (min(xs) + max(xs)) * 0.5
         cy = (min(ys) + max(ys)) * 0.5
-        # Want top-of-body components.
-        if cy < 0.90:
+        if abs(cx) < 1.0:    # only far-X side stuff
             continue
-        ext_x = max(v[0] for v in verts) - min(v[0] for v in verts)
+        ext_x = max(xs) - min(xs)
         ext_y = max(ys) - min(ys)
         ext_z = max(v[2] for v in verts) - min(v[2] for v in verts)
         ctris = [tris[ti] for ti in idxs]
         img = render_xy(f"comp{ci}", ctris)
-        img.save(os.path.join(OUT_DIR, f"top_comp{ci:02d}.png"))
+        img.save(os.path.join(OUT_DIR, f"side_comp{ci:02d}.png"))
         print(f"  comp {ci}: {len(idxs)} tris, "
               f"ext ({ext_x:.3f},{ext_y:.3f},{ext_z:.3f}), "
-              f"cen Y={cy:.4f}")
+              f"cen ({cx:.4f},{cy:.4f}, {(min(v[2] for v in verts)+max(v[2] for v in verts))*0.5:.4f})")
 
 
 if __name__ == "__main__":

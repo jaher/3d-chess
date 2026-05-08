@@ -194,55 +194,35 @@ def find_match(comps, tris, dial_pivot, length_min, length_max=10.0):
 
 
 def find_levers(comps, tris):
-    """Find the silver press-down levers on top of the clock.
-    Each lever has two components: a tall vertical stem (Y extent
-    ≈ 0.13, X extent ≈ 0.04, cen Y ≈ 1.08) and a small cap (cube-
-    ish, ext ≈ 0.028, cen Y ≈ 1.13). Group by X column: the two
-    components per side share an X coordinate. Returns a dict:
-    {side: ([component idx lists], merged_tris, bbox_centre)}."""
-    cap_y_min   = 1.10
-    stem_y_min  = 1.00
-    stem_y_max  = 1.10
-    candidates_by_x = defaultdict(list)
+    """Find the silver SIDE-MOUNTED press-down levers. Each lever
+    is a single connected L-shape sitting at the far end of the
+    clock body (|X| > 1.0), with a substantial bbox (~0.5×0.55×0.18)
+    — a vertical stem with a horizontal arm sticking out the side.
+    Returns a dict {side: ([tri idxs], merged_tris, bbox_centre)}."""
+    candidates = []
     for ci, idxs in enumerate(comps):
-        ext, cen, _ = comp_info(tris, idxs)
-        # Match the stem (vertical thin post)
-        is_stem = (stem_y_min < cen[1] < stem_y_max
-                   and ext[1] > 0.10 and ext[0] < 0.08
-                   and ext[2] < 0.05)
-        # Match the cap (small cube-ish)
-        is_cap  = (cen[1] > cap_y_min
-                   and 0.02 < ext[0] < 0.05
-                   and 0.02 < ext[1] < 0.05)
-        if not (is_stem or is_cap):
-            continue
-        # Group by X (snap to nearest 0.05 so cap+stem at same
-        # column merge regardless of small Y offset).
-        x_bucket = round(cen[0] / 0.05) * 0.05
-        candidates_by_x[x_bucket].append(
-            (ci, idxs, ext, cen, "stem" if is_stem else "cap"))
+        ext, cen, sub = comp_info(tris, idxs)
+        if abs(cen[0]) < 1.0:
+            continue                       # not at the far end
+        if not (ext[0] > 0.35 and ext[1] > 0.35 and ext[2] > 0.10):
+            continue                       # too small / wrong shape
+        if cen[1] > 0.90:
+            continue                       # not the lever (likely roof shell)
+        candidates.append((ci, idxs, ext, cen, sub))
 
-    # Should be exactly two columns: one negative-X, one positive-X.
-    # Sort by X.
-    keys = sorted(candidates_by_x.keys())
-    if len(keys) != 2:
-        return {}, None, None
+    # Expect exactly one match per side (positive vs negative X).
+    candidates.sort(key=lambda c: c[3][0])
+    if len(candidates) < 2:
+        return {}
+    left  = candidates[0]
+    right = candidates[-1]
     levers = {}
-    for side, x_bucket in zip(("L", "R"), keys):
-        items = candidates_by_x[x_bucket]
-        all_idxs = []
-        for ci, idxs, _ext, _cen, _kind in items:
-            all_idxs.extend(idxs)
-        # Combined bbox for the lever.
-        sub = [tris[i] for i in all_idxs]
-        xs = [v[0] for tri in sub for v in tri]
-        ys = [v[1] for tri in sub for v in tri]
-        zs = [v[2] for tri in sub for v in tri]
-        cen = ((min(xs)+max(xs))/2, (min(ys)+max(ys))/2, (min(zs)+max(zs))/2)
-        levers[side] = (all_idxs, sub, cen)
-        print(f"  lever {side}: {len(items)} pieces, "
-              f"{len(all_idxs)} tris, cen=({cen[0]:.4f},"
-              f"{cen[1]:.4f},{cen[2]:.4f})")
+    for side, m in (("L", left), ("R", right)):
+        ci, idxs, ext, cen, sub = m
+        levers[side] = (list(idxs), sub, cen)
+        print(f"  lever {side}: comp {ci} ({len(idxs)} tris) "
+              f"ext=({ext[0]:.3f},{ext[1]:.3f},{ext[2]:.3f}) "
+              f"cen=({cen[0]:.4f},{cen[1]:.4f},{cen[2]:.4f})")
     return levers
 
 
