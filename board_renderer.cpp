@@ -3044,11 +3044,16 @@ void renderer_draw(GameState& gs,
                      /*roughness=*/0.35f,
                      /*ao=*/1.0f,
                      /*wood=*/0);
-        // Right dial = white's, left dial = black's.
-        draw_hand(g_clock_hand_long_r,  CLOCK_HAND_LONG_R_PIVOT,  ang_long_white);
-        draw_hand(g_clock_hand_short_r, CLOCK_HAND_SHORT_R_PIVOT, ang_short_white);
-        draw_hand(g_clock_hand_long_l,  CLOCK_HAND_LONG_L_PIVOT,  ang_long_black);
-        draw_hand(g_clock_hand_short_l, CLOCK_HAND_SHORT_L_PIVOT, ang_short_black);
+        // Left dial = white's, right dial = black's. (Determined
+        // empirically — the clock sits at world X+5.7 with a
+        // rotate_y(-π/2) so its mesh-local +X dial maps to world
+        // Z+0.6 and -X to Z-0.6; whichever side white sits on in
+        // the camera frame, the visible-active needle has to fall
+        // on the player-on-move's side, which is the LEFT dial here.)
+        draw_hand(g_clock_hand_long_l,  CLOCK_HAND_LONG_L_PIVOT,  ang_long_white);
+        draw_hand(g_clock_hand_short_l, CLOCK_HAND_SHORT_L_PIVOT, ang_short_white);
+        draw_hand(g_clock_hand_long_r,  CLOCK_HAND_LONG_R_PIVOT,  ang_long_black);
+        draw_hand(g_clock_hand_short_r, CLOCK_HAND_SHORT_R_PIVOT, ang_short_black);
         // Restore body matrix + PBR-mode so the glass dial draws
         // below transform with the clock body again.
         glUniformMatrix4fv(loc_model,  1, GL_FALSE, clock_model.m);
