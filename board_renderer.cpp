@@ -3017,14 +3017,17 @@ void renderer_draw(GameState& gs,
 
         // Needles — each rotates around its own pivot in the dial
         // face's plane (local Z axis). Right dial = white's clock,
-        // left = black's. Long minute hands tick at 1 rev / minute
-        // for visibility; short sub-dial hands at 1/12 of that
-        // (1 rev / 12 minutes), mirroring an analog watch's
-        // hour-vs-minute hand ratio.
-        const float ang_long_white  = dial_angle_rad(white_thought_ms);
-        const float ang_long_black  = dial_angle_rad(black_thought_ms);
-        const float ang_short_white = ang_long_white  * (1.0f / 12.0f);
-        const float ang_short_black = ang_long_black  * (1.0f / 12.0f);
+        // left = black's. The SUB-dial small hand spins fast
+        // (1 rev / minute, the visible "seconds-like" indicator
+        // typical of chess clocks); the main-dial long hand spins
+        // 12× slower (1 rev / 12 minutes), like a watch's minute
+        // hand vs hour hand but with the roles geometrically
+        // inverted (small-fast / big-slow, matching the user's
+        // observation of analog chess clock behaviour).
+        const float ang_short_white = dial_angle_rad(white_thought_ms);
+        const float ang_short_black = dial_angle_rad(black_thought_ms);
+        const float ang_long_white  = ang_short_white * (1.0f / 12.0f);
+        const float ang_long_black  = ang_short_black * (1.0f / 12.0f);
         auto hand_model = [&](const float pv[3], float angle) -> Mat4 {
             Mat4 m = mat4_multiply(clock_model,
                                    mat4_translate(pv[0], pv[1], pv[2]));
