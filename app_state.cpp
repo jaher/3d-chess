@@ -170,6 +170,15 @@ void detect_pawn_family_for_active(AppState& a) {
     }
 }
 
+void detect_critical_position_for_active(AppState& a) {
+    GameState& gs = cur_gs(a);
+    std::string label = classify_critical_position(gs);
+    if (!label.empty() && label != cur(a).last_announced_critical) {
+        cur(a).pending_move_critical = label;
+        cur(a).last_announced_critical = label;
+    }
+}
+
 } // namespace
 
 // ===========================================================================
@@ -602,6 +611,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                 detect_tactic_for_active(a);
                 detect_pawn_structure_for_active(a);
                 detect_pawn_family_for_active(a);
+                detect_critical_position_for_active(a);
                 queue_redraw(a);
                 app_chessnut_sync_board(a, /*force=*/false);
 
@@ -2269,6 +2279,10 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 utterance += ". ";
                 utterance += cur(a).pending_move_pawn_family;
             }
+            if (!cur(a).pending_move_critical.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_critical;
+            }
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
@@ -2278,6 +2292,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_mate_in.clear();
             cur(a).pending_move_pawn_structure.clear();
             cur(a).pending_move_pawn_family.clear();
+            cur(a).pending_move_critical.clear();
             cur(a).pending_move_speech_was_human = false;
         }
     };
@@ -2597,6 +2612,13 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             utterance += ". ";
             utterance += cur(a).pending_move_pawn_family;
         }
+        // Critical theoretical position (Lucena, Philidor,
+        // Vancura). Slots in after the family label since it's
+        // even more specific.
+        if (!cur(a).pending_move_critical.empty()) {
+            utterance += ". ";
+            utterance += cur(a).pending_move_critical;
+        }
         if (cur(a).pending_move_speech_was_human &&
             !cur(a).pending_move_classification.empty()) {
             utterance += ". ";
@@ -2611,6 +2633,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).pending_move_mate_in.clear();
         cur(a).pending_move_pawn_structure.clear();
         cur(a).pending_move_pawn_family.clear();
+        cur(a).pending_move_critical.clear();
         cur(a).pending_move_speech_was_human = false;
     }
 
@@ -2755,6 +2778,7 @@ static void tick_ai_animation(AppState& a, int64_t now) {
         detect_tactic_for_active(a);
         detect_pawn_structure_for_active(a);
         detect_pawn_family_for_active(a);
+        detect_critical_position_for_active(a);
         gs.ai_thinking = false;
         app_refresh_status(a);
         if (gs.ai_anim_skip_chessnut_sync) {

@@ -1,5 +1,7 @@
 #include "endgame.h"
 
+#include "ai_player.h"
+
 namespace {
 
 struct PieceCount {
@@ -144,6 +146,112 @@ std::string classify_endgame(const GameState& gs) {
     // endgame even when the piece mix doesn't fit a named family
     // (e.g. R+B vs R+N, Q vs R+N, etc.).
     if (total <= 14) return "Endgame";
+
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Critical theoretical positions
+// ---------------------------------------------------------------------------
+namespace {
+
+// All four pieces (one rook + one pawn per side, two kings)
+// expected by the Lucena / Philidor / Vancura templates. Returns
+// false if the material doesn't fit so the caller can short-circuit.
+bool find_krp_pieces(const GameState& gs,
+                     int& wK_c, int& wK_r,
+                     int& wR_c, int& wR_r,
+                     int& wP_c, int& wP_r,
+                     int& bK_c, int& bK_r,
+                     int& bR_c, int& bR_r,
+                     bool& black_has_pawn,
+                     int& bP_c, int& bP_r) {
+    int wK = 0, wR = 0, wP = 0, bK = 0, bR = 0, bP = 0;
+    int others = 0;
+    wK_c = wR_c = wP_c = bK_c = bR_c = bP_c = -1;
+    wK_r = wR_r = wP_r = bK_r = bR_r = bP_r = -1;
+    black_has_pawn = false;
+    for (const auto& p : gs.pieces) {
+        if (!p.alive) continue;
+        if (p.is_white) {
+            switch (p.type) {
+                case KING:  ++wK; wK_c = p.col; wK_r = p.row; break;
+                case ROOK:  ++wR; wR_c = p.col; wR_r = p.row; break;
+                case PAWN:  ++wP; wP_c = p.col; wP_r = p.row; break;
+                default:    ++others; break;
+            }
+        } else {
+            switch (p.type) {
+                case KING:  ++bK; bK_c = p.col; bK_r = p.row; break;
+                case ROOK:  ++bR; bR_c = p.col; bR_r = p.row; break;
+                case PAWN:  ++bP; bP_c = p.col; bP_r = p.row; break;
+                default:    ++others; break;
+            }
+        }
+    }
+    black_has_pawn = (bP == 1);
+    if (others > 0) return false;
+    if (wK != 1 || bK != 1) return false;
+    if (wR != 1 || bR != 1) return false;
+    if (wP > 1 || bP > 1) return false;
+    return true;
+}
+
+}  // namespace
+
+std::string classify_critical_position(const GameState& gs) {
+    int wK_c, wK_r, wR_c, wR_r, wP_c, wP_r;
+    int bK_c, bK_r, bR_c, bR_r, bP_c, bP_r;
+    bool black_has_pawn;
+    if (!find_krp_pieces(gs,
+                         wK_c, wK_r, wR_c, wR_r, wP_c, wP_r,
+                         bK_c, bK_r, bR_c, bR_r,
+                         black_has_pawn, bP_c, bP_r)) {
+        return "";
+    }
+
+    auto file = [](int c) { return internal_col_to_file(c); };
+    int wP_file = (wP_c >= 0) ? file(wP_c) : -1;
+    int bP_file = black_has_pawn ? file(bP_c) : -1;
+
+    // ----- Vancura defence: black has no pawn, white pawn is on
+    // the a-file (a-pawn) advanced past the 6th rank, black rook
+    // sitting on the 6th rank to block the king + give side-
+    // checks once the pawn pushes. The signature is:
+    //   * white pawn on a6 or a7,
+    //   * black rook on the 6th rank (any file),
+    //   * black king reasonably close.
+    if (!black_has_pawn && wP_file == 0 &&
+        (wP_r == 5 || wP_r == 6) &&
+        bR_r == 5) {
+        return "Vancura defence";
+    }
+
+    // ----- Philidor position: black to move (or just played);
+    // black rook on the 3rd rank (relative to white) cutting off
+    // the white king from advancing, white pawn on the 5th rank,
+    // white king behind it. This is the canonical drawing
+    // technique against a passed pawn that hasn't crossed the
+    // 6th rank yet.
+    if (black_has_pawn) return "";  // Philidor is K+R+P vs K+R, no black pawn
+    if (wP_r == 4 /* 5th rank, 0-indexed = 4 */ &&
+        wK_r == 3 /* white king on 4th rank */ &&
+        bR_r == 2 /* black rook on 3rd rank */) {
+        return "Philidor position";
+    }
+
+    // ----- Lucena position: white pawn on the 7th rank (one
+    // away from queening), white king on the 8th rank in front
+    // of the pawn (or the 7th in some variants), black king
+    // displaced from the queening square. The signature: pawn on
+    // 7th, white king on 8th file=pawn-file, black rook checking
+    // from one of the two flanks.
+    if (wP_r == 6 /* 7th rank */ &&
+        wK_r == 7 /* 8th rank */ &&
+        wK_c == wP_c &&
+        bK_r >= 5 /* black king displaced */) {
+        return "Lucena position";
+    }
 
     return "";
 }

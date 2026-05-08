@@ -190,6 +190,11 @@ struct GameInstance {
     // pawn_structure above; same one-shot semantics.
     std::string pending_move_pawn_family;
     std::string last_announced_pawn_family;
+    // Theoretical critical-position label (Lucena, Philidor,
+    // Vancura). Fires once when the position transitions into a
+    // recognised template; same one-shot semantics.
+    std::string pending_move_critical;
+    std::string last_announced_critical;
 };
 
 // ===========================================================================
