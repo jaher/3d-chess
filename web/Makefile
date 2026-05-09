@@ -14,6 +14,15 @@ BUILD_HASH := $(shell git -C .. rev-parse --short HEAD 2>/dev/null || date +%s)
 # find <SDL2/SDL.h>.
 EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
     -s USE_SDL=2 -s USE_ZLIB=1
+
+# Optional preload: the 100k splat backdrop. The SPZ is only ~1.2 MB
+# and gives the web build the same Marble-room background the desktop
+# gets, but checking it in is the user's call — without it the web
+# build still compiles and runs (board_renderer falls back to the
+# dark clear when no SPZ loads).
+SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_100k.spz),\
+    --preload-file ../world_labs/medieval_room/splat_100k.spz@/world_labs/medieval_room/splat_100k.spz,)
+
 LDFLAGS   := \
     -s USE_SDL=2 \
     -s USE_WEBGL2=1 -s FULL_ES3=1 \
@@ -32,7 +41,7 @@ LDFLAGS   := \
     --preload-file ../openings@/openings \
     --preload-file ../sounds@/sounds \
     --preload-file ../fonts@/fonts \
-    --preload-file ../marble_room/splat_100k.spz@/marble_room/splat_100k.spz \
+    $(SPLAT_SPZ_PRELOAD) \
     --shell-file index.html
 
 # Sources compiled from the parent dir (shared with desktop build).

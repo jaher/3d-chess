@@ -1104,12 +1104,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     {
         const char* splat_paths[] = {
 #ifndef __EMSCRIPTEN__
-            "marble_room/splat_full_res.spz",
-            "marble_room/splat_500k.spz",
-            "marble_room/splat_100k.spz",
+            "world_labs/medieval_room/splat_full_res.spz",
+            "world_labs/medieval_room/splat_500k.spz",
+            "world_labs/medieval_room/splat_100k.spz",
 #else
-            "/marble_room/splat_100k.spz",
-            "marble_room/splat_100k.spz",
+            "/world_labs/medieval_room/splat_100k.spz",
+            "world_labs/medieval_room/splat_100k.spz",
 #endif
         };
         for (const char* p : splat_paths) {
@@ -1134,8 +1134,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // room renderer.
     {
         const char* candidates[] = {
-            "marble_room/panorama.jpg",
-            "/marble_room/panorama.jpg",
+            "world_labs/medieval_room/panorama.jpg",
+            "/world_labs/medieval_room/panorama.jpg",
         };
         for (const char* p : candidates) {
             FILE* f = std::fopen(p, "rb");
