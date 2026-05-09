@@ -1561,6 +1561,13 @@ static void release_options(AppState& a, double mx, double my,
         queue_redraw(a);
     } else if (btn == 8 && voice_supported) {
         app_voice_toggle_speak_moves_request(a);
+    } else if (btn == 10) {
+        a.splats_enabled = !a.splats_enabled;
+        set_status(a, a.splats_enabled
+            ? "Gaussian splats: ON — Marble medieval-room behind the board"
+            : "Gaussian splats: OFF");
+        app_settings_save(a);
+        queue_redraw(a);
     } else if (btn == 9) {
         // Cycle Off → Auto → OnDemand → Off.
         switch (a.hint_mode) {
@@ -2087,6 +2094,18 @@ void app_key(AppState& a, AppKey key) {
     if (key == KEY_S &&
         (a.mode == MODE_PLAYING || a.mode == MODE_CHALLENGE)) {
         a.cartoon_outline = !a.cartoon_outline;
+        queue_redraw(a);
+        return;
+    }
+    // P-key shortcut for the Gaussian-splat backdrop toggle. Same
+    // effect as flipping it from Options → "Gaussian splats", but
+    // available without leaving the game so you can A/B the splat
+    // cloud against the panorama mid-position.
+    if (key == KEY_P) {
+        a.splats_enabled = !a.splats_enabled;
+        std::printf("[render] gaussian-splat backdrop: %s\n",
+                    a.splats_enabled ? "ON" : "OFF");
+        app_settings_save(a);
         queue_redraw(a);
         return;
     }
@@ -3210,6 +3229,7 @@ static void render_options(AppState& a, int width, int height) {
         devs.push_back({d.address.c_str(), d.name.c_str()});
     }
     renderer_draw_options(a.cartoon_outline,
+                          a.splats_enabled,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
@@ -3336,7 +3356,8 @@ static void render_board(AppState& a, int width, int height) {
                       is_active ? a.board_shake_x : 0.0f,
                       withdraw_title,
                       gi.white_thought_ms, gi.black_thought_ms,
-                      gi.white_lever_blend, gi.black_lever_blend);
+                      gi.white_lever_blend, gi.black_lever_blend,
+                      /*force_panorama_only=*/!a.splats_enabled);
 
         // White frame around the active board so the player can
         // tell at a glance which one accepts moves and whose clock
@@ -3655,6 +3676,13 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
         break;
     case VoiceCommand::ToggleCartoonOutline:
         a.cartoon_outline = !a.cartoon_outline;
+        break;
+    case VoiceCommand::ToggleSplats:
+        a.splats_enabled = !a.splats_enabled;
+        set_status(a, a.splats_enabled
+            ? "Gaussian splats: ON — Marble medieval-room behind the board"
+            : "Gaussian splats: OFF");
+        app_settings_save(a);
         break;
     case VoiceCommand::ToggleContinuousVoice:
         app_voice_toggle_continuous_request(a);
@@ -5099,6 +5127,8 @@ void app_settings_load(AppState& a) {
         std::string val = s.substr(eq + 1);
         if (key == "cartoon_outline") {
             a.cartoon_outline = parse_bool(val);
+        } else if (key == "splats_enabled") {
+            a.splats_enabled = parse_bool(val);
         } else if (key == "chessnut_enabled") {
             // Don't immediately turn the bridge on here — app_init
             // runs before the platform's IO is fully primed. Instead
@@ -5134,6 +5164,7 @@ void app_settings_save(const AppState& a) {
     if (!f) return;
     std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
     std::fprintf(f, "cartoon_outline=%d\n", a.cartoon_outline ? 1 : 0);
+    std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
     std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
     std::fclose(f);
 }

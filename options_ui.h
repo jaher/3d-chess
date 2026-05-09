@@ -18,6 +18,8 @@ struct OptionsScannedDevice {
 //   7 = BLE verbose-log toggle,
 //   8 = "Speak moves" (TTS) toggle,
 //   9 = "Move hints" tri-state cycle (Off / Auto / OnDemand),
+//   10 = "Gaussian splats" backdrop toggle (Marble medieval-room
+//        splat cloud behind the chess board),
 //   100+i = picker row #i.
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
@@ -26,6 +28,7 @@ struct OptionsScannedDevice {
 // `hint_mode`: 0 = Off (grey), 1 = Auto (green), 2 = OnDemand
 // (amber, distinct from the binary on/off toggles around it).
 void renderer_draw_options(bool cartoon_outline_enabled,
+                           bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,

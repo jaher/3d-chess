@@ -393,6 +393,12 @@ VoiceCommand parse_voice_command(const std::string& utterance,
                           "toggle outline", "toggle cartoon",
                           "toggle cartoon outline"}))
             return VoiceCommand::ToggleCartoonOutline;
+        if (match_any(s, {"gaussian splats", "splats", "splat",
+                          "splat backdrop", "gaussian splat",
+                          "marble room", "medieval room",
+                          "toggle splats", "toggle gaussian",
+                          "splats on", "splats off"}))
+            return VoiceCommand::ToggleSplats;
         if (match_any(s, {"continuous voice", "voice mode",
                           "toggle voice", "voice on", "voice off",
                           "voice"}))
