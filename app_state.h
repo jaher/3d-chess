@@ -416,15 +416,14 @@ struct AppState {
     bool withdraw_confirm_open = false;
     int  withdraw_hover = 0;
 
-    // Gaussian-splat backdrop toggle. When true, the renderer
-    // composites the Marble medieval-room splat cloud behind the
-    // chess board. When false (the default), the renderer falls
-    // back to the panorama skybox on desktop and a dark clear on
-    // web. Off by default so first-run loads stay light; toggled
-    // from Options → "Gaussian splats" or the P key. Persists
-    // across sessions via app_settings_save (same precedent as
-    // cartoon_outline).
-    bool splats_enabled = false;
+    // Gaussian-splat backdrop toggle. When true (the default), the
+    // renderer composites the Marble medieval-room splat cloud
+    // behind the chess board so the table sits inside an actual
+    // room. When false the renderer falls back to the panorama
+    // skybox on desktop and a dark clear on web. Toggled from
+    // Options → "Gaussian splats" or the P key. Persists across
+    // sessions via app_settings_save.
+    bool splats_enabled = true;
 
 #ifndef __EMSCRIPTEN__
     // Voice input (push-to-talk on SPACE). Lazy init on first use so
