@@ -9,13 +9,21 @@
 // ---------------------------------------------------------------------------
 // GLSL version selector. Desktop OpenGL gets core profile 3.30; Emscripten
 // (WebGL 2) gets GLSL ES 3.00, which requires explicit precision qualifiers.
+// The splat shader uses a separate version directive — 4.20 desktop /
+// 3.00 ES web — because it relies on unpackHalf2x16 which is core in
+// both of those but not in GLSL 3.30. The board / shadow / highlight
+// shaders stay on the original 3.30 / 3.00 ES baseline.
 // ---------------------------------------------------------------------------
 #ifdef __EMSCRIPTEN__
-#define GLSL_VERSION    "#version 300 es\n"
-#define GLSL_FS_PREAMBLE "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n"
+#define GLSL_VERSION         "#version 300 es\n"
+#define GLSL_FS_PREAMBLE     "precision highp float;\nprecision highp int;\nprecision highp sampler2D;\n"
+#define GLSL_SPLAT_VERSION   "#version 300 es\n"
+#define GLSL_SPLAT_PREAMBLE  "precision highp float;\nprecision highp int;\nprecision highp usampler2D;\n"
 #else
-#define GLSL_VERSION    "#version 330 core\n"
-#define GLSL_FS_PREAMBLE ""
+#define GLSL_VERSION         "#version 330 core\n"
+#define GLSL_FS_PREAMBLE     ""
+#define GLSL_SPLAT_VERSION   "#version 420 core\n"
+#define GLSL_SPLAT_PREAMBLE  ""
 #endif
 
 // ---------------------------------------------------------------------------
@@ -954,6 +962,262 @@ static void shader_log_error(const char* kind, const char* stage,
     if (src) std::fprintf(stderr, "Source:\n%s\n", src);
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// Skybox: equirectangular panorama background. Renders a fullscreen quad at
+// the far plane (z=1.0) with no depth writes, then for each pixel
+// reconstructs the view ray from the inverse projection, rotates into world
+// space using the inverse of the view's rotation-only part, and samples the
+// panorama texture at the spherical UV. Drawn FIRST in the scene FBO so the
+// chess pieces / clock overdraw it where geometry exists.
+// ---------------------------------------------------------------------------
+const char* skybox_vs_src = GLSL_VERSION R"(
+layout(location = 0) in vec2 aPos;
+
+out vec2 vClip;
+
+void main() {
+    vClip = aPos;
+    // z=1.0 puts us at the far plane.
+    gl_Position = vec4(aPos, 1.0, 1.0);
+}
+)";
+
+const char* skybox_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vClip;
+out vec4 FragColor;
+
+uniform sampler2D uPano;
+uniform mat4      uInvViewRot;   // inverse of view's rotation part
+uniform mat4      uInvProj;      // inverse of perspective matrix
+
+const float PI     = 3.14159265358979;
+const float TWO_PI = 6.28318530717959;
+
+void main() {
+    // Reconstruct the view-space ray for this pixel.
+    vec4 view_h = uInvProj * vec4(vClip, 0.0, 1.0);
+    vec3 view_dir = normalize(view_h.xyz);
+    // Rotate into world space (translation removed — skybox sits
+    // at infinite distance).
+    vec3 world_dir = (uInvViewRot * vec4(view_dir, 0.0)).xyz;
+    // Equirectangular sample: u from atan2(z, x), v from asin(y).
+    // Note our engine has +Y up, +Z forward (camera looks toward -Z).
+    float u = atan(world_dir.z, world_dir.x) / TWO_PI + 0.5;
+    float v = asin(clamp(world_dir.y, -1.0, 1.0)) / PI + 0.5;
+    // stb_image loads with (0,0) at top-left while OpenGL UV is
+    // bottom-left, so flip V.
+    FragColor = texture(uPano, vec2(u, 1.0 - v));
+}
+)";
+
+// ---------------------------------------------------------------------------
+// Anisotropic Gaussian splat (EWA splatting, Zwicker 2001 — same approach
+// Spark / 3DGS reference renderers use). Each splat carries a 3D rotation
+// (quaternion) and per-axis scales; the vertex shader builds the 3D
+// covariance, projects it through the perspective Jacobian to a 2D
+// screen-space ellipse, and places an instanced quad at the splat's NDC
+// position with extents along the cov2D eigenvectors. The fragment shader
+// does the standard Gaussian falloff exp(-½‖z‖²) over the quad's local
+// UV in std-dev units.
+//
+// Instance attributes:
+//   location 0 (vec2)  : aQuadUV    — unit-quad corner (-1..+1)
+//   location 1 (vec3)  : aSplatPos
+//   location 2 (vec3)  : aSplatScale  (per-axis, splat-local units)
+//   location 3 (vec4)  : aSplatQuat   (xyz, w)
+//   location 4 (vec4)  : aSplatRgba   (0..1)
+// ---------------------------------------------------------------------------
+// Splat renderer ported from marble_viewer/native — texture-packed
+// per-splat data + an ordering texture for sort indirection. The
+// per-frame upload is just N × 4 bytes (the index list) instead of
+// N × 56 bytes the old vertex-attribute layout pushed every frame.
+// EWA covariance projection follows Spark's splatVertex.glsl line
+// for line; full alpha curve (Mip-Splatting AA pre-blur, eigendecomp,
+// pixel-space ellipse) lives here.
+const char* splat_vs_src = GLSL_SPLAT_VERSION R"(
+layout(location = 0) in vec2 aQuadUV;
+
+uniform mat4  uView;
+uniform mat4  uProjection;
+uniform mat4  uModel;
+uniform float uModelScale;
+uniform vec2  uRenderSize;
+uniform float uMaxStdDev;
+uniform float uMaxPixelRadius;
+uniform float uFalloff;
+uniform bool  uEnable2DGS;
+uniform bool  uLogDepth;
+
+uniform highp usampler2D uSplatA;
+uniform highp usampler2D uSplatB;
+uniform highp usampler2D uOrdering;
+uniform int   uTexWidth;
+
+out vec2  vSplatUv;
+out vec4  vColor;
+flat out float vAdjStdDev;
+
+mat3 rot_from_quat(vec4 q) {
+    float x = q.x, y = q.y, z = q.z, w = q.w;
+    return mat3(
+        1.0 - 2.0*(y*y + z*z), 2.0*(x*y + z*w),       2.0*(x*z - y*w),
+        2.0*(x*y - z*w),       1.0 - 2.0*(x*x + z*z), 2.0*(y*z + x*w),
+        2.0*(x*z + y*w),       2.0*(y*z - x*w),       1.0 - 2.0*(x*x + y*y)
+    );
+}
+
+ivec2 splat_coord(int idx) {
+    return ivec2(idx % uTexWidth, idx / uTexWidth);
+}
+
+void main() {
+    ivec2 oc = splat_coord(gl_InstanceID);
+    uint splatIdx = texelFetch(uOrdering, oc, 0).r;
+    if (splatIdx == 0xFFFFFFFFu) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    ivec2 sc = splat_coord(int(splatIdx));
+    uvec4 packA = texelFetch(uSplatA, sc, 0);
+    uvec4 packB = texelFetch(uSplatB, sc, 0);
+
+    vec2 pXY    = unpackHalf2x16(packA.x);
+    vec2 pZqX   = unpackHalf2x16(packA.y);
+    vec2 qYZ    = unpackHalf2x16(packA.z);
+    vec2 alpha0 = unpackHalf2x16(packA.w);
+    vec2 rgRG   = unpackHalf2x16(packB.x);
+    vec2 rgB_lsX = unpackHalf2x16(packB.y);
+    vec2 lsYZ   = unpackHalf2x16(packB.z);
+    vec2 qW0    = unpackHalf2x16(packB.w);
+
+    vec3 center = vec3(pXY,  pZqX.x);
+    vec3 rgb    = vec3(rgRG, rgB_lsX.x);
+    vec3 scales = exp(vec3(rgB_lsX.y, lsYZ));
+    vec4 quat   = vec4(pZqX.y, qYZ, qW0.x);
+    vec4 rgba   = vec4(rgb, alpha0.x);
+
+    vec3 worldPos = (uModel * vec4(center, 1.0)).xyz;
+    vec4 viewCenter4 = uView * vec4(worldPos, 1.0);
+    vec3 viewCenter  = viewCenter4.xyz;
+    if (viewCenter.z >= 0.0) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    bvec3 zeroScales = lessThanEqual(scales, vec3(1e-6));
+
+    {
+        vec4 cc = uProjection * vec4(viewCenter, 1.0);
+        float clip = 1.4 * cc.w;
+        if (abs(cc.x) > clip || abs(cc.y) > clip) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    }
+
+    float a_in = rgba.a * 2.0;
+    float adjStdDev = uMaxStdDev;
+    if (a_in > 1.0) {
+        a_in = min(a_in * 4.0 - 3.0, 2.5);
+        adjStdDev = uMaxStdDev + 0.3 * (a_in - 1.0);
+    }
+
+    mat3 modelLinear = mat3(uModel);
+    mat3 R  = rot_from_quat(quat);
+    mat3 RS_local = mat3(R[0] * scales.x, R[1] * scales.y, R[2] * scales.z);
+    mat3 RS_world = modelLinear * RS_local;
+    mat3 cov3D    = RS_world * transpose(RS_world);
+
+    mat3 V3 = mat3(uView);
+    cov3D = V3 * cov3D * transpose(V3);
+
+    vec2 focal = 0.5 * uRenderSize *
+                 vec2(uProjection[0][0], uProjection[1][1]);
+    float invZ = 1.0 / viewCenter.z;
+    vec2 J1 = focal * invZ;
+    vec2 J2 = -(J1 * viewCenter.xy) * invZ;
+    mat3 J = mat3(
+        J1.x, 0.0,  J2.x,
+        0.0,  J1.y, J2.y,
+        0.0,  0.0,  0.0
+    );
+
+    mat3 cov2D3 = transpose(J) * cov3D * J;
+    float a0 = cov2D3[0][0];
+    float d0 = cov2D3[1][1];
+    float b0 = cov2D3[0][1];
+    float preBlur = 0.3;
+    float a = a0 + preBlur;
+    float d = d0 + preBlur;
+    float b = b0;
+    float detOrig = a * d - b * b;
+    float det = detOrig;
+    if (det <= 0.0) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    float blurAdjust = sqrt(max(0.0, detOrig / det));
+    vColor = vec4(rgba.rgb, a_in * blurAdjust);
+
+    float mid  = 0.5 * (a + d);
+    float disc = sqrt(max(0.0, mid * mid - det));
+    float lambda1 = mid + disc;
+    float lambda2 = max(0.001, mid - disc);
+    vec2 v1 = (abs(b) > 1e-4) ? normalize(vec2(b, lambda1 - a))
+            : ((a >= d) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+    vec2 v2 = vec2(v1.y, -v1.x);
+
+    float r1 = min(uMaxPixelRadius, adjStdDev * sqrt(lambda1));
+    float r2 = min(uMaxPixelRadius, adjStdDev * sqrt(lambda2));
+
+    vec4 clipCenter = uProjection * viewCenter4;
+    vec3 ndcCenter  = clipCenter.xyz / clipCenter.w;
+    vec2 pixelOffset = aQuadUV.x * v1 * r1 + aQuadUV.y * v2 * r2;
+    vec2 ndcOffset   = (2.0 / uRenderSize) * pixelOffset;
+
+    if (uEnable2DGS && any(zeroScales)) {
+        // Fall through — the regular EWA path produces sensible
+        // (slightly thicker) output for 2DGS sheets too.
+    }
+
+    vSplatUv   = aQuadUV * adjStdDev;
+    vAdjStdDev = adjStdDev;
+    vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
+    gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
+
+    if (uLogDepth) {
+        const float logK = 1.4426950408889634;
+        float wd = max(1e-7, gl_Position.w);
+        gl_Position.z = (log2(wd) * logK - 1.0) * gl_Position.w;
+    }
+}
+)";
+
+const char* splat_fs_src = GLSL_SPLAT_VERSION GLSL_SPLAT_PREAMBLE R"(
+in vec2  vSplatUv;
+in vec4  vColor;
+flat in float vAdjStdDev;
+out vec4 FragColor;
+
+uniform float uMinAlpha;
+uniform float uFalloff;
+
+void main() {
+    float z2 = dot(vSplatUv, vSplatUv);
+    if (z2 > vAdjStdDev * vAdjStdDev) discard;
+
+    float a;
+    if (vColor.a <= 1.0) {
+        a = mix(vColor.a, vColor.a * exp(-0.5 * z2), uFalloff);
+    } else {
+        float k = exp((vColor.a * vColor.a - 1.0) / 2.7182818284);
+        float saturating = 1.0 - pow(1.0 - exp(-0.5 * z2), k);
+        a = mix(1.0, saturating, uFalloff);
+    }
+    if (a < uMinAlpha) discard;
+    FragColor = vec4(vColor.rgb * a, a);
+}
+)";
 
 GLuint compile_shader(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);

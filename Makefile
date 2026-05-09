@@ -28,7 +28,8 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             endgame.cpp tactics.cpp pawn_structure.cpp opening_plans.cpp \
             voice_input.cpp voice_whisper.cpp \
             voice_tts.cpp voice_tts_native.cpp \
-            chessnut_bridge.cpp phantom_bridge.cpp
+            chessnut_bridge.cpp phantom_bridge.cpp \
+            splat.cpp packed_splats.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
             challenge.h cloth_flag.h vec.h mat.h shader.h stl_model.h \

@@ -4,6 +4,10 @@
 #include "render_internal.h"
 #include "shader.h"
 #include "shatter_transition.h"
+#ifndef __EMSCRIPTEN__
+#include "splat.h"
+#include "packed_splats.h"
+#endif
 #include "stl_model.h"
 #include "text_atlas.h"
 
@@ -234,6 +238,38 @@ static int g_ring_vertex_count = 0;
 // textures, both sampleable from g_outline_program. Size tracks
 // the current window, recreated lazily on resize.
 static GLuint g_outline_program  = 0;
+#ifndef __EMSCRIPTEN__
+// Skybox program + panorama texture. Native-only — the web build
+// keeps the original dark clear; the entire World Labs / Marble
+// integration (panorama + Gaussian splats) lives behind this
+// guard so chess.data and chess.wasm stay slim.
+static GLuint g_skybox_program   = 0;
+static GLuint g_panorama_tex     = 0;
+#endif  // !__EMSCRIPTEN__
+
+#ifndef __EMSCRIPTEN__
+// Gaussian splat scene from a Marble-generated SPZ. Native-only —
+// the web build keeps the panorama skybox and skips the SPZ
+// pipeline entirely (no per-frame sort, no large instance buffer,
+// no extra preload). Falls through to the panorama on native too
+// if the SPZ file is missing.
+// Splat backdrop — uses the marble_viewer EWA renderer (texture-packed
+// per-splat data + ordering-texture indirection + parallel radial
+// sort on a worker thread). Per-frame upload is just N×4 bytes
+// (the index list) instead of N×56 the old vertex-attribute layout
+// pushed every frame, and the EWA covariance projection / α curve
+// matches Spark's splatVertex.glsl. We keep the source splats around
+// so the worker thread can radial-sort by camera-relative distance.
+static PackedSplats        g_packed;
+static std::vector<Splat>  g_source_splats;
+static GLuint              g_splat_program  = 0;
+static GLuint              g_splat_quad_vbo = 0;
+static GLuint              g_splat_vao      = 0;
+// Robust 5–95% per-axis bbox of the splats — used when positioning
+// the cloud relative to the chessboard. Filled in by load_splats().
+static float g_splats_bbox_min[3] = {0, 0, 0};
+static float g_splats_bbox_max[3] = {0, 0, 0};
+#endif  // !__EMSCRIPTEN__
 static GLuint g_scene_fbo        = 0;
 static GLuint g_scene_color_tex  = 0;
 static GLuint g_scene_depth_tex  = 0;
@@ -443,7 +479,7 @@ static void run_outline_post_process(GLuint default_fbo,
     // render into the scene FBO — the shader uses them to linearise
     // depth so edge strength is distance-invariant.
     glUniform1f(glGetUniformLocation(g_outline_program, "uNear"), 0.1f);
-    glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),  100.0f);
+    glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),  250.0f);
     glUniform1f(glGetUniformLocation(g_outline_program, "uEdgeStrength"), 4.0f);
 
     glActiveTexture(GL_TEXTURE0);
@@ -673,6 +709,93 @@ static GLuint gl_load_texture(const std::string& path) {
         path.c_str(), w, h, ch);
     return tex;
 }
+
+#ifndef __EMSCRIPTEN__
+// Build GL buffers for a freshly-loaded splat scene. The unit
+// quad VBO has 4 corners (-1,-1), (1,-1), (1,1), (-1,1); the
+// instance VBO stores 8 floats per splat (pos.xyz, radius, rgba)
+// and gets re-uploaded each frame after the depth sort.
+// Set up the splat draw VAO (just one quad attribute — everything else
+// comes from the splat-data textures via texelFetch in the vertex
+// shader). Called once after the program is created.
+static void splat_init_vao() {
+    if (g_splat_vao) return;
+    glGenVertexArrays(1, &g_splat_vao);
+    glGenBuffers(1, &g_splat_quad_vbo);
+    glBindVertexArray(g_splat_vao);
+    static const float quad[] = {
+        -1.0f, -1.0f,
+         1.0f, -1.0f,
+         1.0f,  1.0f,
+        -1.0f,  1.0f,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, g_splat_quad_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE,
+                          2 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+}
+
+// Compute the robust 5-95% per-axis bbox so we can centre the cloud
+// on the chessboard regardless of stray outlier splats.
+static void splat_compute_bbox(const std::vector<Splat>& splats) {
+    if (splats.empty()) return;
+    for (int axis = 0; axis < 3; ++axis) {
+        std::vector<float> v;
+        v.reserve(splats.size());
+        for (const auto& sp : splats) v.push_back(sp.pos[axis]);
+        std::sort(v.begin(), v.end());
+        size_t lo = static_cast<size_t>(v.size() * 0.05);
+        size_t hi = static_cast<size_t>(v.size() * 0.95);
+        if (hi >= v.size()) hi = v.size() - 1;
+        g_splats_bbox_min[axis] = v[lo];
+        g_splats_bbox_max[axis] = v[hi];
+    }
+    std::fprintf(stderr,
+        "[splat] robust bbox (5-95%%) "
+        "X[%.3f, %.3f] Y[%.3f, %.3f] Z[%.3f, %.3f]\n",
+        g_splats_bbox_min[0], g_splats_bbox_max[0],
+        g_splats_bbox_min[1], g_splats_bbox_max[1],
+        g_splats_bbox_min[2], g_splats_bbox_max[2]);
+}
+#endif  // !__EMSCRIPTEN__
+
+#ifndef __EMSCRIPTEN__
+// Loader specifically for the equirectangular panorama. Same
+// pipeline as gl_load_texture but with WRAP_S=REPEAT (so the
+// horizontal seam wraps cleanly when the camera looks behind),
+// WRAP_T=CLAMP_TO_EDGE (no wrap-around at poles), and linear
+// (no mipmaps — the panorama is sampled at one mip level so
+// generating mips just slows startup).
+static GLuint gl_load_panorama(const std::string& path) {
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels =
+        stbi_load(path.c_str(), &w, &h, &ch, 3 /*force RGB*/);
+    if (!pixels) {
+        std::fprintf(stderr,
+            "[board] panorama load failed: %s — %s\n",
+            path.c_str(), stbi_failure_reason() ? stbi_failure_reason() : "?");
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, w, h, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    stbi_image_free(pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    std::fprintf(stderr,
+        "[board] loaded panorama %s — %dx%d (orig %d ch)\n",
+        path.c_str(), w, h, ch);
+    return tex;
+}
+#endif  // !__EMSCRIPTEN__
 
 // Load the three board STLs and the two walnut textures from
 // `dir`. `dir` is "models/board" relative to the working
@@ -987,6 +1110,55 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
     g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
     g_outline_program = create_program(outline_vs_src, outline_fs_src);
+#ifndef __EMSCRIPTEN__
+    g_skybox_program  = create_program(skybox_vs_src,  skybox_fs_src);
+    g_splat_program   = create_program(splat_vs_src,   splat_fs_src);
+
+    // Marble Gaussian splat scene. With depth-tested writes the
+    // per-frame sort is gone, so full-res (~1.9 M splats) is now
+    // the right default — sub-pixel cull discards far splats in
+    // the vertex shader and the depth buffer resolves overlap
+    // without alpha blending. 500k / 100k stay as fallbacks.
+    {
+        const char* splat_paths[] = {
+            "marble_room/splat_full_res.spz",
+            "/marble_room/splat_full_res.spz",
+            "marble_room/splat_500k.spz",
+            "/marble_room/splat_500k.spz",
+            "marble_room/splat_100k.spz",
+            "/marble_room/splat_100k.spz",
+        };
+        for (const char* p : splat_paths) {
+            FILE* f = std::fopen(p, "rb");
+            if (!f) continue;
+            std::fclose(f);
+            std::vector<Splat> sp = splat_load_spz(p);
+            if (!sp.empty()) {
+                splat_compute_bbox(sp);
+                splat_init_vao();
+                packed_splats_upload(g_packed, sp);
+                g_source_splats = std::move(sp);
+                break;
+            }
+        }
+    }
+    // Marble-generated panorama room. Native-only (the World Labs
+    // integration is gated to the desktop build); web keeps its
+    // original dark clear.
+    {
+        const char* candidates[] = {
+            "marble_room/panorama.jpg",
+            "/marble_room/panorama.jpg",
+        };
+        for (const char* p : candidates) {
+            FILE* f = std::fopen(p, "rb");
+            if (!f) continue;
+            std::fclose(f);
+            g_panorama_tex = gl_load_panorama(p);
+            if (g_panorama_tex) break;
+        }
+    }
+#endif  // !__EMSCRIPTEN__
     shatter_init();
 
     // Menu-piece collision geometry: rotated-AABB extents + the
@@ -2543,7 +2715,12 @@ void renderer_draw(GameState& gs,
                    int64_t white_thought_ms,
                    int64_t black_thought_ms,
                    float white_lever_blend,
-                   float black_lever_blend) {
+                   float black_lever_blend,
+                   bool force_panorama_only) {
+#ifdef __EMSCRIPTEN__
+    // Web build has no splat pipeline, so the toggle is unused.
+    (void)force_panorama_only;
+#endif
     GLint default_fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &default_fbo);
 
@@ -2589,7 +2766,7 @@ void renderer_draw(GameState& gs,
         mat4_multiply(mat4_rotate_x(rot_x * deg2rad),
                       mat4_multiply(mat4_rotate_y(rot_y * deg2rad),
                                     mat4_translate(0, -BOARD_Y, 0))));
-    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 100.0f);
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 250.0f);
     Mat4 vp = mat4_multiply(proj, view);
 
     float cd = zoom;
@@ -2796,6 +2973,148 @@ void renderer_draw(GameState& gs,
     } else {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
+
+#ifndef __EMSCRIPTEN__
+    // Native-only Marble integration. The whole splat-or-panorama
+    // background pipeline is gated to the desktop build; the web
+    // build keeps the original dark clear.
+    //
+    // Gaussian splat scene from the Marble model. Real 3D
+    // geometry — gives parallax + zoom-into-room behaviour the
+    // panorama skybox can't deliver. Drawn AFTER the clear and
+    // BEFORE the chess geometry, with alpha blend on / depth
+    // writes off so back-to-front splat compositing works without
+    // occluding the chessboard. Falls through to the panorama
+    // skybox below if no SPZ was loaded.
+    if (!force_panorama_only && g_packed.count > 0 && g_splat_program) {
+        // Camera direction (world-space) — used by Spark's "did the
+        // camera move enough to re-sort?" early-out.
+        float vd[3] = {-cx, -cy, -cz};
+        float vl = std::sqrt(vd[0]*vd[0] + vd[1]*vd[1] + vd[2]*vd[2]);
+        if (vl > 1e-6f) { vd[0] /= vl; vd[1] /= vl; vd[2] /= vl; }
+
+        // Splat-cloud world transform. Marble's coordinate system
+        // has -Y as up; we flip Y. Scale + translate so the
+        // ROBUST percentile bbox (computed at load) centres on
+        // the chessboard origin in X/Z and the floor sits a few
+        // units below the chessboard plane.
+        const float splat_scale = 30.0f;
+        const float* mn = g_splats_bbox_min;
+        const float* mx = g_splats_bbox_max;
+        const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
+        // After Y flip, splat Y_max maps to the FLOOR (most negative
+        // world Y). Push the floor well below the chessboard so
+        // the table reads as elevated mid-room rather than sitting
+        // on the floor.
+        const float floor_world_y = -7.0f;
+        const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
+        const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale;
+        Mat4 splat_model = mat4_multiply(
+            mat4_translate(splat_cx, splat_cy, splat_cz),
+            mat4_scale(splat_scale, -splat_scale, splat_scale));
+
+        // Radial sort: distance from camera world-position, not
+        // projection along view direction (matches Spark's
+        // sortRadial=true default — no edge-of-frustum sort
+        // artefacts at wide FOV).
+        float cam_pos[3] = { cx, cy, cz };
+        packed_splats_sort_and_upload(g_packed, cam_pos, vd,
+                                      splat_model.m, g_source_splats);
+
+        glUseProgram(g_splat_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uView"),
+                           1, GL_FALSE, view.m);
+        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uProjection"),
+                           1, GL_FALSE, proj.m);
+        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uModel"),
+                           1, GL_FALSE, splat_model.m);
+        glUniform1f(glGetUniformLocation(g_splat_program, "uModelScale"),
+                    splat_scale);
+        glUniform2f(glGetUniformLocation(g_splat_program, "uRenderSize"),
+                    static_cast<float>(width),
+                    static_cast<float>(height));
+        // Match Spark's defaults: ~2.83σ quad extent (sqrt(8)),
+        // 512-px max screen radius, tiny min-alpha cutoff. The α
+        // curve and adjStdDev expansion happen inside the vertex
+        // shader so the splat's pixel-space size grows with
+        // density automatically.
+        glUniform1f(glGetUniformLocation(g_splat_program, "uMaxStdDev"),
+                    std::sqrt(8.0f));
+        glUniform1f(glGetUniformLocation(g_splat_program, "uMaxPixelRadius"), 512.0f);
+        glUniform1f(glGetUniformLocation(g_splat_program, "uMinAlpha"), 1.0f / 255.0f);
+        glUniform1f(glGetUniformLocation(g_splat_program, "uFalloff"), 1.0f);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uEnable2DGS"), 0);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uLogDepth"), 0);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uTexWidth"),
+                    g_packed.tex_width);
+
+        // Bind the three splat textures (A/B/ordering). texelFetch
+        // in the vertex shader pulls per-splat data through the
+        // ordering indirection.
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_packed.texA);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uSplatA"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, g_packed.texB);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uSplatB"), 1);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, g_packed.texOrder);
+        glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
+        glActiveTexture(GL_TEXTURE0);
+
+        // Premultiplied alpha so blending picks up the saturating
+        // α curve correctly (Spark's default). Depth test on so the
+        // chessboard occludes splats behind it, depth writes off so
+        // back-to-front splat compositing still works.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        if (main_pass_is_default) {
+            glScissor(sub_x, sub_y, width, height);
+            glEnable(GL_SCISSOR_TEST);
+        }
+        glBindVertexArray(g_splat_vao);
+        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+        if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
+    } else
+    // Skybox pass — fills the scene with the Marble-generated
+    // panorama before any 3D geometry, so the chessboard + clock
+    // appear to sit inside the medieval room. Drawn with depth
+    // writes off and at the far plane (z=1.0); subsequent geometry
+    // overdraws it where present.
+    if (g_panorama_tex && g_skybox_program) {
+        Mat4 inv_proj = mat4_inverse(proj);
+        // The view matrix's rotation-only part is R_x(rot_x)·R_y(rot_y).
+        // Its inverse (orthonormal => transpose) is R_y(-rot_y)·R_x(-rot_x).
+        Mat4 inv_view_rot = mat4_multiply(
+            mat4_rotate_y(-rot_y * deg2rad),
+            mat4_rotate_x(-rot_x * deg2rad));
+        glUseProgram(g_skybox_program);
+        glUniformMatrix4fv(glGetUniformLocation(g_skybox_program, "uInvProj"),
+                           1, GL_FALSE, inv_proj.m);
+        glUniformMatrix4fv(glGetUniformLocation(g_skybox_program, "uInvViewRot"),
+                           1, GL_FALSE, inv_view_rot.m);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_panorama_tex);
+        glUniform1i(glGetUniformLocation(g_skybox_program, "uPano"), 0);
+        GLboolean depth_was_on = glIsEnabled(GL_DEPTH_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        if (main_pass_is_default) {
+            glScissor(sub_x, sub_y, width, height);
+            glEnable(GL_SCISSOR_TEST);
+        }
+        glBindVertexArray(g_fullscreen_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+        if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
+        glDepthMask(GL_TRUE);
+        if (depth_was_on) glEnable(GL_DEPTH_TEST);
+    }
+#endif  // !__EMSCRIPTEN__
 
     glUseProgram(g_program);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uView"), 1, GL_FALSE, view.m);
@@ -3443,7 +3762,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float cam_angle = time * 15.0f, cam_pitch = 25.0f, cam_dist = 12.0f;
     Mat4 view = mat4_multiply(mat4_translate(0, 0, -cam_dist),
         mat4_multiply(mat4_rotate_x(cam_pitch * deg2rad), mat4_rotate_y(cam_angle * deg2rad)));
-    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 100.0f);
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 250.0f);
 
     float cy = cam_dist * std::sin(-cam_pitch * deg2rad);
     float cxz = cam_dist * std::cos(-cam_pitch * deg2rad);
