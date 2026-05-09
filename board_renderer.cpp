@@ -92,6 +92,18 @@ static ClockMesh g_clock_lever_l;     // silver press-down lever, slides on Y
 static ClockMesh g_clock_lever_r;
 static ClockMesh g_clock_glass_l;
 static ClockMesh g_clock_glass_r;
+// Wooden square table that the chessboard + clock sit on. Same
+// uvmesh format as the clock; the conversion lives in
+// tools/convert_table.py and writes to models/table/. PBR textures
+// (albedo / normal / roughness / metallic / AO) ship alongside it.
+// The mesh's local space puts the top surface at Y=0 so the board
+// drops on it cleanly with no extra translate.
+static ClockMesh g_table_mesh;
+static GLuint    g_table_albedo_tex    = 0;
+static GLuint    g_table_normal_tex    = 0;
+static GLuint    g_table_roughness_tex = 0;
+static GLuint    g_table_metallic_tex  = 0;
+static GLuint    g_table_ao_tex        = 0;
 
 // How far each lever travels when fully pressed (mesh-local units).
 // The stem is ~0.128 long, so 0.04 is a clearly visible click
@@ -933,6 +945,61 @@ static void load_clock_assets(const std::string& dir) {
     g_clock_metalness_tex = gl_load_texture(dir + "/clock_metalness.png");
 }
 
+// Load the wooden table that the chessboard sits on. Same uvmesh
+// format as the clock body (8-floats / vertex: pos, normal, uv);
+// PBR JPEG textures alongside it. Origin is at the table's center
+// of the top surface so the table can be drawn with model = identity
+// and the chessboard at BOARD_Y=0 lands flush.
+static void load_table_assets(const std::string& dir) {
+    std::string path = dir + "/table.uvmesh";
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "[table] missing %s — skipping table\n",
+                     path.c_str());
+        return;
+    }
+    char magic[4]; uint32_t vcount = 0;
+    if (std::fread(magic, 1, 4, f) != 4 ||
+        std::memcmp(magic, "UVME", 4) != 0 ||
+        std::fread(&vcount, sizeof(vcount), 1, f) != 1) {
+        std::fprintf(stderr, "[table] bad uvmesh header %s\n", path.c_str());
+        std::fclose(f);
+        return;
+    }
+    std::vector<float> buf(static_cast<size_t>(vcount) * 8);
+    if (std::fread(buf.data(), sizeof(float), buf.size(), f) != buf.size()) {
+        std::fclose(f);
+        return;
+    }
+    std::fclose(f);
+    glGenVertexArrays(1, &g_table_mesh.vao);
+    glGenBuffers(1, &g_table_mesh.vbo);
+    glBindVertexArray(g_table_mesh.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_table_mesh.vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(buf.size() * sizeof(float)),
+                 buf.data(), GL_STATIC_DRAW);
+    const GLsizei stride = 8 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                          (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                          (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+    g_table_mesh.count = static_cast<int>(vcount);
+    std::fprintf(stderr, "[table] loaded %s — %u verts\n",
+                 path.c_str(), vcount);
+
+    g_table_albedo_tex    = gl_load_texture(dir + "/table_albedo.jpg");
+    g_table_normal_tex    = gl_load_texture(dir + "/table_normal.jpg");
+    g_table_roughness_tex = gl_load_texture(dir + "/table_roughness.jpg");
+    g_table_metallic_tex  = gl_load_texture(dir + "/table_metallic.jpg");
+    g_table_ao_tex        = gl_load_texture(dir + "/table_ao.jpg");
+}
+
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
     // Always smooth per-vertex normals via build_vertex_buffer's
     // angle-weighted average. The pieces are still visibly faceted
@@ -1202,9 +1269,11 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 #ifdef __EMSCRIPTEN__
     load_board_assets("/models/board");
     load_clock_assets("/models/clock");
+    load_table_assets("/models/table");
 #else
     load_board_assets("models/board");
     load_clock_assets("models/clock");
+    load_table_assets("models/table");
 #endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
@@ -3111,6 +3180,56 @@ void renderer_draw(GameState& gs,
     float lcol[12] = {2.5f,2.3f,2, 1,1.1f,1.3f, 0.8f,0.7f,0.6f, 0.8f,0.7f,0.6f};
     glUniform3fv(glGetUniformLocation(g_program, "uLightPositions"), 4, lpos);
     glUniform3fv(glGetUniformLocation(g_program, "uLightColors"), 4, lcol);
+
+    // ----- Table the chessboard sits on -----
+    // The wooden square table renders before the board so the board
+    // mesh / pieces / clock overdraw it where they overlap. The
+    // mesh's local space has the top surface at Y=0, but in world
+    // space the chessboard frame's underside is at Y=-0.608 (frame
+    // STL spans Y[-0.608, -0.020] — the existing clock is already
+    // translated to Y=-0.608 to "sit on the same notional table
+    // surface as the board"; this is now the actual table). Drop
+    // the table top to that plane so the chessboard's bottom AND
+    // the clock's base both rest on it cleanly. No change needed
+    // to the board / clock model matrices — they were already
+    // calibrated to this Y.
+    constexpr float TABLE_TOP_Y = -0.608f;
+    if (g_table_mesh.count > 0 && g_table_albedo_tex) {
+        Mat4 table_model = mat4_translate(0.0f, TABLE_TOP_Y, 0.0f);
+        float tnm[9]; mat4_normal_matrix(table_model, tnm);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"),
+                           1, GL_FALSE, table_model.m);
+        glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"),
+                           1, GL_FALSE, tnm);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 1);
+        glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+        // (1, 1, 1) so the texture comes through with no tint.
+        set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.65f, 1.0f, 0);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, g_table_albedo_tex);
+        glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+        if (g_table_roughness_tex) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, g_table_roughness_tex);
+            glUniform1i(glGetUniformLocation(g_program, "uClockRoughnessTex"), 6);
+        }
+        if (g_table_metallic_tex) {
+            glActiveTexture(GL_TEXTURE7);
+            glBindTexture(GL_TEXTURE_2D, g_table_metallic_tex);
+            glUniform1i(glGetUniformLocation(g_program, "uClockMetalnessTex"), 7);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindVertexArray(g_table_mesh.vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_table_mesh.count);
+        glBindVertexArray(0);
+        // Restore — the chessboard frame / squares / pieces draws
+        // below all expect uClockTextureMode == 0.
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+    }
 
     // Board
     float bnm[9]; mat4_normal_matrix(board_model, bnm);

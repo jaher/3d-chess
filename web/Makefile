@@ -36,6 +36,7 @@ LDFLAGS   := \
     --preload-file ../models-web-packed@/models \
     --preload-file ../models/board@/models/board \
     --preload-file ../models/clock@/models/clock \
+    --preload-file ../models/table@/models/table \
     --preload-file ../challenges@/challenges \
     --preload-file ../puzzles@/puzzles \
     --preload-file ../openings@/openings \
