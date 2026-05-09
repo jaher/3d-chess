@@ -3615,18 +3615,21 @@ void renderer_draw(GameState& gs,
     // bottom from BOARD_Y down to the table-top plane.
     {
         constexpr float TABLE_TOP_Y = -0.608f;
-        // Render captured pieces at full board scale so they read as
-        // the same set, just sitting off to the side. Spacing widens
-        // to 1.0 (one board square) to match the on-board footprint.
+        // Render captured pieces at full board scale on the -X side
+        // of the table — the chess clock occupies the +X side, so
+        // putting captures there used to make pieces intersect the
+        // clock body. Both colours now share the -X strip, split by
+        // Z: white fills from the +Z (far) end of the board, black
+        // fills from the -Z (near) end, so they meet in the middle
+        // only in the unlikely case that almost every piece is taken.
         int wc = 0, bc = 0;
         for (const auto& bp : gs.pieces) {
             if (bp.alive) continue;
             float s = BASE_PIECE_SCALE * piece_scale[bp.type];
             int& cnt = bp.is_white ? wc : bc;
             int ri = cnt / 2, ci = cnt % 2;
-            float px, pz;
-            if (bp.is_white) { px = 5.2f + ci*1.0f; pz = 3.5f - ri*1.0f; }
-            else { px = -5.2f - ci*1.0f; pz = -3.5f + ri*1.0f; }
+            float px = -5.2f - ci*1.0f;
+            float pz = bp.is_white ? (3.5f - ri*1.0f) : (-3.5f + ri*1.0f);
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
             // Drop the piece so its bottom rests on the table.
             pm = mat4_multiply(
