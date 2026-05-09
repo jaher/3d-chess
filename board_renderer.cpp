@@ -3023,14 +3023,15 @@ void renderer_draw(GameState& gs,
         // table_height = 0 - 0.608 - 8.27) so the table reads as
         // sitting on the splat-room floor.
         //
-        // Scale was 30× but the room then dwarfed the chessboard —
-        // tiny camera moves caused the room features to swing
-        // dramatically while the chessboard barely shifted, which
-        // reads as the rotation "not lining up". Drop to 15× so the
-        // room's footprint is ~33 units (about 3.7× the chessboard's
-        // 9-unit footprint) — tight enough that pivoting around the
-        // board doesn't decouple the room visually.
-        const float splat_scale = 15.0f;
+        // Scale tuned so the table reads as a piece of furniture in
+        // a room, not a stage in a theatre. Table footprint is ~14
+        // world units; at 25× the splat-room footprint is ~55 units,
+        // so the table fills about a quarter of the room width —
+        // close to the proportion of a real chess table in a study.
+        // 30× made the room dwarf everything ("rotation doesn't line
+        // up"); 15× went the other way and the table looked way too
+        // big against the walls.
+        const float splat_scale = 25.0f;
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
