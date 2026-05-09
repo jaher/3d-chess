@@ -3009,6 +3009,19 @@ void renderer_draw(GameState& gs,
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
         glBindVertexArray(0);
 
+        // The splat shader sampled g_packed.texA / texB / texOrder
+        // as RGBA32UI / R32UI integer textures on units 0/1/2. Leaving
+        // those integer textures bound on units 1/2 is dangerous — if
+        // any later shader's sampler2D defaults to those units (or
+        // gets glUniform1i'd to one of them and we forgot to set the
+        // expected float texture), it samples garbage. Unbind both
+        // proactively. Unit 0 gets re-bound by the blit below.
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+
         // ----- Done with splat-bg FBO. Rebind main pass + paste -----
         glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);
         glViewport(mp_x, mp_y, width, height);
@@ -3035,6 +3048,11 @@ void renderer_draw(GameState& gs,
         glBindVertexArray(g_fullscreen_vao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
+
+        // Leave TEXTURE0 unbound so it can't double as a stale binding
+        // for the next pass. The chessboard pass sets uShadowMap →
+        // TEXTURE0 = g_shadow_tex right after this anyway.
+        glBindTexture(GL_TEXTURE_2D, 0);
 
         if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
         glEnable(GL_DEPTH_TEST);
