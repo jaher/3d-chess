@@ -3,7 +3,11 @@
 #include <cstdint>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>
+#else
 #include <epoxy/gl.h>
+#endif
 
 #include "splat.h"
 

@@ -4,10 +4,8 @@
 #include "render_internal.h"
 #include "shader.h"
 #include "shatter_transition.h"
-#ifndef __EMSCRIPTEN__
 #include "splat.h"
 #include "packed_splats.h"
-#endif
 #include "stl_model.h"
 #include "text_atlas.h"
 
@@ -247,19 +245,13 @@ static GLuint g_skybox_program   = 0;
 static GLuint g_panorama_tex     = 0;
 #endif  // !__EMSCRIPTEN__
 
-#ifndef __EMSCRIPTEN__
-// Gaussian splat scene from a Marble-generated SPZ. Native-only —
-// the web build keeps the panorama skybox and skips the SPZ
-// pipeline entirely (no per-frame sort, no large instance buffer,
-// no extra preload). Falls through to the panorama on native too
-// if the SPZ file is missing.
 // Splat backdrop — uses the marble_viewer EWA renderer (texture-packed
-// per-splat data + ordering-texture indirection + parallel radial
-// sort on a worker thread). Per-frame upload is just N×4 bytes
-// (the index list) instead of N×56 the old vertex-attribute layout
-// pushed every frame, and the EWA covariance projection / α curve
-// matches Spark's splatVertex.glsl. We keep the source splats around
-// so the worker thread can radial-sort by camera-relative distance.
+// per-splat data + ordering-texture indirection + radial sort). Per
+// frame the only upload is the N×4-byte ordering texture; the splat
+// data sits in two RGBA32UI textures bound for the lifetime of the
+// scene. Works in both desktop OpenGL and WebGL2 — the WebGL2 path
+// runs the radix sort synchronously instead of on a worker thread
+// (Emscripten without -pthread doesn't have std::thread).
 static PackedSplats        g_packed;
 static std::vector<Splat>  g_source_splats;
 static GLuint              g_splat_program  = 0;
@@ -269,7 +261,6 @@ static GLuint              g_splat_vao      = 0;
 // the cloud relative to the chessboard. Filled in by load_splats().
 static float g_splats_bbox_min[3] = {0, 0, 0};
 static float g_splats_bbox_max[3] = {0, 0, 0};
-#endif  // !__EMSCRIPTEN__
 static GLuint g_scene_fbo        = 0;
 static GLuint g_scene_color_tex  = 0;
 static GLuint g_scene_depth_tex  = 0;
@@ -710,11 +701,6 @@ static GLuint gl_load_texture(const std::string& path) {
     return tex;
 }
 
-#ifndef __EMSCRIPTEN__
-// Build GL buffers for a freshly-loaded splat scene. The unit
-// quad VBO has 4 corners (-1,-1), (1,-1), (1,1), (-1,1); the
-// instance VBO stores 8 floats per splat (pos.xyz, radius, rgba)
-// and gets re-uploaded each frame after the depth sort.
 // Set up the splat draw VAO (just one quad attribute — everything else
 // comes from the splat-data textures via texelFetch in the vertex
 // shader). Called once after the program is created.
@@ -759,7 +745,6 @@ static void splat_compute_bbox(const std::vector<Splat>& splats) {
         g_splats_bbox_min[1], g_splats_bbox_max[1],
         g_splats_bbox_min[2], g_splats_bbox_max[2]);
 }
-#endif  // !__EMSCRIPTEN__
 
 #ifndef __EMSCRIPTEN__
 // Loader specifically for the equirectangular panorama. Same
@@ -1110,23 +1095,22 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
     g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
     g_outline_program = create_program(outline_vs_src, outline_fs_src);
-#ifndef __EMSCRIPTEN__
-    g_skybox_program  = create_program(skybox_vs_src,  skybox_fs_src);
-    g_splat_program   = create_program(splat_vs_src,   splat_fs_src);
-
-    // Marble Gaussian splat scene. With depth-tested writes the
-    // per-frame sort is gone, so full-res (~1.9 M splats) is now
-    // the right default — sub-pixel cull discards far splats in
-    // the vertex shader and the depth buffer resolves overlap
-    // without alpha blending. 500k / 100k stay as fallbacks.
+    g_splat_program = create_program(splat_vs_src, splat_fs_src);
+    // Marble Gaussian splat scene. Pick the heaviest tier the
+    // platform can handle: full_res on desktop, 100k on web (the
+    // packed-texture render path supports either, but the web build
+    // pays for the SPZ payload as a preload so we keep the smallest
+    // tier there).
     {
         const char* splat_paths[] = {
+#ifndef __EMSCRIPTEN__
             "marble_room/splat_full_res.spz",
-            "/marble_room/splat_full_res.spz",
             "marble_room/splat_500k.spz",
-            "/marble_room/splat_500k.spz",
             "marble_room/splat_100k.spz",
+#else
             "/marble_room/splat_100k.spz",
+            "marble_room/splat_100k.spz",
+#endif
         };
         for (const char* p : splat_paths) {
             FILE* f = std::fopen(p, "rb");
@@ -1142,9 +1126,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             }
         }
     }
-    // Marble-generated panorama room. Native-only (the World Labs
-    // integration is gated to the desktop build); web keeps its
-    // original dark clear.
+#ifndef __EMSCRIPTEN__
+    g_skybox_program  = create_program(skybox_vs_src,  skybox_fs_src);
+    // Marble-generated panorama room. Native-only — the equirect
+    // JPEG decode goes through stb_image which only the desktop
+    // build links; web uses the splat backdrop above as the only
+    // room renderer.
     {
         const char* candidates[] = {
             "marble_room/panorama.jpg",
@@ -2974,18 +2961,16 @@ void renderer_draw(GameState& gs,
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
 
-#ifndef __EMSCRIPTEN__
-    // Native-only Marble integration. The whole splat-or-panorama
-    // background pipeline is gated to the desktop build; the web
-    // build keeps the original dark clear.
+    // Marble integration. The Gaussian-splat backdrop runs on BOTH
+    // desktop and web (WebGL2 + GLSL ES 3.00 covers everything the
+    // splat shader needs — unpackHalf2x16, RGBA32UI textures,
+    // texelFetch, instanced draws). The fallback panorama skybox is
+    // still desktop-only because its JPEG decode goes through
+    // stb_image, which we only link into the desktop build.
     //
-    // Gaussian splat scene from the Marble model. Real 3D
-    // geometry — gives parallax + zoom-into-room behaviour the
-    // panorama skybox can't deliver. Drawn AFTER the clear and
-    // BEFORE the chess geometry, with alpha blend on / depth
-    // writes off so back-to-front splat compositing works without
-    // occluding the chessboard. Falls through to the panorama
-    // skybox below if no SPZ was loaded.
+    // Drawn AFTER the clear and BEFORE the chess geometry, with
+    // premultiplied-α blend on / depth-writes off so back-to-front
+    // splat compositing works without occluding the chessboard.
     if (!force_panorama_only && g_packed.count > 0 && g_splat_program) {
         // Camera direction (world-space) — used by Spark's "did the
         // camera move enough to re-sort?" early-out.
@@ -3079,12 +3064,15 @@ void renderer_draw(GameState& gs,
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
         if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
-    } else
+    }
+#ifndef __EMSCRIPTEN__
+    else
     // Skybox pass — fills the scene with the Marble-generated
     // panorama before any 3D geometry, so the chessboard + clock
     // appear to sit inside the medieval room. Drawn with depth
     // writes off and at the far plane (z=1.0); subsequent geometry
-    // overdraws it where present.
+    // overdraws it where present. Desktop-only because we only link
+    // stb_image (the JPEG decoder for panorama.jpg) on desktop.
     if (g_panorama_tex && g_skybox_program) {
         Mat4 inv_proj = mat4_inverse(proj);
         // The view matrix's rotation-only part is R_x(rot_x)·R_y(rot_y).

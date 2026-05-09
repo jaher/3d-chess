@@ -32,6 +32,7 @@ LDFLAGS   := \
     --preload-file ../openings@/openings \
     --preload-file ../sounds@/sounds \
     --preload-file ../fonts@/fonts \
+    --preload-file ../marble_room/splat_100k.spz@/marble_room/splat_100k.spz \
     --shell-file index.html
 
 # Sources compiled from the parent dir (shared with desktop build).
@@ -65,7 +66,9 @@ SHARED_SRCS := \
     ../endgame.cpp \
     ../tactics.cpp \
     ../pawn_structure.cpp \
-    ../opening_plans.cpp
+    ../opening_plans.cpp \
+    ../splat.cpp \
+    ../packed_splats.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp voice_web.cpp voice_tts_web.cpp chessnut_web.cpp
