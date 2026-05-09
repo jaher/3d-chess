@@ -1541,10 +1541,6 @@ static void release_options(AppState& a, double mx, double my,
                                static_cast<int>(a.chessnut_devices.size()));
     if (btn == 1) {
         app_enter_menu(a);
-    } else if (btn == 2) {
-        a.cartoon_outline = !a.cartoon_outline;
-        app_settings_save(a);
-        queue_redraw(a);
     } else if (btn == 3 && voice_supported) {
         app_voice_toggle_continuous_request(a);
     } else if (btn == 4 && chessnut_supported) {
@@ -2088,15 +2084,6 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
-    // Cartoon-outline toggle. Works in any in-game context
-    // (playing or challenge), including analysis mode — it's a
-    // pure render effect and doesn't interact with the rules.
-    if (key == KEY_S &&
-        (a.mode == MODE_PLAYING || a.mode == MODE_CHALLENGE)) {
-        a.cartoon_outline = !a.cartoon_outline;
-        queue_redraw(a);
-        return;
-    }
     // P-key shortcut for the Gaussian-splat backdrop toggle. Same
     // effect as flipping it from Options → "Gaussian splats", but
     // available without leaving the game so you can A/B the splat
@@ -3190,7 +3177,6 @@ static void render_menu(AppState& a, int width, int height, int64_t now) {
         s_last_logged_connected = a.chessnut_connected;
     }
     renderer_draw_menu(a.menu_pieces, width, height, t, a.menu_hover,
-                       /*cartoon_outline=*/a.cartoon_outline,
                        /*chessnut_connected=*/a.chessnut_connected);
 }
 
@@ -3228,8 +3214,7 @@ static void render_options(AppState& a, int width, int height) {
     for (const auto& d : a.chessnut_devices) {
         devs.push_back({d.address.c_str(), d.name.c_str()});
     }
-    renderer_draw_options(a.cartoon_outline,
-                          a.splats_enabled,
+    renderer_draw_options(a.splats_enabled,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
@@ -3352,7 +3337,6 @@ static void render_board(AppState& a, int width, int height) {
                       &a.flag, draw_flag,
                       a.withdraw_confirm_open && is_active, a.withdraw_hover,
                       draw_clock, clock_ms, clock_side_is_white,
-                      a.cartoon_outline,
                       is_active ? a.board_shake_x : 0.0f,
                       withdraw_title,
                       gi.white_thought_ms, gi.black_thought_ms,
@@ -3443,16 +3427,13 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
     audio_play(SoundEffect::GlassBreak);
 
     // Challenge mode never wants the withdraw flag, modal, or clock.
-    // Reuse the session cartoon_outline so toggling survives the
-    // transition.
     renderer_draw(cur_gs(a),
                   /*sub_x=*/0, /*sub_y=*/0, width, height,
                   a.rot_x, a.rot_y, a.zoom,
                   a.human_plays_white,
                   a.endgame_menu_hover, false,
                   nullptr, false, false, 0,
-                  false, 0, false,
-                  a.cartoon_outline);
+                  false, 0, false);
     {
         const std::string& ct = a.current_challenge.type;
         bool is_tactic = is_tactic_type(ct);
@@ -3673,9 +3654,6 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
     }
     case VoiceCommand::TryAgain:
         app_reset_challenge_puzzle(a);
-        break;
-    case VoiceCommand::ToggleCartoonOutline:
-        a.cartoon_outline = !a.cartoon_outline;
         break;
     case VoiceCommand::ToggleSplats:
         a.splats_enabled = !a.splats_enabled;
@@ -5125,9 +5103,7 @@ void app_settings_load(AppState& a) {
         if (eq == std::string::npos) continue;
         std::string key = s.substr(0, eq);
         std::string val = s.substr(eq + 1);
-        if (key == "cartoon_outline") {
-            a.cartoon_outline = parse_bool(val);
-        } else if (key == "splats_enabled") {
+        if (key == "splats_enabled") {
             a.splats_enabled = parse_bool(val);
         } else if (key == "chessnut_enabled") {
             // Don't immediately turn the bridge on here — app_init
@@ -5163,7 +5139,6 @@ void app_settings_save(const AppState& a) {
     std::FILE* f = std::fopen(path.c_str(), "w");
     if (!f) return;
     std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
-    std::fprintf(f, "cartoon_outline=%d\n", a.cartoon_outline ? 1 : 0);
     std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
     std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
     std::fclose(f);

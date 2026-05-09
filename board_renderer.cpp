@@ -232,10 +232,6 @@ static int g_ring_vertex_count = 0;
 // hands the loaded STLs to menu_physics_init and doesn't see the
 // collision tables directly.
 
-// Cartoon-outline post-process. Scene FBO has color + depth
-// textures, both sampleable from g_outline_program. Size tracks
-// the current window, recreated lazily on resize.
-static GLuint g_outline_program  = 0;
 #ifndef __EMSCRIPTEN__
 // Skybox program + panorama texture. Native-only — the web build
 // keeps the original dark clear; the entire World Labs / Marble
@@ -261,16 +257,10 @@ static GLuint              g_splat_vao      = 0;
 // the cloud relative to the chessboard. Filled in by load_splats().
 static float g_splats_bbox_min[3] = {0, 0, 0};
 static float g_splats_bbox_max[3] = {0, 0, 0};
-static GLuint g_scene_fbo        = 0;
-static GLuint g_scene_color_tex  = 0;
-static GLuint g_scene_depth_tex  = 0;
-static int    g_scene_fbo_w      = 0;
-static int    g_scene_fbo_h      = 0;
 // Multisample FBO that the 3D scene actually renders into. Resolved
-// into g_scene_fbo (when the cartoon outline is on, so the post-
-// process can sample the result) or directly into the default FB
-// (no outline) before UI overlays draw. GtkGLArea doesn't expose
-// MSAA on the default FB, so we get it via a custom MS RBO.
+// directly into the default framebuffer before UI overlays draw.
+// GtkGLArea doesn't expose MSAA on the default FB, so we get it via
+// a custom MS RBO.
 //
 // Web (Emscripten/WebGL2) skips this entirely — the browser canvas
 // already provides MSAA via the antialias=true context attribute,
@@ -285,50 +275,9 @@ static int    g_scene_ms_fbo_w     = 0;
 static int    g_scene_ms_fbo_h     = 0;
 constexpr int kSceneMSAASamples    = 4;
 #endif
-// Two-triangle NDC fullscreen quad, reused by the outline pass.
+// Two-triangle NDC fullscreen quad, used by the skybox draw.
 static GLuint g_fullscreen_vao   = 0;
 static GLuint g_fullscreen_vbo   = 0;
-
-// Lazily (re)allocate the scene FBO textures for a new window size.
-// Creates the FBO on first call. Cheap (six GL calls) — safe to
-// call every frame when the outline is on.
-static void ensure_scene_fbo(int w, int h) {
-    if (w <= 0) w = 1;
-    if (h <= 0) h = 1;
-    if (g_scene_fbo && g_scene_fbo_w == w && g_scene_fbo_h == h) return;
-
-    if (g_scene_fbo == 0)       glGenFramebuffers(1, &g_scene_fbo);
-    if (g_scene_color_tex == 0) glGenTextures(1, &g_scene_color_tex);
-    if (g_scene_depth_tex == 0) glGenTextures(1, &g_scene_depth_tex);
-
-    glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
-    // 24-bit depth; matches the shadow-map format already used
-    // elsewhere in this file and is sampleable on both desktop
-    // and WebGL 2 / GLES 3.0.
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
-                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, g_scene_color_tex, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                           GL_TEXTURE_2D, g_scene_depth_tex, 0);
-
-    g_scene_fbo_w = w;
-    g_scene_fbo_h = h;
-}
 
 // Planar-reflection FBO — color (sampled by the squares' shader)
 // + depth texture (used during the mirrored pass). Both are
@@ -441,51 +390,6 @@ static void resolve_scene_ms_to(GLuint dst_fbo,
     glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
 }
 #endif  // __EMSCRIPTEN__
-
-// Run the cartoon-outline post-process. The caller is expected to
-// have just drawn the 3D scene into g_scene_fbo; this binds the
-// default framebuffer, samples the scene's colour + depth textures,
-// and writes the darkened-edge result. Leaves depth testing re-enabled
-// so subsequent UI passes behave the same as in the no-outline path.
-static void run_outline_post_process(GLuint default_fbo,
-                                     int sub_x, int sub_y,
-                                     int width, int height) {
-    glBindFramebuffer(GL_FRAMEBUFFER, default_fbo);
-    glViewport(sub_x, sub_y, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    // Don't clear here when sub-rendering — would wipe other
-    // sub-viewports already drawn this frame. Caller is expected
-    // to have done a full-FB clear once per frame before the
-    // game-loop. Even for the single-game path the clear was
-    // redundant with the main pass clear, so dropping it is fine.
-
-    glUseProgram(g_outline_program);
-    glUniform1i(glGetUniformLocation(g_outline_program, "uColorTex"), 0);
-    glUniform1i(glGetUniformLocation(g_outline_program, "uDepthTex"), 1);
-    glUniform2f(glGetUniformLocation(g_outline_program, "uTexelSize"),
-                1.0f / static_cast<float>(width),
-                1.0f / static_cast<float>(height));
-    // Must match the near/far plane of the perspective matrix used to
-    // render into the scene FBO — the shader uses them to linearise
-    // depth so edge strength is distance-invariant.
-    glUniform1f(glGetUniformLocation(g_outline_program, "uNear"), 0.1f);
-    glUniform1f(glGetUniformLocation(g_outline_program, "uFar"),  250.0f);
-    glUniform1f(glGetUniformLocation(g_outline_program, "uEdgeStrength"), 4.0f);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_scene_color_tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, g_scene_depth_tex);
-
-    glBindVertexArray(g_fullscreen_vao);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-
-    // Leave texture unit 0 active for subsequent draws.
-    glActiveTexture(GL_TEXTURE0);
-    glEnable(GL_DEPTH_TEST);
-}
 
 // ---------------------------------------------------------------------------
 // Mesh builders
@@ -1094,7 +998,6 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_text_program = create_program(text_vs_src, text_fs_src);
     g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
     g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
-    g_outline_program = create_program(outline_vs_src, outline_fs_src);
     g_splat_program = create_program(splat_vs_src, splat_fs_src);
     // Marble Gaussian splat scene. Pick the heaviest tier the
     // platform can handle: full_res on desktop, 100k on web (the
@@ -2696,7 +2599,6 @@ void renderer_draw(GameState& gs,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
-                   bool cartoon_outline,
                    float shake_x,
                    const char* withdraw_confirm_title,
                    int64_t white_thought_ms,
@@ -2713,30 +2615,21 @@ void renderer_draw(GameState& gs,
 
     // The 3D pass renders into a multisampled FBO so we get free
     // MSAA on every silhouette and curved surface. After the 3D
-    // draws we resolve:
-    //   * cartoon outline on  → resolve into the single-sample
-    //     g_scene_fbo so the post-process can sample it as textures;
-    //     the post-process then writes to the default FB.
-    //   * cartoon outline off → resolve straight to the default FB.
-    // NDC UI overlays always draw to the default FB after the
-    // resolve / post-process so they aren't affected.
+    // draws we resolve straight into the default FB. NDC UI overlays
+    // always draw to the default FB after the resolve so they
+    // aren't affected.
     //
-    // Web (Emscripten/WebGL 2) skips this path: the browser canvas
-    // already provides MSAA for free (antialias=true is the default
-    // emscripten attribute), and a custom MS FBO has format-
-    // compatibility constraints with the WebGL canvas's default FB
-    // that aren't always met (RGBA8/DEPTH_COMPONENT24 vs the
-    // canvas's RGBA8/DEPTH24_STENCIL8). Falling back to the original
-    // direct-render path on web — which is what existed before
-    // these MSAA changes.
+    // Web (Emscripten/WebGL 2) skips the custom MSAA path: the
+    // browser canvas already provides MSAA for free (antialias=true
+    // is the default emscripten attribute), and a custom MS FBO has
+    // format-compatibility constraints with the WebGL canvas's
+    // default FB that aren't always met (RGBA8/DEPTH_COMPONENT24 vs
+    // the canvas's RGBA8/DEPTH24_STENCIL8). Web renders directly
+    // into the default FB.
 #ifdef __EMSCRIPTEN__
-    if (cartoon_outline) ensure_scene_fbo(width, height);
-    const GLuint main_pass_fbo = cartoon_outline
-        ? g_scene_fbo
-        : static_cast<GLuint>(default_fbo);
+    const GLuint main_pass_fbo = static_cast<GLuint>(default_fbo);
 #else
     ensure_scene_ms_fbo(width, height);
-    if (cartoon_outline) ensure_scene_fbo(width, height);
     const GLuint main_pass_fbo = g_scene_ms_fbo;
 #endif
 
@@ -3063,16 +2956,18 @@ void renderer_draw(GameState& gs,
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
         glBindVertexArray(0);
         // Restore the GL state every other draw block in this file
-        // expects: depth writes back ON, scissor test off, blend on
-        // with the standard (non-premultiplied) alpha equation. Every
-        // other pass — chessboard mesh, pieces, labels, UI — assumes
-        // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blending; if we leak the
-        // premultiplied func from the splat draw the chessboard grid
-        // composites on top of the splat-coloured framebuffer with
-        // zero src multiplier, so the grid effectively disappears.
+        // expects. The chessboard mesh + piece passes that follow
+        // start from blend OFF + depth writes ON; if we leak any of
+        // {blend on, premultiplied func, depth-mask false} into them
+        // we get visible bugs (the grid composites on top of the
+        // splat-coloured framebuffer with the wrong factor, or the
+        // board's own depth doesn't clip later geometry correctly).
+        // Mirror the panorama-pass exit state below — depth back on,
+        // blend OFF, scissor disabled.
         glDepthMask(GL_TRUE);
-        if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
     }
 #ifndef __EMSCRIPTEN__
     else
@@ -3674,21 +3569,12 @@ void renderer_draw(GameState& gs,
     // — the sub-viewport's dims — but the destination is the default
     // FB at sub-rect (sub_x, sub_y, width, height).
 #ifdef __EMSCRIPTEN__
-    if (cartoon_outline) {
-        run_outline_post_process(default_fbo, sub_x, sub_y, width, height);
-    }
-    // No-outline path on web wrote straight into the default FB at
+    // Web wrote straight into the default FB at
     // (sub_x, sub_y, width, height) — nothing to resolve.
 #else
-    if (cartoon_outline) {
-        resolve_scene_ms_to(g_scene_fbo, /*dst_x=*/0, /*dst_y=*/0,
-                            width, height, /*include_depth=*/true);
-        run_outline_post_process(default_fbo, sub_x, sub_y, width, height);
-    } else {
-        resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
-                            sub_x, sub_y,
-                            width, height, /*include_depth=*/false);
-    }
+    resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
+                        sub_x, sub_y,
+                        width, height, /*include_depth=*/false);
 #endif
 
     // After the resolve / post-process, all subsequent NDC overlay
@@ -3724,7 +3610,6 @@ void renderer_draw(GameState& gs,
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
                         int hover_button,
-                        bool cartoon_outline,
                         bool chessnut_connected) {
     // Button layout (BTN_*) defined in menu_input.h so it stays in
     // sync with menu_hit_test's click regions.
@@ -3739,14 +3624,8 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     // already does MSAA for free and the MS FBO has format-
     // compatibility issues with the WebGL default FB, so fall back
     // to the original direct-render path.
-#ifdef __EMSCRIPTEN__
-    if (cartoon_outline) {
-        ensure_scene_fbo(width, height);
-        glBindFramebuffer(GL_FRAMEBUFFER, g_scene_fbo);
-    }
-#else
+#ifndef __EMSCRIPTEN__
     ensure_scene_ms_fbo(width, height);
-    if (cartoon_outline) ensure_scene_fbo(width, height);
     glBindFramebuffer(GL_FRAMEBUFFER, g_scene_ms_fbo);
 #endif
 
@@ -3798,19 +3677,9 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         glBindVertexArray(0);
     }
 
-#ifdef __EMSCRIPTEN__
-    if (cartoon_outline) {
-        run_outline_post_process(default_fbo, 0, 0, width, height);
-    }
-#else
-    if (cartoon_outline) {
-        resolve_scene_ms_to(g_scene_fbo, 0, 0, width, height,
-                            /*include_depth=*/true);
-        run_outline_post_process(default_fbo, 0, 0, width, height);
-    } else {
-        resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
-                            0, 0, width, height, /*include_depth=*/false);
-    }
+#ifndef __EMSCRIPTEN__
+    resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
+                        0, 0, width, height, /*include_depth=*/false);
 #endif
 
     // --- UI overlay ---

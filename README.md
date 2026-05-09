@@ -35,7 +35,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
 - **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory
-- **Options screen** — reached from the main menu **Options** button; currently toggles the cartoon-outline post-process used during gameplay (also bindable to the **S** key while playing)
+- **Options screen** — reached from the main menu **Options** button; toggles for voice input, TTS, move hints, the Gaussian-splat backdrop (**P** key shortcut), the Chessnut Move bridge, and BLE verbose log
 - **Voice move input** (desktop only) — hold **SPACE** during your turn and speak a move ("knight d3", "e4", "castle kingside"). Release to transcribe and play. Powered by an on-device [whisper.cpp](https://github.com/ggerganov/whisper.cpp) build of [distil-small.en](https://huggingface.co/distil-whisper/distil-small.en) (~166 MB). The first press lazily loads the model; if no model file is present the status bar shows a hint to run `make fetch-whisper-model`. CPU inference works out of the box; opt-in CUDA/Metal/Vulkan acceleration via `make WHISPER_BACKEND=cuda` (etc.)
 
 ## Dependencies
@@ -265,7 +265,7 @@ button labels for the screen you're on. Examples:
 
 - **Main menu**: "play", "puzzles" (or "puzzle of the day"), "homework" (or "challenges"), "options"
 - **Pregame**: "start", "white", "black", "back"
-- **Options**: "back", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "cartoon outline", "robotic board" / "robot board" (connect to a Chessnut Move or Phantom Chessboard over BLE), "verbose log" (BLE diagnostic)
+- **Options**: "back", "continuous voice", "speak moves" (TTS announcements), "move hints" / "hint mode" (cycles Off → Auto → On Demand), "gaussian splats" / "splats" / "marble room", "robotic board" / "robot board" (connect to a Chessnut Move or Phantom Chessboard over BLE), "verbose log" (BLE diagnostic)
 - **Live game (Move hints On Demand)**: "give me a hint", "hint", "best move", "what should I play"
 - **Live game**: "resign" / "withdraw" (opens the same confirmation as
   clicking the white flag)
@@ -669,7 +669,7 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
   pregame_ui.h/cpp         -- Pregame screen (slider, dropdown, Start)
   challenge_ui.h/cpp       -- Challenge select / overlay / next / try-again
                               / summary table
-  options_ui.h/cpp         -- Options screen (cartoon-outline toggle)
+  options_ui.h/cpp         -- Options screen (splats / voice / TTS / hints / Chessnut toggles)
   puzzle.h/cpp             -- chess.com puzzle JSON parser (FEN/title/url)
                               extractor — networking lives in main.cpp
                               (desktop curl) / web/main_web.cpp (fetch())

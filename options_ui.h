@@ -12,7 +12,7 @@ struct OptionsScannedDevice {
 };
 
 // hover semantics:
-//   0 = none, 1 = back, 2 = outline, 3 = continuous-voice,
+//   0 = none, 1 = back, 3 = continuous-voice,
 //   4 = chessnut toggle, 5 = picker cancel/refresh button,
 //   6 = picker "forget cached device" button,
 //   7 = BLE verbose-log toggle,
@@ -27,8 +27,7 @@ struct OptionsScannedDevice {
 //
 // `hint_mode`: 0 = Off (grey), 1 = Auto (green), 2 = OnDemand
 // (amber, distinct from the binary on/off toggles around it).
-void renderer_draw_options(bool cartoon_outline_enabled,
-                           bool splats_enabled,
+void renderer_draw_options(bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,

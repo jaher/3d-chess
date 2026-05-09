@@ -389,10 +389,6 @@ VoiceCommand parse_voice_command(const std::string& utterance,
 
     case MODE_OPTIONS:
         if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
-        if (match_any(s, {"cartoon outline", "outline", "cartoon",
-                          "toggle outline", "toggle cartoon",
-                          "toggle cartoon outline"}))
-            return VoiceCommand::ToggleCartoonOutline;
         if (match_any(s, {"gaussian splats", "splats", "splat",
                           "splat backdrop", "gaussian splat",
                           "marble room", "medieval room",

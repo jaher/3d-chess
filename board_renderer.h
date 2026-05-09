@@ -62,7 +62,6 @@ void renderer_draw(GameState& gs,
                    bool draw_clock,
                    int64_t clock_ms_remaining,
                    bool clock_side_is_white,
-                   bool cartoon_outline,
                    float shake_x = 0.0f,
                    const char* withdraw_confirm_title = "Withdraw from game?",
                    // Per-side cumulative thinking time so the 3D
@@ -163,13 +162,9 @@ bool withdraw_confirm_hit_test(double mx, double my,
 // PhysicsPiece / menu_init_physics / menu_update_physics live in
 // menu_physics.h, transitively included above.
 
-// cartoon_outline=true reuses the scene post-process shader to draw a
-// cartoon-style contour around the rendered pieces, used by the menu
-// grab gesture to highlight which piece the cursor is holding.
 void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
                         int width, int height, float time,
                         int hover_button,  // 0=none, 1..5 (see menu_input.h)
-                        bool cartoon_outline,
                         bool chessnut_connected);
 
 // menu_hit_test / menu_piece_hit_test / menu_throw_piece live in

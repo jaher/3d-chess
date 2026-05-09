@@ -21,8 +21,6 @@ extern const char* wood_button_vs_src;
 extern const char* wood_button_fs_src;
 extern const char* shatter_vs_src;
 extern const char* shatter_fs_src;
-extern const char* outline_vs_src;
-extern const char* outline_fs_src;
 extern const char* skybox_vs_src;
 extern const char* skybox_fs_src;
 extern const char* splat_vs_src;

@@ -416,10 +416,6 @@ struct AppState {
     bool withdraw_confirm_open = false;
     int  withdraw_hover = 0;
 
-    // Cartoon-outline post-process toggle. Flipped by the 'S' key
-    // during a live game or challenge. Off by default; persists
-    // across games within a session until the user toggles again.
-    bool cartoon_outline = false;
     // Gaussian-splat backdrop toggle. When true, the renderer
     // composites the Marble medieval-room splat cloud behind the
     // chess board. When false (the default), the renderer falls

@@ -105,7 +105,6 @@ enum class VoiceCommand {
     ConfirmNo,            // Withdraw modal "No"
     NextPuzzle,           // Challenge "Next" after solve
     TryAgain,             // Challenge "Try Again" after mistake
-    ToggleCartoonOutline,
     ToggleSplats,         // Marble medieval-room Gaussian-splat backdrop
     ToggleContinuousVoice,
     ToggleChessnut,       // Chessnut Move physical-board mirroring

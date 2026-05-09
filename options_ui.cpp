@@ -28,24 +28,22 @@ constexpr float OPT_BACK_H  =  0.07f;
 constexpr float OPT_TOG_W       =  0.60f;
 constexpr float OPT_TOG_H       =  0.10f;
 constexpr float OPT_TOG_X       = -OPT_TOG_W * 0.5f;
-constexpr float OPT_ROW1_Y      =  0.20f;   // Continuous voice
-constexpr float OPT_ROW2_Y      =  0.06f;   // Speak moves
-constexpr float OPT_ROW3_Y      = -0.08f;   // Move hints
-constexpr float OPT_ROW4_Y      = -0.22f;   // Cartoon outline
-constexpr float OPT_ROW5_Y      = -0.36f;   // Gaussian splats
-constexpr float OPT_ROW6_Y      = -0.50f;   // Robotic board (Chessnut / Phantom)
-constexpr float OPT_ROW7_Y      = -0.64f;   // BLE verbose log
+constexpr float OPT_ROW1_Y      =  0.16f;   // Continuous voice
+constexpr float OPT_ROW2_Y      =  0.02f;   // Speak moves
+constexpr float OPT_ROW3_Y      = -0.12f;   // Move hints
+constexpr float OPT_ROW4_Y      = -0.26f;   // Gaussian splats
+constexpr float OPT_ROW5_Y      = -0.40f;   // Robotic board (Chessnut / Phantom)
+constexpr float OPT_ROW6_Y      = -0.54f;   // BLE verbose log
 
 // Convenience aliases — name each row by its role so the rest of
-// the file reads as "the voice toggle" / "the outline toggle"
+// the file reads as "the voice toggle" / "the splats toggle"
 // rather than "row N". Reorder = swap aliases, no behaviour drift.
 constexpr float OPT_TOG_VOICE_Y   = OPT_ROW1_Y;
 constexpr float OPT_TOG_TTS_Y     = OPT_ROW2_Y;
 constexpr float OPT_TOG_HINTS_Y   = OPT_ROW3_Y;
-constexpr float OPT_TOG_OUTLINE_Y = OPT_ROW4_Y;
-constexpr float OPT_TOG_SPLATS_Y  = OPT_ROW5_Y;
-constexpr float OPT_TOG_BOARD_Y   = OPT_ROW6_Y;
-constexpr float OPT_TOG_BLE_Y     = OPT_ROW7_Y;
+constexpr float OPT_TOG_SPLATS_Y  = OPT_ROW4_Y;
+constexpr float OPT_TOG_BOARD_Y   = OPT_ROW5_Y;
+constexpr float OPT_TOG_BLE_Y     = OPT_ROW6_Y;
 
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
@@ -91,12 +89,11 @@ int options_hit_test(double mx, double my, int width, int height,
     if (continuous_voice_supported && hit(OPT_TOG_VOICE_Y))   return 3;  // row 1
     if (continuous_voice_supported && hit(OPT_TOG_TTS_Y))     return 8;  // row 2
     if (hit(OPT_TOG_HINTS_Y))                                 return 9;  // row 3
-    if (!picker_open && hit(OPT_TOG_OUTLINE_Y))               return 2;  // row 4
-    if (!picker_open && hit(OPT_TOG_SPLATS_Y))                return 10; // row 5
+    if (!picker_open && hit(OPT_TOG_SPLATS_Y))                return 10; // row 4
     if (chessnut_supported && !picker_open &&
-        hit(OPT_TOG_BOARD_Y))                                 return 4;  // row 6
+        hit(OPT_TOG_BOARD_Y))                                 return 4;  // row 5
     if (chessnut_supported && !picker_open &&
-        hit(OPT_TOG_BLE_Y))                                   return 7;  // row 7
+        hit(OPT_TOG_BLE_Y))                                   return 7;  // row 6
     if (picker_open) {
         // Header row: cancel/rescan.
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
@@ -121,8 +118,7 @@ int options_hit_test(double mx, double my, int width, int height,
     return 0;
 }
 
-void renderer_draw_options(bool cartoon_outline_enabled,
-                           bool splats_enabled,
+void renderer_draw_options(bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,
@@ -162,12 +158,11 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     }
     add_quad(OPT_TOG_X, OPT_TOG_HINTS_Y, OPT_TOG_W, OPT_TOG_H);     // row 3
     if (!picker_open) {
-        add_quad(OPT_TOG_X, OPT_TOG_OUTLINE_Y, OPT_TOG_W, OPT_TOG_H); // row 4
-        add_quad(OPT_TOG_X, OPT_TOG_SPLATS_Y,  OPT_TOG_W, OPT_TOG_H); // row 5
+        add_quad(OPT_TOG_X, OPT_TOG_SPLATS_Y, OPT_TOG_W, OPT_TOG_H); // row 4
     }
     if (chessnut_supported && !picker_open) {
-        add_quad(OPT_TOG_X, OPT_TOG_BOARD_Y, OPT_TOG_W, OPT_TOG_H); // row 6
-        add_quad(OPT_TOG_X, OPT_TOG_BLE_Y,   OPT_TOG_W, OPT_TOG_H); // row 7
+        add_quad(OPT_TOG_X, OPT_TOG_BOARD_Y, OPT_TOG_W, OPT_TOG_H); // row 5
+        add_quad(OPT_TOG_X, OPT_TOG_BLE_Y,   OPT_TOG_W, OPT_TOG_H); // row 6
     }
     int picker_visible = 0;
     if (picker_open) {
@@ -231,14 +226,12 @@ void renderer_draw_options(bool cartoon_outline_enabled,
         glDrawArrays(GL_TRIANGLES, next_offset, 6);
         next_offset += 6;
     }
-    // Rows 4 / 5: cartoon outline + Gaussian-splat backdrop (hidden behind picker).
+    // Row 4: Gaussian-splat backdrop (hidden behind picker).
     if (!picker_open) {
-        draw_toggle(cartoon_outline_enabled, 2,  next_offset);
-        next_offset += 6;
-        draw_toggle(splats_enabled,          10, next_offset);
+        draw_toggle(splats_enabled, 10, next_offset);
         next_offset += 6;
     }
-    // Rows 6 / 7: robotic board + BLE verbose log (hidden behind picker).
+    // Rows 5 / 6: robotic board + BLE verbose log (hidden behind picker).
     if (chessnut_supported && !picker_open) {
         draw_toggle(chessnut_enabled, 4, next_offset);
         next_offset += 6;
@@ -327,44 +320,35 @@ void renderer_draw_options(bool cartoon_outline_enabled,
             OPT_TOG_HINTS_Y);
     }
     int row3_end = static_cast<int>(text_verts.size() / 5);
-    // Row 4 — Cartoon outline (hidden when picker open)
+    // Row 4 — Gaussian-splat backdrop (hidden when picker open)
     int row4_end = row3_end;
-    if (!picker_open) {
-        add_toggle_label(
-            std::string("Cartoon outline: ") +
-                (cartoon_outline_enabled ? "ON" : "OFF"),
-            OPT_TOG_OUTLINE_Y);
-        row4_end = static_cast<int>(text_verts.size() / 5);
-    }
-    // Row 5 — Gaussian-splat backdrop (hidden when picker open)
-    int row5_end = row4_end;
     if (!picker_open) {
         add_toggle_label(
             std::string("Gaussian splats: ") +
                 (splats_enabled ? "ON" : "OFF"),
             OPT_TOG_SPLATS_Y);
-        row5_end = static_cast<int>(text_verts.size() / 5);
+        row4_end = static_cast<int>(text_verts.size() / 5);
     }
-    // Row 6 — Robotic board (Chessnut / Phantom)
-    int row6_end = row5_end;
+    // Row 5 — Robotic board (Chessnut / Phantom)
+    int row5_end = row4_end;
     if (chessnut_supported && !picker_open) {
         add_toggle_label(
             std::string("Robotic board: ") +
                 (chessnut_enabled ? "ON" : "OFF"),
             OPT_TOG_BOARD_Y);
-        row6_end = static_cast<int>(text_verts.size() / 5);
+        row5_end = static_cast<int>(text_verts.size() / 5);
     }
-    // Row 7 — BLE verbose log
-    int row7_end = row6_end;
+    // Row 6 — BLE verbose log
+    int row6_end = row5_end;
     if (chessnut_supported && !picker_open) {
         add_toggle_label(
             std::string("BLE verbose log: ") +
                 (ble_verbose_log_enabled ? "ON" : "OFF"),
             OPT_TOG_BLE_Y);
-        row7_end = static_cast<int>(text_verts.size() / 5);
+        row6_end = static_cast<int>(text_verts.size() / 5);
     }
-    int picker_text_start = row7_end;
-    int picker_text_end   = row7_end;
+    int picker_text_start = row6_end;
+    int picker_text_end   = row6_end;
     if (picker_open) {
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
@@ -458,10 +442,9 @@ void renderer_draw_options(bool cartoon_outline_enabled,
     draw_label_span(3,  back_end,  row1_end);
     draw_label_span(8,  row1_end,  row2_end);
     draw_label_span(9,  row2_end,  row3_end);
-    draw_label_span(2,  row3_end,  row4_end);
-    draw_label_span(10, row4_end,  row5_end);
-    draw_label_span(4,  row5_end,  row6_end);
-    draw_label_span(7,  row6_end,  row7_end);
+    draw_label_span(10, row3_end,  row4_end);
+    draw_label_span(4,  row4_end,  row5_end);
+    draw_label_span(7,  row5_end,  row6_end);
     if (picker_open && picker_text_end > picker_text_start) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     0.96f, 0.96f, 0.92f, 1.0f);
