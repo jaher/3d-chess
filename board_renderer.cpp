@@ -3062,8 +3062,17 @@ void renderer_draw(GameState& gs,
         glBindVertexArray(g_splat_vao);
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
         glBindVertexArray(0);
+        // Restore the GL state every other draw block in this file
+        // expects: depth writes back ON, scissor test off, blend on
+        // with the standard (non-premultiplied) alpha equation. Every
+        // other pass — chessboard mesh, pieces, labels, UI — assumes
+        // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blending; if we leak the
+        // premultiplied func from the splat draw the chessboard grid
+        // composites on top of the splat-coloured framebuffer with
+        // zero src multiplier, so the grid effectively disappears.
         glDepthMask(GL_TRUE);
         if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 #ifndef __EMSCRIPTEN__
     else
