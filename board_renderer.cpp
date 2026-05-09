@@ -3015,11 +3015,26 @@ void renderer_draw(GameState& gs,
         // ROBUST percentile bbox (computed at load) centres on
         // the chessboard origin in X/Z and the floor sits a few
         // units below the chessboard plane.
-        const float splat_scale = 30.0f;
+        // Splat-cloud world transform. Marble's coordinate system has
+        // -Y as up; the negative Y in mat4_scale flips it. The room
+        // is centred on the chessboard (X/Z bbox midpoint → world
+        // origin) and the floor is anchored to the TABLE's bottom
+        // (Y_floor = -8.878, which is BOARD_Y + TABLE_TOP_Y -
+        // table_height = 0 - 0.608 - 8.27) so the table reads as
+        // sitting on the splat-room floor.
+        //
+        // Scale was 30× but the room then dwarfed the chessboard —
+        // tiny camera moves caused the room features to swing
+        // dramatically while the chessboard barely shifted, which
+        // reads as the rotation "not lining up". Drop to 15× so the
+        // room's footprint is ~33 units (about 3.7× the chessboard's
+        // 9-unit footprint) — tight enough that pivoting around the
+        // board doesn't decouple the room visually.
+        const float splat_scale = 15.0f;
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
-        const float floor_world_y = -7.0f;
+        const float floor_world_y = -8.878f;
         const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
         const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale;
         Mat4 splat_model = mat4_multiply(
@@ -3592,8 +3607,13 @@ void renderer_draw(GameState& gs,
         draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
     }
 
-    // Captured pieces
+    // Captured pieces. piece_model_matrix puts the piece's bottom on
+    // the BOARD playing surface (Y=BOARD_Y), but captured pieces are
+    // displayed off the board, alongside the chessboard frame, where
+    // the table is the actual surface they should rest on. Shift the
+    // bottom from BOARD_Y down to the table-top plane.
     {
+        constexpr float TABLE_TOP_Y = -0.608f;
         float cs = 0.30f;
         int wc = 0, bc = 0;
         for (const auto& bp : gs.pieces) {
@@ -3605,6 +3625,9 @@ void renderer_draw(GameState& gs,
             if (bp.is_white) { px = 5.2f + ci*0.7f; pz = 3.5f - ri*0.7f; }
             else { px = -5.2f - ci*0.7f; pz = -3.5f + ri*0.7f; }
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
+            // Drop the piece so its bottom rests on the table.
+            pm = mat4_multiply(
+                mat4_translate(0.0f, TABLE_TOP_Y - BOARD_Y, 0.0f), pm);
             if (bp.is_white) set_material(g_program, 0.85f,0.82f,0.74f, 0,0.4f,0.7f, 0);
             else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.45f,0.7f, 0);
             draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
