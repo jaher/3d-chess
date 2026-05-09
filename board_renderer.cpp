@@ -1065,10 +1065,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_splat_program       = create_program(splat_vs_src,       splat_fs_src);
     g_splat_blit_program  = create_program(splat_blit_vs_src,  splat_blit_fs_src);
     // Marble Gaussian splat scene. Pick the heaviest tier the
-    // platform can handle: full_res on desktop, 100k on web (the
-    // packed-texture render path supports either, but the web build
-    // pays for the SPZ payload as a preload so we keep the smallest
-    // tier there).
+    // platform can handle: full_res on desktop, 500k on web (the
+    // packed-texture render path supports either; the web build
+    // pays for the SPZ payload as a preload — 7.2 MB at the 500k
+    // tier vs 1.2 MB at 100k — but the medieval-room interior
+    // reads with much more detail at 500k, which the user is
+    // actually here to see).
     {
         const char* splat_paths[] = {
 #ifndef __EMSCRIPTEN__
@@ -1076,8 +1078,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             "world_labs/medieval_room/splat_500k.spz",
             "world_labs/medieval_room/splat_100k.spz",
 #else
-            "/world_labs/medieval_room/splat_100k.spz",
-            "world_labs/medieval_room/splat_100k.spz",
+            "/world_labs/medieval_room/splat_500k.spz",
+            "world_labs/medieval_room/splat_500k.spz",
 #endif
         };
         for (const char* p : splat_paths) {
