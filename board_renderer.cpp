@@ -104,8 +104,8 @@ static constexpr float CLOCK_LEVER_PRESS = 0.15f;
 // their own hub centroid (the hub is at the lower-Y end of the
 // hand's bounding box). Rotation happens around local Z, the
 // dial-face normal. Numbers come from tools/split_clock_dials.py.
-static const float CLOCK_HAND_LONG_L_PIVOT[3]  = { -0.6456f, 0.6999f, 0.4224f };
-static const float CLOCK_HAND_LONG_R_PIVOT[3]  = {  0.6422f, 0.6999f, 0.4224f };
+static const float CLOCK_HAND_LONG_L_PIVOT[3]  = { -0.6456f, 0.6999f, 0.4036f };
+static const float CLOCK_HAND_LONG_R_PIVOT[3]  = {  0.6422f, 0.6999f, 0.4036f };
 static const float CLOCK_HAND_SHORT_L_PIVOT[3] = { -0.8003f, 0.5086f, 0.3930f };
 static const float CLOCK_HAND_SHORT_R_PIVOT[3] = {  0.4876f, 0.5086f, 0.3929f };
 

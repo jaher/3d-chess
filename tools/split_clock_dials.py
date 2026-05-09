@@ -140,16 +140,29 @@ def near_pivot(cen, pivot):
             + (cen[1] - pivot[1]) ** 2) ** 0.5 < PIVOT_RADIUS
 
 
-def matches_needle(cen, ext, *, length_min, length_max=10.0):
-    """A needle: thin shape (in-plane aspect ratio above ~3) above
-    the dial face plane, with in-plane length within the requested
-    band. Length bands let us tell the long minute hand (≈0.30)
-    apart from the short sub-dial hand (≈0.12)."""
+def matches_needle(cen, ext, *, length_min, length_max=10.0,
+                   min_width=0.0, max_aspect=99.0):
+    """A needle component above the dial face plane (Z > 0.385)
+    whose in-plane longest extent falls in [length_min, length_max].
+
+    `min_width` lets the long-hand band reject thin straight tick
+    marks: a diagonal clock hand at rest has BOTH X and Y extents
+    substantial (since the bbox spans the diagonal), while a static
+    vertical reference bar has one extent ~0.03. Setting
+    min_width=0.10 excludes the bar.
+
+    `max_aspect` similarly excludes very-thin shapes when set."""
     if cen[2] < NEEDLE_Z_MIN:
         return False
     in_plane = sorted([ext[0], ext[1]])
     aspect = in_plane[1] / max(in_plane[0], 1e-9)
-    return aspect > 3.0 and length_min < in_plane[1] < length_max
+    if not (length_min < in_plane[1] < length_max):
+        return False
+    if in_plane[0] < min_width:
+        return False
+    if aspect > max_aspect:
+        return False
+    return True
 
 
 def near_dial(cen, dial_pivot, max_radial=0.25):
@@ -174,18 +187,27 @@ def hub_center(tris, bbox_ext):
     return (hx, hy, hz)
 
 
-def find_match(comps, tris, dial_pivot, length_min, length_max=10.0):
+def find_match(comps, tris, dial_pivot, length_min, length_max=10.0,
+               min_width=0.0, max_aspect=99.0, max_pivot_dist=0.30,
+               max_tris=500):
     """Return the longest connected component that matches the
-    needle heuristic for the given length band, or None. Each
-    return tuple is (ci, idxs, ext, cen, hub)."""
+    needle heuristic for the given length band, or None.
+    `max_tris` filters out big rings/bezels — clock hands are
+    light geometry (50-300 tris) while bezels are 5000+. Sorting
+    is by max in-plane extent descending — when multiple candidates
+    pass, the visually-longest wins."""
     candidates = []
     for ci, idxs in enumerate(comps):
+        if len(idxs) > max_tris:
+            continue
         ext, cen, sub = comp_info(tris, idxs)
         if not matches_needle(cen, ext,
                               length_min=length_min,
-                              length_max=length_max):
+                              length_max=length_max,
+                              min_width=min_width,
+                              max_aspect=max_aspect):
             continue
-        if not near_dial(cen, dial_pivot):
+        if not near_dial(cen, dial_pivot, max_radial=max_pivot_dist):
             continue
         hub = hub_center(sub, ext)
         candidates.append((ci, idxs, ext, cen, hub))
@@ -236,16 +258,29 @@ def main():
     comps.sort(key=len, reverse=True)
     print(f"  {len(comps)} connected components")
 
-    # Long minute hands: thin radial shapes spanning most of the
-    # dial radius (length ≳ 0.20). Short sub-dial hands: thin
-    # shapes mounted off-pivot at lower-left of the dial face,
-    # length 0.08 < l < 0.15.
-    long_l  = find_match(comps, tris, DIAL_PIVOT_L, length_min=0.20)
-    long_r  = find_match(comps, tris, DIAL_PIVOT_R, length_min=0.20)
+    # Long minute hands: flat diagonal hand-shapes (NOT thin tick
+    # marks). The visible long hand has bbox extents ~0.375×0.237
+    # because it sits diagonally at rest, so its bbox WIDTH (the
+    # smaller of X/Y) is substantial. min_width=0.10 rejects the
+    # thin static bar comp 34/35 (X extent 0.033) which I'd
+    # previously mis-extracted. max_pivot_dist=0.30 covers the
+    # diagonal centre.
+    long_l  = find_match(comps, tris, DIAL_PIVOT_L,
+                         length_min=0.30, length_max=0.50,
+                         min_width=0.10,
+                         max_pivot_dist=0.30, max_tris=200)
+    long_r  = find_match(comps, tris, DIAL_PIVOT_R,
+                         length_min=0.30, length_max=0.50,
+                         min_width=0.10,
+                         max_pivot_dist=0.30, max_tris=200)
+    # Short sub-dial hands: thin radial shapes mounted off-pivot
+    # at the lower-left of the dial face (length 0.08-0.20).
     short_l = find_match(comps, tris, DIAL_PIVOT_L,
-                         length_min=0.08, length_max=0.20)
+                         length_min=0.08, length_max=0.20,
+                         max_aspect=10.0)
     short_r = find_match(comps, tris, DIAL_PIVOT_R,
-                         length_min=0.08, length_max=0.20)
+                         length_min=0.08, length_max=0.20,
+                         max_aspect=10.0)
 
     for label, m in (("long L",  long_l), ("long R",  long_r),
                      ("short L", short_l), ("short R", short_r)):
