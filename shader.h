@@ -25,6 +25,8 @@ extern const char* skybox_vs_src;
 extern const char* skybox_fs_src;
 extern const char* splat_vs_src;
 extern const char* splat_fs_src;
+extern const char* splat_blit_vs_src;
+extern const char* splat_blit_fs_src;
 
 GLuint compile_shader(GLenum type, const char* src);
 GLuint create_program(const char* vs_src, const char* fs_src);

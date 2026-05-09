@@ -863,6 +863,37 @@ void main() {
 )";
 
 // ---------------------------------------------------------------------------
+// Splat-backdrop blit. The splat scene is rendered into a single-sample
+// off-screen FBO with its own depth + blend state; this shader simply
+// pastes that FBO's colour texture into the main pass as a full-screen
+// quad, isolating the splat-specific GL state from every subsequent
+// draw (chessboard, pieces, UI). Pure pass-through — no shading, no
+// gamma, no alpha.
+// ---------------------------------------------------------------------------
+const char* splat_blit_vs_src = GLSL_VERSION R"(
+layout(location = 0) in vec2 aPos;
+
+out vec2 vUV;
+
+void main() {
+    vUV = aPos * 0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+const char* splat_blit_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vUV;
+
+out vec4 FragColor;
+
+uniform sampler2D uTex;
+
+void main() {
+    FragColor = texture(uTex, vUV);
+}
+)";
+
+// ---------------------------------------------------------------------------
 // Compilation helpers
 // ---------------------------------------------------------------------------
 static void shader_log_error(const char* kind, const char* stage,

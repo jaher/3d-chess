@@ -257,6 +257,24 @@ static GLuint              g_splat_vao      = 0;
 // the cloud relative to the chessboard. Filled in by load_splats().
 static float g_splats_bbox_min[3] = {0, 0, 0};
 static float g_splats_bbox_max[3] = {0, 0, 0};
+
+// Off-screen splat-backdrop FBO. The splat draw runs here in
+// isolation — its premultiplied-α blend, depth-mask-off, scissor
+// state, and texture-unit bindings can't leak into the main pass
+// because the main pass binds a different FBO and never sees them.
+// Colour is RGBA8 single-sample; depth is DEPTH_COMPONENT24 so the
+// splat shader's per-splat depth test still works for self-occlusion
+// inside the cloud. Resized lazily.
+static GLuint g_splat_bg_fbo       = 0;
+static GLuint g_splat_bg_color_tex = 0;
+static GLuint g_splat_bg_depth_tex = 0;
+static int    g_splat_bg_w         = 0;
+static int    g_splat_bg_h         = 0;
+// Pass-through texture-blit program used to paste g_splat_bg_color_tex
+// into the main pass as a full-screen quad before the chessboard is
+// drawn. Same role the panorama skybox shader fills in the no-splat
+// path.
+static GLuint g_splat_blit_program = 0;
 // Multisample FBO that the 3D scene actually renders into. Resolved
 // directly into the default framebuffer before UI overlays draw.
 // GtkGLArea doesn't expose MSAA on the default FB, so we get it via
@@ -329,6 +347,52 @@ static void ensure_reflection_fbo(int w, int h) {
 
     g_reflection_w = w;
     g_reflection_h = h;
+}
+
+// Off-screen FBO that the splat pass renders into. Same shape as
+// the reflection FBO (single-sample colour + depth textures): the
+// colour texture gets sampled by g_splat_blit_program when we paste
+// the backdrop into the main pass. Recreated lazily on resize.
+static void ensure_splat_bg_fbo(int w, int h) {
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    if (g_splat_bg_fbo && g_splat_bg_w == w && g_splat_bg_h == h) return;
+
+    if (g_splat_bg_fbo == 0)       glGenFramebuffers(1, &g_splat_bg_fbo);
+    if (g_splat_bg_color_tex == 0) glGenTextures(1, &g_splat_bg_color_tex);
+    if (g_splat_bg_depth_tex == 0) glGenTextures(1, &g_splat_bg_depth_tex);
+
+    glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, g_splat_bg_depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_splat_bg_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, g_splat_bg_color_tex, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, g_splat_bg_depth_tex, 0);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr,
+                "ensure_splat_bg_fbo: incomplete FBO 0x%x at %dx%d\n",
+                st, w, h);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    g_splat_bg_w = w;
+    g_splat_bg_h = h;
 }
 
 // Multisample FBO used as the actual 3D-pass target. Color +
@@ -998,7 +1062,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_text_program = create_program(text_vs_src, text_fs_src);
     g_etched_label_program = create_program(etched_vs_src, etched_fs_src);
     g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
-    g_splat_program = create_program(splat_vs_src, splat_fs_src);
+    g_splat_program       = create_program(splat_vs_src,       splat_fs_src);
+    g_splat_blit_program  = create_program(splat_blit_vs_src,  splat_blit_fs_src);
     // Marble Gaussian splat scene. Pick the heaviest tier the
     // platform can handle: full_res on desktop, 100k on web (the
     // packed-texture render path supports either, but the web build
@@ -2861,9 +2926,12 @@ void renderer_draw(GameState& gs,
     // still desktop-only because its JPEG decode goes through
     // stb_image, which we only link into the desktop build.
     //
-    // Drawn AFTER the clear and BEFORE the chess geometry, with
-    // premultiplied-α blend on / depth-writes off so back-to-front
-    // splat compositing works without occluding the chessboard.
+    // The splat draw runs in its OWN single-sample FBO
+    // (g_splat_bg_fbo) so its premultiplied-α blend, depth-mask-off
+    // scissor, and texture-unit bindings can't leak into the main
+    // pass. After the splat pass we re-bind the main FBO and paste
+    // g_splat_bg_color_tex as a full-screen quad — same role the
+    // panorama skybox shader plays in the no-splat path.
     if (!force_panorama_only && g_packed.count > 0 && g_splat_program) {
         // Camera direction (world-space) — used by Spark's "did the
         // camera move enough to re-sort?" early-out.
@@ -2880,10 +2948,6 @@ void renderer_draw(GameState& gs,
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
-        // After Y flip, splat Y_max maps to the FLOOR (most negative
-        // world Y). Push the floor well below the chessboard so
-        // the table reads as elevated mid-room rather than sitting
-        // on the floor.
         const float floor_world_y = -7.0f;
         const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
         const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale;
@@ -2891,13 +2955,18 @@ void renderer_draw(GameState& gs,
             mat4_translate(splat_cx, splat_cy, splat_cz),
             mat4_scale(splat_scale, -splat_scale, splat_scale));
 
-        // Radial sort: distance from camera world-position, not
-        // projection along view direction (matches Spark's
-        // sortRadial=true default — no edge-of-frustum sort
-        // artefacts at wide FOV).
+        // Radial sort using the camera's world position.
         float cam_pos[3] = { cx, cy, cz };
         packed_splats_sort_and_upload(g_packed, cam_pos, vd,
                                       splat_model.m, g_source_splats);
+
+        // ----- Render splats into the dedicated bg FBO -----
+        ensure_splat_bg_fbo(width, height);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_splat_bg_fbo);
+        glViewport(0, 0, width, height);
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glUseProgram(g_splat_program);
         glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uView"),
@@ -2911,11 +2980,6 @@ void renderer_draw(GameState& gs,
         glUniform2f(glGetUniformLocation(g_splat_program, "uRenderSize"),
                     static_cast<float>(width),
                     static_cast<float>(height));
-        // Match Spark's defaults: ~2.83σ quad extent (sqrt(8)),
-        // 512-px max screen radius, tiny min-alpha cutoff. The α
-        // curve and adjStdDev expansion happen inside the vertex
-        // shader so the splat's pixel-space size grows with
-        // density automatically.
         glUniform1f(glGetUniformLocation(g_splat_program, "uMaxStdDev"),
                     std::sqrt(8.0f));
         glUniform1f(glGetUniformLocation(g_splat_program, "uMaxPixelRadius"), 512.0f);
@@ -2926,9 +2990,6 @@ void renderer_draw(GameState& gs,
         glUniform1i(glGetUniformLocation(g_splat_program, "uTexWidth"),
                     g_packed.tex_width);
 
-        // Bind the three splat textures (A/B/ordering). texelFetch
-        // in the vertex shader pulls per-splat data through the
-        // ordering indirection.
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g_packed.texA);
         glUniform1i(glGetUniformLocation(g_splat_program, "uSplatA"), 0);
@@ -2940,34 +3001,43 @@ void renderer_draw(GameState& gs,
         glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
         glActiveTexture(GL_TEXTURE0);
 
-        // Premultiplied alpha so blending picks up the saturating
-        // α curve correctly (Spark's default). Depth test on so the
-        // chessboard occludes splats behind it, depth writes off so
-        // back-to-front splat compositing still works.
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
+        glBindVertexArray(g_splat_vao);
+        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
+        glBindVertexArray(0);
+
+        // ----- Done with splat-bg FBO. Rebind main pass + paste -----
+        glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);
+        glViewport(mp_x, mp_y, width, height);
+        // Reset every state the splat pass touched. Subsequent
+        // chessboard / piece / UI passes assume the panorama-pass
+        // exit state: blend OFF, depth test ON with depth writes ON,
+        // scissor disabled. The blit shader below sets its own
+        // depth-test-off + blend-off too, then we restore.
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_DEPTH_TEST);
         if (main_pass_is_default) {
             glScissor(sub_x, sub_y, width, height);
             glEnable(GL_SCISSOR_TEST);
         }
-        glBindVertexArray(g_splat_vao);
-        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
+
+        // Paste the splat colour into the main pass as a fullscreen
+        // quad. Pure overwrite — no alpha, no depth, no shading.
+        glUseProgram(g_splat_blit_program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);
+        glUniform1i(glGetUniformLocation(g_splat_blit_program, "uTex"), 0);
+        glBindVertexArray(g_fullscreen_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
-        // Restore the GL state every other draw block in this file
-        // expects. The chessboard mesh + piece passes that follow
-        // start from blend OFF + depth writes ON; if we leak any of
-        // {blend on, premultiplied func, depth-mask false} into them
-        // we get visible bugs (the grid composites on top of the
-        // splat-coloured framebuffer with the wrong factor, or the
-        // board's own depth doesn't clip later geometry correctly).
-        // Mirror the panorama-pass exit state below — depth back on,
-        // blend OFF, scissor disabled.
-        glDepthMask(GL_TRUE);
-        glDisable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
         if (main_pass_is_default) glDisable(GL_SCISSOR_TEST);
+        glEnable(GL_DEPTH_TEST);
     }
 #ifndef __EMSCRIPTEN__
     else
