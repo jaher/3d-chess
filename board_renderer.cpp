@@ -3615,21 +3615,35 @@ void renderer_draw(GameState& gs,
     // bottom from BOARD_Y down to the table-top plane.
     {
         constexpr float TABLE_TOP_Y = -0.608f;
-        // Render captured pieces at full board scale on the -X side
-        // of the table — the chess clock occupies the +X side, so
-        // putting captures there used to make pieces intersect the
-        // clock body. Both colours now share the -X strip, split by
-        // Z: white fills from the +Z (far) end of the board, black
-        // fills from the -Z (near) end, so they meet in the middle
-        // only in the unlikely case that almost every piece is taken.
+        // Captured pieces sit on the -X side (opposite the clock at
+        // +X) on the side of the player whose colour they are — a
+        // captured white piece sits near white's home rank, a
+        // captured black piece sits near black's home rank. White
+        // plays from -Z (rows 0–1), black plays from +Z (rows 6–7).
+        //
+        // Each colour gets an exclusive Z band so the two stacks
+        // never collide as the game progresses:
+        //   white-colour pieces (near -Z): rows at Z = -0.5, -1.5, -2.5, -3.5
+        //   black-colour pieces (near +Z): rows at Z = 3.5, 2.5, 1.5, 0.5
+        // 4 z-rows × 2 cols = 8 slots per colour before overflow.
+        // The 9th+ capture wraps to a third/fourth column further
+        // out (X = -7.2, -8.2) which slightly overhangs the table —
+        // an acceptable degradation for the rare game where one side
+        // loses almost every piece.
         int wc = 0, bc = 0;
         for (const auto& bp : gs.pieces) {
             if (bp.alive) continue;
             float s = BASE_PIECE_SCALE * piece_scale[bp.type];
             int& cnt = bp.is_white ? wc : bc;
-            int ri = cnt / 2, ci = cnt % 2;
-            float px = -5.2f - ci*1.0f;
-            float pz = bp.is_white ? (3.5f - ri*1.0f) : (-3.5f + ri*1.0f);
+            constexpr int ROWS_PER_BLOCK = 4;
+            constexpr int COLS_PER_BLOCK = 2;
+            constexpr int SLOTS_PER_BLOCK = ROWS_PER_BLOCK * COLS_PER_BLOCK;
+            int block = cnt / SLOTS_PER_BLOCK;
+            int local = cnt % SLOTS_PER_BLOCK;
+            int ri = local / COLS_PER_BLOCK;
+            int ci = local % COLS_PER_BLOCK;
+            float px = -5.2f - ci*1.0f - block*2.0f;
+            float pz = bp.is_white ? (-0.5f - ri*1.0f) : (3.5f - ri*1.0f);
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
             // Drop the piece so its bottom rests on the table.
             pm = mat4_multiply(
