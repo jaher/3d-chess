@@ -81,7 +81,10 @@ void renderer_draw(GameState& gs,
                    // Defaults: white UP, black DOWN — matches the
                    // pre-first-move state of an analog chess clock.
                    float white_lever_blend = 1.0f,
-                   float black_lever_blend = 0.0f);
+                   float black_lever_blend = 0.0f,
+                   // P-key toggle: when true, the renderer uses the
+                   // flat panorama skybox instead of the splat scene.
+                   bool force_panorama_only = false);
 
 // Draws a thin white border around the current viewport. Called
 // after renderer_draw in multi-game mode to mark the active board
