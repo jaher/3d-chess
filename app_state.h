@@ -99,7 +99,6 @@ enum AppKey {
     KEY_A,
     KEY_M,
     KEY_S,   // toggles cartoon outline in a live game / challenge
-    KEY_P,   // toggles panorama-only background (skip splat scene)
 };
 
 // ===========================================================================
@@ -421,8 +420,8 @@ struct AppState {
     // behind the chess board so the table sits inside an actual
     // room. When false the renderer falls back to the panorama
     // skybox on desktop and a dark clear on web. Toggled from
-    // Options → "Gaussian splats" or the P key. Persists across
-    // sessions via app_settings_save.
+    // Options → "Gaussian splats". Persists across sessions via
+    // app_settings_save.
     bool splats_enabled = true;
 
 #ifndef __EMSCRIPTEN__

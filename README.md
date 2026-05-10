@@ -35,7 +35,7 @@ A 3D chess game in C++ that runs natively on Linux (GTK+3 + OpenGL) and in the b
 - **Captured pieces** displayed on the sides of the board
 - **Board coordinates** (a-h, 1-8) rendered with anti-aliased fonts (Cairo/Pango on desktop, `stb_truetype` in the browser)
 - **Interactive main menu** — grab and fling the tumbling chess pieces around; release velocity follows the cursor/finger trajectory
-- **Options screen** — reached from the main menu **Options** button; toggles for voice input, TTS, move hints, the Gaussian-splat backdrop (**P** key shortcut), the Chessnut Move bridge, and BLE verbose log
+- **Options screen** — reached from the main menu **Options** button; toggles for voice input, TTS, move hints, the Gaussian-splat backdrop, the Chessnut Move bridge, and BLE verbose log
 - **Voice move input** (desktop only) — hold **SPACE** during your turn and speak a move ("knight d3", "e4", "castle kingside"). Release to transcribe and play. Powered by an on-device [whisper.cpp](https://github.com/ggerganov/whisper.cpp) build of [distil-small.en](https://huggingface.co/distil-whisper/distil-small.en) (~166 MB). The first press lazily loads the model; if no model file is present the status bar shows a hint to run `make fetch-whisper-model`. CPU inference works out of the box; opt-in CUDA/Metal/Vulkan acceleration via `make WHISPER_BACKEND=cuda` (etc.)
 
 ## Dependencies

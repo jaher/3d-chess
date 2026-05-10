@@ -2084,19 +2084,6 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
-    // P-key shortcut for the Gaussian-splat backdrop toggle. Same
-    // effect as flipping it from Options → "Gaussian splats", but
-    // available without leaving the game so you can A/B the splat
-    // cloud against the panorama mid-position.
-    if (key == KEY_P) {
-        a.splats_enabled = !a.splats_enabled;
-        std::printf("[render] gaussian-splat backdrop: %s\n",
-                    a.splats_enabled ? "ON" : "OFF");
-        app_settings_save(a);
-        queue_redraw(a);
-        return;
-    }
-
     if (a.mode == MODE_CHALLENGE) {
         if (key == KEY_ESCAPE) { app_reset_challenge_puzzle(a); return; }
         if (key == KEY_M)      { app_enter_menu(a); return; }
