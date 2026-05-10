@@ -282,6 +282,13 @@ static GLuint g_splat_bg_color_tex = 0;
 static GLuint g_splat_bg_depth_tex = 0;
 static int    g_splat_bg_w         = 0;
 static int    g_splat_bg_h         = 0;
+// True when g_splat_bg_color_tex holds a valid splat backdrop for
+// the current frame's camera. Cleared at frame start by
+// renderer_begin_frame(); set after each successful splat draw. In
+// multi-game mode all boards share the same camera (rot_x/rot_y/zoom
+// and the room is shake-immune), so the first board pays the
+// instanced-splat cost and the rest reuse the cached colour texture.
+static bool   g_splat_bg_cache_valid = false;
 // Pass-through texture-blit program used to paste g_splat_bg_color_tex
 // into the main pass as a full-screen quad before the chessboard is
 // drawn. Same role the panorama skybox shader fills in the no-splat
@@ -405,6 +412,18 @@ static void ensure_splat_bg_fbo(int w, int h) {
 
     g_splat_bg_w = w;
     g_splat_bg_h = h;
+    // Texture storage was just reallocated, so any cached frame is
+    // gone — force the next splat draw to actually run.
+    g_splat_bg_cache_valid = false;
+}
+
+// Call once at the start of every render frame, BEFORE any
+// renderer_draw. Invalidates the splat-backdrop cache so the next
+// renderer_draw will re-render it; subsequent renderer_draw calls in
+// the same frame (e.g. multi-game mode) will reuse the cached
+// colour texture.
+extern "C" void renderer_begin_frame() {
+    g_splat_bg_cache_valid = false;
 }
 
 // Multisample FBO used as the actual 3D-pass target. Color +
@@ -3042,72 +3061,90 @@ void renderer_draw(GameState& gs,
             mat4_translate(splat_cx, splat_cy, splat_cz),
             mat4_scale(splat_scale, -splat_scale, splat_scale));
 
-        // Radial sort using the camera's world position.
-        float cam_pos[3] = { cx, cy, cz };
-        packed_splats_sort_and_upload(g_packed, cam_pos, vd,
-                                      splat_model.m, g_source_splats);
-
-        // ----- Render splats into the dedicated bg FBO -----
+        // ----- Render splats into the dedicated bg FBO (skipped if
+        // an earlier board in this frame already populated it) -----
         ensure_splat_bg_fbo(width, height);
-        glBindFramebuffer(GL_FRAMEBUFFER, g_splat_bg_fbo);
-        glViewport(0, 0, width, height);
-        glDisable(GL_SCISSOR_TEST);
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (!g_splat_bg_cache_valid) {
+            // The room is shake-immune — board_shake is meant to
+            // wobble the table, not the world around it. Build a
+            // shake-less view here so the cached splat output is
+            // identical for every board in a multi-game frame
+            // (otherwise the active board's shake would also smear
+            // the backdrop reused by inactive boards).
+            Mat4 view_no_shake = mat4_multiply(
+                mat4_translate(0, 0, -zoom),
+                mat4_multiply(mat4_rotate_x(rot_x * deg2rad),
+                              mat4_multiply(mat4_rotate_y(rot_y * deg2rad),
+                                            mat4_translate(0, -BOARD_Y, 0))));
 
-        glUseProgram(g_splat_program);
-        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uView"),
-                           1, GL_FALSE, view.m);
-        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uProjection"),
-                           1, GL_FALSE, proj.m);
-        glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uModel"),
-                           1, GL_FALSE, splat_model.m);
-        glUniform1f(glGetUniformLocation(g_splat_program, "uModelScale"),
-                    splat_scale);
-        glUniform2f(glGetUniformLocation(g_splat_program, "uRenderSize"),
-                    static_cast<float>(width),
-                    static_cast<float>(height));
-        glUniform1f(glGetUniformLocation(g_splat_program, "uMaxStdDev"),
-                    std::sqrt(8.0f));
-        glUniform1f(glGetUniformLocation(g_splat_program, "uMaxPixelRadius"), 512.0f);
-        glUniform1f(glGetUniformLocation(g_splat_program, "uMinAlpha"), 1.0f / 255.0f);
-        glUniform1f(glGetUniformLocation(g_splat_program, "uFalloff"), 1.0f);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uEnable2DGS"), 0);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uLogDepth"), 0);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uTexWidth"),
-                    g_packed.tex_width);
+            // Radial sort using the camera's world position.
+            float cam_pos[3] = { cx, cy, cz };
+            packed_splats_sort_and_upload(g_packed, cam_pos, vd,
+                                          splat_model.m, g_source_splats);
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_packed.texA);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uSplatA"), 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, g_packed.texB);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uSplatB"), 1);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, g_packed.texOrder);
-        glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
-        glActiveTexture(GL_TEXTURE0);
+            glBindFramebuffer(GL_FRAMEBUFFER, g_splat_bg_fbo);
+            glViewport(0, 0, width, height);
+            glDisable(GL_SCISSOR_TEST);
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glBindVertexArray(g_splat_vao);
-        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
-        glBindVertexArray(0);
+            glUseProgram(g_splat_program);
+            glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uView"),
+                               1, GL_FALSE, view_no_shake.m);
+            glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uProjection"),
+                               1, GL_FALSE, proj.m);
+            glUniformMatrix4fv(glGetUniformLocation(g_splat_program, "uModel"),
+                               1, GL_FALSE, splat_model.m);
+            glUniform1f(glGetUniformLocation(g_splat_program, "uModelScale"),
+                        splat_scale);
+            glUniform2f(glGetUniformLocation(g_splat_program, "uRenderSize"),
+                        static_cast<float>(width),
+                        static_cast<float>(height));
+            glUniform1f(glGetUniformLocation(g_splat_program, "uMaxStdDev"),
+                        std::sqrt(8.0f));
+            glUniform1f(glGetUniformLocation(g_splat_program, "uMaxPixelRadius"), 512.0f);
+            glUniform1f(glGetUniformLocation(g_splat_program, "uMinAlpha"), 1.0f / 255.0f);
+            glUniform1f(glGetUniformLocation(g_splat_program, "uFalloff"), 1.0f);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uEnable2DGS"), 0);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uLogDepth"), 0);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uTexWidth"),
+                        g_packed.tex_width);
 
-        // The splat shader sampled g_packed.texA / texB / texOrder
-        // as RGBA32UI / R32UI integer textures on units 0/1/2. Leaving
-        // those integer textures bound on units 1/2 is dangerous — if
-        // any later shader's sampler2D defaults to those units (or
-        // gets glUniform1i'd to one of them and we forgot to set the
-        // expected float texture), it samples garbage. Unbind both
-        // proactively. Unit 0 gets re-bound by the blit below.
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_packed.texA);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uSplatA"), 0);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, g_packed.texB);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uSplatB"), 1);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, g_packed.texOrder);
+            glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
+            glActiveTexture(GL_TEXTURE0);
+
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glBindVertexArray(g_splat_vao);
+            glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, 4, g_packed.count);
+            glBindVertexArray(0);
+
+            // The splat shader sampled g_packed.texA / texB / texOrder
+            // as RGBA32UI / R32UI integer textures on units 0/1/2.
+            // Leaving those integer textures bound on units 1/2 is
+            // dangerous — if any later shader's sampler2D defaults to
+            // those units (or gets glUniform1i'd to one of them and we
+            // forgot to set the expected float texture), it samples
+            // garbage. Unbind both proactively. Unit 0 gets re-bound
+            // by the blit below.
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE0);
+
+            g_splat_bg_cache_valid = true;
+        }
 
         // ----- Done with splat-bg FBO. Rebind main pass + paste -----
         glBindFramebuffer(GL_FRAMEBUFFER, main_pass_fbo);

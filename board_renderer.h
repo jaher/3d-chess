@@ -50,6 +50,15 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // sub-viewport dims. For single-game (N=1) callers pass (0, 0, w, h)
 // — identical to the previous behaviour. For 2x2 grid callers pass
 // per-quadrant rects from viewport_for_game().
+// Call exactly once at the start of every render frame, BEFORE any
+// renderer_draw call. Invalidates per-frame caches inside the
+// renderer (currently the splat-backdrop colour texture). In multi-
+// game mode this lets the first board pay the splat cost while the
+// remaining boards reuse the cached colour texture, since every
+// board shares the same camera (rot_x/rot_y/zoom) and the room is
+// shake-immune by design.
+extern "C" void renderer_begin_frame();
+
 void renderer_draw(GameState& gs,
                    int sub_x, int sub_y,
                    int width, int height,

@@ -3459,6 +3459,13 @@ static void render_challenge_transition_overlay(AppState& a, int width, int heig
 void app_render(AppState& a, int width, int height) {
     int64_t now = now_us(a);
 
+    // Reset per-frame renderer caches (currently the splat backdrop)
+    // before any draw goes out. In multi-game mode the first board
+    // pays the splat cost and the rest reuse the cached colour
+    // texture — every board shares the same camera, and the room is
+    // shake-immune by design.
+    renderer_begin_frame();
+
     if (a.mode == MODE_MENU)             { render_menu(a, width, height, now); return; }
     if (a.mode == MODE_PREGAME)          { render_pregame(a, width, height);   return; }
     if (a.mode == MODE_CHALLENGE_SELECT) { render_challenge_select(a, width, height); return; }
