@@ -4185,6 +4185,19 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         ~PrevUpdater() { target = source; }
     } prev_guard{prev, sensor};
 
+    // Cancel a pending settle-window candidate by default — any
+    // path that returns without reaching the apply gate (or that
+    // re-stashes the candidate) means the move isn't currently
+    // confirmable, so the wait should restart from scratch on the
+    // next confirmation frame. The gate flips ``keep`` true.
+    struct PendingResetGuard {
+        AppState& a;
+        bool keep = false;
+        ~PendingResetGuard() {
+            if (!keep) a.chessnut_pending_first_seen_us = 0;
+        }
+    } pending_guard{a};
+
     // Compute deltas against the *previous* sensor frame (the move
     // the user actually made on the board) AND the static
     // disagreements with the digital state (purely diagnostic).
@@ -4573,6 +4586,51 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     }
 
     bool capture = gs.grid[to->row][to->col] >= 0;
+
+    // Settle window — the move is legal, but we don't commit until
+    // the same from→to pair has been visible on the sensor for
+    // ~1.5 s. Lets the user park a piece tentatively, lift it again,
+    // and re-place elsewhere without the first placement materialising
+    // as the recorded move. Frames that don't re-confirm the same
+    // candidate flow through the PendingResetGuard above and clear
+    // the stash, so the wait restarts from scratch.
+    constexpr int64_t kChessnutMoveSettleUs = 1'500'000;  // 1.5 s
+    const bool same_pending =
+        a.chessnut_pending_first_seen_us != 0 &&
+        a.chessnut_pending_from_col == from->col &&
+        a.chessnut_pending_from_row == from->row &&
+        a.chessnut_pending_to_col   == to->col &&
+        a.chessnut_pending_to_row   == to->row;
+    if (!same_pending) {
+        a.chessnut_pending_first_seen_us = now;
+        a.chessnut_pending_from_col      = from->col;
+        a.chessnut_pending_from_row      = from->row;
+        a.chessnut_pending_to_col        = to->col;
+        a.chessnut_pending_to_row        = to->row;
+        std::fprintf(stderr,
+            "[chessnut/sensor] settle pending: %c%c%c%c — waiting %lld us\n",
+            static_cast<char>('a' + (7 - from->col)),
+            static_cast<char>('1' + from->row),
+            static_cast<char>('a' + (7 - to->col)),
+            static_cast<char>('1' + to->row),
+            static_cast<long long>(kChessnutMoveSettleUs));
+        pending_guard.keep = true;
+        return;
+    }
+    int64_t elapsed = now - a.chessnut_pending_first_seen_us;
+    if (elapsed < kChessnutMoveSettleUs) {
+        std::fprintf(stderr,
+            "[chessnut/sensor] settling %c%c%c%c — %lld of %lld us\n",
+            static_cast<char>('a' + (7 - from->col)),
+            static_cast<char>('1' + from->row),
+            static_cast<char>('a' + (7 - to->col)),
+            static_cast<char>('1' + to->row),
+            static_cast<long long>(elapsed),
+            static_cast<long long>(kChessnutMoveSettleUs));
+        pending_guard.keep = true;
+        return;
+    }
+
     std::fprintf(stderr,
         "[chessnut/sensor] applying move %c%c%c%c (capture=%d)\n",
         static_cast<char>('a' + (7 - from->col)),
@@ -4580,6 +4638,11 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         static_cast<char>('a' + (7 - to->col)),
         static_cast<char>('1' + to->row),
         capture ? 1 : 0);
+
+    // Settled and applied — clear the candidate so the next move
+    // starts a fresh wait. (PendingResetGuard would also do this,
+    // but being explicit reads better here.)
+    a.chessnut_pending_first_seen_us = 0;
 
     // Both single- and two-player sensor moves go through the
     // animation pipeline so the user sees the same arrow + piece-

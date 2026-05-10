@@ -499,6 +499,19 @@ struct AppState {
     // attempt with a permanent extra diff.
     std::array<std::array<char, 8>, 8> chessnut_last_sensor_grid{};
     bool chessnut_sensor_baseline_set = false;
+    // Settle window for human-driven moves. When the sensor grid
+    // first reveals a candidate move (clean from→to), we don't
+    // commit it immediately — instead we stash it here and wait for
+    // the same move to remain visible across subsequent sensor
+    // frames for ~1.5 s. Any other sensor change (piece picked up
+    // again, different square touched, layout drift) clears the
+    // stash so the user can keep adjusting until they're settled.
+    // *_us == 0 means "no candidate pending".
+    int64_t chessnut_pending_first_seen_us = 0;
+    int     chessnut_pending_from_col      = -1;
+    int     chessnut_pending_from_row      = -1;
+    int     chessnut_pending_to_col        = -1;
+    int     chessnut_pending_to_row        = -1;
     // Modal popup that blocks game input when the physical board
     // disagrees with the digital state at game start. Three flavours:
     //   * Positioning — motors are mid-animation moving pieces into
