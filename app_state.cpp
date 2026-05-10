@@ -4484,8 +4484,14 @@ void app_chessnut_apply_sensor_frame(AppState& a,
         std::string msg = std::string("Chessnut: ") + reason +
                           " — re-syncing board";
         set_status(a, msg.c_str());
-        audio_play(SoundEffect::Mistake);
-        if (invalid_chess_move) a.board_shake_start_us = now_us(a);
+        // Only beep + shake on a genuine chess-rule violation. Sensor
+        // noise (multi-piece junk, motor-in-transit phantoms, off-turn
+        // touches) gets the silent re-sync — the user usually didn't
+        // actually attempt anything wrong on those frames.
+        if (invalid_chess_move) {
+            audio_play(SoundEffect::Mistake);
+            a.board_shake_start_us = now_us(a);
+        }
         // Force-sync drives pieces back to the digital state. The
         // next ~2 s of NOTIFY frames land in the settling window
         // above and are ignored.
