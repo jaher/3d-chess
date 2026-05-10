@@ -2993,11 +2993,19 @@ static void tick_withdraw_flag(AppState& a, int64_t now) {
 // huge dt into a clock.
 static void tick_clock(AppState& a, int64_t now) {
     GameState& gs = cur_gs(a);
+    // While the chessnut "Positioning / Missing / WrongLayout" modal
+    // is up, the physical board isn't ready for play yet — motors
+    // are still moving pieces into the starting position, or pieces
+    // are missing / misplaced. Freeze the clock until the modal
+    // dismisses itself (which happens automatically once the sensor
+    // grid matches the digital state).
     const bool active = a.mode == MODE_PLAYING && a.clock_enabled && !gs.game_over &&
-                        !gs.analysis_mode && !a.withdraw_confirm_open;
+                        !gs.analysis_mode && !a.withdraw_confirm_open &&
+                        !a.chessnut_missing_modal_open;
     if (!active) {
         if (a.clock_enabled && (a.withdraw_confirm_open || gs.game_over ||
-                                gs.analysis_mode)) {
+                                gs.analysis_mode ||
+                                a.chessnut_missing_modal_open)) {
             cur(a).clock_last_tick_us = 0;
         }
         return;
