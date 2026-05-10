@@ -3616,34 +3616,42 @@ void renderer_draw(GameState& gs,
     {
         constexpr float TABLE_TOP_Y = -0.608f;
         // Captured pieces sit on the -X side (opposite the clock at
-        // +X) on the side of the player whose colour they are — a
-        // captured white piece sits near white's home rank, a
-        // captured black piece sits near black's home rank. White
-        // plays from -Z (rows 0–1), black plays from +Z (rows 6–7).
+        // +X) on the side of the player whose colour they are. Each
+        // colour gets a 2-col × 8-row strip = 16 slots — more than
+        // the 15 captures that are theoretically possible (every
+        // piece except the king).
         //
-        // Each colour gets an exclusive Z band so the two stacks
-        // never collide as the game progresses:
-        //   white-colour pieces (near -Z): rows at Z = -0.5, -1.5, -2.5, -3.5
-        //   black-colour pieces (near +Z): rows at Z = 3.5, 2.5, 1.5, 0.5
-        // 4 z-rows × 2 cols = 8 slots per colour before overflow.
-        // The 9th+ capture wraps to a third/fourth column further
-        // out (X = -7.2, -8.2) which slightly overhangs the table —
-        // an acceptable degradation for the rare game where one side
-        // loses almost every piece.
+        // Z layout — table spans Z ∈ [-7, +7]. We anchor each
+        // colour's far row at Z = ±5.7, leaving a ~1-unit table
+        // buffer on each end and a ~1-unit gap between the two
+        // colour boxes. World footprint of the largest piece (rook
+        // at full scale) is ~0.22 radius, so the slot centres stay
+        // ≈0.5 inside every box edge.
+        //
+        //   X cols (both colours): -5.2 (closer to board), -6.2
+        //   White rows: Z = -5.7, -5.0, -4.3, -3.6, -2.9, -2.2,
+        //       -1.5, -0.8
+        //   Black rows: Z = 5.7, 5.0, 4.3, 3.6, 2.9, 2.2, 1.5, 0.8
+        constexpr int   CAP_COLS        = 2;
+        constexpr int   CAP_ROWS        = 8;
+        constexpr float CAP_X_SPACING   = 1.0f;
+        constexpr float CAP_Z_SPACING   = 0.7f;
+        constexpr float CAP_X0          = -5.2f;
+        constexpr float CAP_WHITE_Z0    = -5.7f;
+        constexpr float CAP_BLACK_Z0    =  5.7f;
+        constexpr int   CAP_MAX_SLOTS   = CAP_COLS * CAP_ROWS;
+
         int wc = 0, bc = 0;
         for (const auto& bp : gs.pieces) {
             if (bp.alive) continue;
             float s = BASE_PIECE_SCALE * piece_scale[bp.type];
             int& cnt = bp.is_white ? wc : bc;
-            constexpr int ROWS_PER_BLOCK = 4;
-            constexpr int COLS_PER_BLOCK = 2;
-            constexpr int SLOTS_PER_BLOCK = ROWS_PER_BLOCK * COLS_PER_BLOCK;
-            int block = cnt / SLOTS_PER_BLOCK;
-            int local = cnt % SLOTS_PER_BLOCK;
-            int ri = local / COLS_PER_BLOCK;
-            int ci = local % COLS_PER_BLOCK;
-            float px = -5.2f - ci*1.0f - block*2.0f;
-            float pz = bp.is_white ? (-0.5f - ri*1.0f) : (3.5f - ri*1.0f);
+            int local = cnt < CAP_MAX_SLOTS ? cnt : CAP_MAX_SLOTS - 1;
+            int ri = local / CAP_COLS;
+            int ci = local % CAP_COLS;
+            float px = CAP_X0 - ci * CAP_X_SPACING;
+            float pz = bp.is_white ? (CAP_WHITE_Z0 + ri * CAP_Z_SPACING)
+                                   : (CAP_BLACK_Z0 - ri * CAP_Z_SPACING);
             Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
             // Drop the piece so its bottom rests on the table.
             pm = mat4_multiply(
