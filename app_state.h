@@ -99,6 +99,7 @@ enum AppKey {
     KEY_A,
     KEY_M,
     KEY_S,   // toggles cartoon outline in a live game / challenge
+    KEY_D,   // debug: toggles interactive light positioning
 };
 
 // ===========================================================================
@@ -249,6 +250,18 @@ struct AppState {
     float rot_x = 30.0f;
     float rot_y = 180.0f;
     float zoom  = 12.0f;
+
+    // Debug light positioning. Toggled with the D key; while
+    // active, mouse drag aims the scene light instead of orbiting
+    // the camera. The renderer reads light_dir_* every frame to
+    // build the shadow pass's light-space matrix, and adds the
+    // table to the shadow caster set so the splat floor receives a
+    // table-cast shadow we can eyeball. Initial values mirror the
+    // hardcoded defaults previously baked into board_renderer.cpp.
+    bool  light_positioning = false;
+    float light_dir_x = 0.4f;
+    float light_dir_y = 1.0f;
+    float light_dir_z = 0.6f;
 
     bool   dragging = false;
     double last_mouse_x = 0, last_mouse_y = 0;

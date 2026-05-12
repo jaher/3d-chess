@@ -1006,9 +1006,19 @@ uniform highp usampler2D uSplatB;
 uniform highp usampler2D uOrdering;
 uniform int   uTexWidth;
 
+// Debug shadow input — fed by the renderer only while the D-key
+// light-positioning mode is active. uShadowEnabled is 1.0 in that
+// mode and 0.0 otherwise; when 0 the shadow lookup is skipped and
+// vSplatShadow is forced to 0 so the fragment passes through
+// unchanged.
+uniform float uShadowEnabled;
+uniform highp sampler2D uShadowMap;
+uniform mat4  uLightSpaceMatrix;
+
 out vec2  vSplatUv;
 out vec4  vColor;
 flat out float vAdjStdDev;
+flat out float vSplatShadow;
 
 mat3 rot_from_quat(vec4 q) {
     float x = q.x, y = q.y, z = q.z, w = q.w;
@@ -1134,6 +1144,25 @@ void main() {
 
     vSplatUv   = aQuadUV * adjStdDev;
     vAdjStdDev = adjStdDev;
+
+    // Shadow lookup at the splat's world centre — debug-only,
+    // gated on uShadowEnabled so normal play pays nothing for it.
+    // One tap per splat is plenty for the floor-darkening effect;
+    // a flat varying carries the per-splat shadow into the fragment.
+    float shadow = 0.0;
+    if (uShadowEnabled > 0.5) {
+        vec4 ls = uLightSpaceMatrix * vec4(worldPos, 1.0);
+        vec3 projCoords = ls.xyz / ls.w * 0.5 + 0.5;
+        if (projCoords.x >= 0.0 && projCoords.x <= 1.0 &&
+            projCoords.y >= 0.0 && projCoords.y <= 1.0 &&
+            projCoords.z >= 0.0 && projCoords.z <= 1.0) {
+            float currentDepth = projCoords.z;
+            float shadowDepth  = texture(uShadowMap, projCoords.xy).r;
+            shadow = (currentDepth - 0.0015) > shadowDepth ? 1.0 : 0.0;
+        }
+    }
+    vSplatShadow = shadow;
+
     vec3 ndc = vec3(ndcCenter.xy + ndcOffset, ndcCenter.z);
     gl_Position = vec4(ndc.xy * clipCenter.w, clipCenter.zw);
 
@@ -1149,6 +1178,7 @@ const char* splat_fs_src = GLSL_SPLAT_VERSION GLSL_SPLAT_PREAMBLE R"(
 in vec2  vSplatUv;
 in vec4  vColor;
 flat in float vAdjStdDev;
+flat in float vSplatShadow;
 out vec4 FragColor;
 
 uniform float uMinAlpha;
@@ -1167,7 +1197,11 @@ void main() {
         a = mix(1.0, saturating, uFalloff);
     }
     if (a < uMinAlpha) discard;
-    FragColor = vec4(vColor.rgb * a, a);
+    // Darken splats that are in shadow. vSplatShadow is 0 when the
+    // D-key light-positioning mode is off, so the multiplication is
+    // a no-op for normal play.
+    float shadowFactor = 1.0 - vSplatShadow * 0.55;
+    FragColor = vec4(vColor.rgb * shadowFactor * a, a);
 }
 )";
 
