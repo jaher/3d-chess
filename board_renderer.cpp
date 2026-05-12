@@ -289,6 +289,15 @@ static int    g_splat_bg_h         = 0;
 // and the room is shake-immune), so the first board pays the
 // instanced-splat cost and the rest reuse the cached colour texture.
 static bool   g_splat_bg_cache_valid = false;
+// Splat-bg cache key for the debug light. When D-mode is on, every
+// change to the light direction has to invalidate the cached splat
+// texture so the shadow tracks the cursor in real time. When D-mode
+// is off, light_dir_* doesn't influence the splat output, so we
+// only compare against the cached "shadow enabled" flag.
+static bool   g_splat_bg_cached_shadow_enabled = false;
+static float  g_splat_bg_cached_light_x        = 0.0f;
+static float  g_splat_bg_cached_light_y        = 0.0f;
+static float  g_splat_bg_cached_light_z        = 0.0f;
 // Pass-through texture-blit program used to paste g_splat_bg_color_tex
 // into the main pass as a full-screen quad before the chessboard is
 // drawn. Same role the panorama skybox shader fills in the no-splat
@@ -2760,7 +2769,11 @@ void renderer_draw(GameState& gs,
                    int64_t black_thought_ms,
                    float white_lever_blend,
                    float black_lever_blend,
-                   bool force_panorama_only) {
+                   bool force_panorama_only,
+                   float light_dir_x,
+                   float light_dir_y,
+                   float light_dir_z,
+                   bool light_positioning) {
 #ifdef __EMSCRIPTEN__
     // Web build has no splat pipeline, so the toggle is unused.
     (void)force_panorama_only;
@@ -2811,9 +2824,13 @@ void renderer_draw(GameState& gs,
     float cz = cxz * std::cos(-rot_y * deg2rad);
     float view_pos[3] = {cx, cy, cz};
 
-    // Light space
-    float lx = 0.4f, ly = 1.0f, lz = 0.6f;
+    // Light space — direction comes from AppState via the
+    // renderer_draw signature so the D-key debug mode can aim the
+    // light interactively. Defaults match the legacy values.
+    float lx = light_dir_x, ly = light_dir_y, lz = light_dir_z;
     float ll = std::sqrt(lx*lx + ly*ly + lz*lz);
+    if (ll < 1e-6f) { lx = 0.4f; ly = 1.0f; lz = 0.6f;
+                      ll = std::sqrt(lx*lx + ly*ly + lz*lz); }
     lx /= ll; ly /= ll; lz /= ll;
     Mat4 lv = mat4_look_at(lx*15, ly*15, lz*15, 0, 0, 0, 0, 0, -1);
     Mat4 lp = mat4_ortho(-10, 10, -10, 10, 1, 40);
@@ -2863,6 +2880,19 @@ void renderer_draw(GameState& gs,
         glUniformMatrix4fv(smod, 1, GL_FALSE, pm.m);
         glBindVertexArray(g_pieces[bp.type].vao);
         glDrawArrays(GL_TRIANGLES, 0, g_pieces[bp.type].num_vertices);
+        glBindVertexArray(0);
+    }
+
+    // Optional: add the table to the shadow caster set while the
+    // D-key debug mode is on, so the user can see the table's
+    // shadow projected onto the splat floor as they aim the light.
+    // Gated to keep the normal-play scene unchanged.
+    if (light_positioning && g_table_mesh.count > 0) {
+        constexpr float TABLE_TOP_Y = -0.608f;
+        Mat4 table_model_shadow = mat4_translate(0.0f, TABLE_TOP_Y, 0.0f);
+        glUniformMatrix4fv(smod, 1, GL_FALSE, table_model_shadow.m);
+        glBindVertexArray(g_table_mesh.vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_table_mesh.count);
         glBindVertexArray(0);
     }
 
@@ -3064,6 +3094,19 @@ void renderer_draw(GameState& gs,
         // ----- Render splats into the dedicated bg FBO (skipped if
         // an earlier board in this frame already populated it) -----
         ensure_splat_bg_fbo(width, height);
+        // The cached splat texture is light-dependent only while
+        // D-mode is on. Invalidate when (shadow_enabled, light_dir)
+        // differs from the cached key so the user sees the shadow
+        // track the cursor in real time.
+        if (g_splat_bg_cache_valid) {
+            const bool same_enabled =
+                g_splat_bg_cached_shadow_enabled == light_positioning;
+            const bool same_dir = !light_positioning ||
+                (g_splat_bg_cached_light_x == light_dir_x &&
+                 g_splat_bg_cached_light_y == light_dir_y &&
+                 g_splat_bg_cached_light_z == light_dir_z);
+            if (!same_enabled || !same_dir) g_splat_bg_cache_valid = false;
+        }
         if (!g_splat_bg_cache_valid) {
             // The room is shake-immune — board_shake is meant to
             // wobble the table, not the world around it. Build a
@@ -3119,6 +3162,29 @@ void renderer_draw(GameState& gs,
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, g_packed.texOrder);
             glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
+
+            // Shadow input (debug — only meaningful while D-mode is
+            // on). Texture unit 3 because 0/1/2 hold the splat's
+            // integer-format streams.
+            //
+            // CRITICAL: uShadowMap (sampler2D) MUST be pointed at unit 3
+            // unconditionally — otherwise it defaults to unit 0, which
+            // holds the RGBA32UI integer texture, and WebGL rejects the
+            // draw with an INVALID_OPERATION because one unit can't host
+            // both a sampler2D and a usampler2D. The runtime gate
+            // uShadowEnabled keeps the actual sample suppressed when D
+            // is off, so the texture content at unit 3 doesn't matter
+            // — but the *binding* still has to point there.
+            glUniform1i(glGetUniformLocation(g_splat_program, "uShadowMap"), 3);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, g_shadow_tex);
+            glUniform1f(glGetUniformLocation(g_splat_program, "uShadowEnabled"),
+                        light_positioning ? 1.0f : 0.0f);
+            if (light_positioning) {
+                glUniformMatrix4fv(
+                    glGetUniformLocation(g_splat_program, "uLightSpaceMatrix"),
+                    1, GL_FALSE, light_space.m);
+            }
             glActiveTexture(GL_TEXTURE0);
 
             glEnable(GL_BLEND);
@@ -3141,9 +3207,15 @@ void renderer_draw(GameState& gs,
             glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE0);
 
             g_splat_bg_cache_valid = true;
+            g_splat_bg_cached_shadow_enabled = light_positioning;
+            g_splat_bg_cached_light_x = light_dir_x;
+            g_splat_bg_cached_light_y = light_dir_y;
+            g_splat_bg_cached_light_z = light_dir_z;
         }
 
         // ----- Done with splat-bg FBO. Rebind main pass + paste -----

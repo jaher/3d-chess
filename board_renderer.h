@@ -92,7 +92,20 @@ void renderer_draw(GameState& gs,
                    float black_lever_blend = 0.0f,
                    // P-key toggle: when true, the renderer uses the
                    // flat panorama skybox instead of the splat scene.
-                   bool force_panorama_only = false);
+                   bool force_panorama_only = false,
+                   // Scene light direction. Hardcoded defaults match
+                   // the legacy values; AppState forwards the live
+                   // values during the live-game render path so the
+                   // D-key debug mode can aim the light interactively.
+                   float light_dir_x = 0.4f,
+                   float light_dir_y = 1.0f,
+                   float light_dir_z = 0.6f,
+                   // When true (D-mode active), the table mesh is
+                   // added to the shadow pass and the splat backdrop
+                   // samples the shadow map per-splat so the user can
+                   // see the table's shadow projected onto the floor
+                   // splats. Off by default — pure debug visualisation.
+                   bool light_positioning = false);
 
 // Draws a thin white border around the current viewport. Called
 // after renderer_draw in multi-game mode to mark the active board
