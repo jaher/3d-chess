@@ -100,6 +100,7 @@ enum AppKey {
     KEY_M,
     KEY_S,   // toggles cartoon outline in a live game / challenge
     KEY_D,   // debug: toggles interactive light positioning
+    KEY_L,   // debug: while D-mode is on, locks the light at the camera angle
 };
 
 // ===========================================================================
@@ -695,6 +696,13 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily);
 // onto the GUI thread). app_voice_apply_result is the GUI-thread
 // tail that parses the utterance and applies the resulting move.
 void app_voice_press(AppState& a);
+
+// Snapshot the current camera angle as the scene light direction.
+// Wired to SPACE on desktop while AppState.light_positioning is true
+// (otherwise SPACE remains the voice push-to-talk trigger). The
+// renderer reads light_dir_x/y/z to build the shadow light's view
+// matrix, so the captured angle takes effect on the next frame.
+void app_capture_light_from_camera(AppState& a);
 void app_voice_release(
     AppState& a,
     std::function<void(const std::string& utterance,

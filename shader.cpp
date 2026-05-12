@@ -1008,12 +1008,19 @@ uniform int   uTexWidth;
 
 // Debug shadow input — fed by the renderer only while the D-key
 // light-positioning mode is active. uShadowEnabled is 1.0 in that
-// mode and 0.0 otherwise; when 0 the shadow lookup is skipped and
-// vSplatShadow is forced to 0 so the fragment passes through
-// unchanged.
+// mode and 0.0 otherwise.
+//
+// Shadow casting model: the table top is a perfect square in world
+// space (XZ ∈ [−7, +7] at Y = TABLE_TOP_Y). Instead of sampling a
+// depth map and inheriting its 3D precision artefacts, the splat
+// shader traces a ray from the splat's world position toward the
+// light and tests whether it crosses the table-top rectangle. This
+// gives a clean polygonal shadow with no acne / no peter-panning
+// regardless of light angle.
 uniform float uShadowEnabled;
-uniform highp sampler2D uShadowMap;
-uniform mat4  uLightSpaceMatrix;
+uniform vec3  uShadowLightDir;        // normalized, world space
+uniform float uShadowTableTopY;
+uniform vec2  uShadowTableHalfExtent; // XZ half-extents of the table top
 
 out vec2  vSplatUv;
 out vec4  vColor;
@@ -1145,20 +1152,23 @@ void main() {
     vSplatUv   = aQuadUV * adjStdDev;
     vAdjStdDev = adjStdDev;
 
-    // Shadow lookup at the splat's world centre — debug-only,
-    // gated on uShadowEnabled so normal play pays nothing for it.
-    // One tap per splat is plenty for the floor-darkening effect;
-    // a flat varying carries the per-splat shadow into the fragment.
+    // Table-shadow test — debug-only, gated on uShadowEnabled so
+    // normal play pays nothing for it. Trace a ray from the splat
+    // toward the light; if it crosses the table-top rectangle
+    // (axis-aligned XZ box at Y = uShadowTableTopY) the splat is
+    // in shadow. Splats above the table top can't be shadowed by it.
     float shadow = 0.0;
-    if (uShadowEnabled > 0.5) {
-        vec4 ls = uLightSpaceMatrix * vec4(worldPos, 1.0);
-        vec3 projCoords = ls.xyz / ls.w * 0.5 + 0.5;
-        if (projCoords.x >= 0.0 && projCoords.x <= 1.0 &&
-            projCoords.y >= 0.0 && projCoords.y <= 1.0 &&
-            projCoords.z >= 0.0 && projCoords.z <= 1.0) {
-            float currentDepth = projCoords.z;
-            float shadowDepth  = texture(uShadowMap, projCoords.xy).r;
-            shadow = (currentDepth - 0.0015) > shadowDepth ? 1.0 : 0.0;
+    if (uShadowEnabled > 0.5 &&
+        worldPos.y < uShadowTableTopY &&
+        uShadowLightDir.y > 0.001) {
+        float t = (uShadowTableTopY - worldPos.y) / uShadowLightDir.y;
+        if (t > 0.0) {
+            float hitX = worldPos.x + t * uShadowLightDir.x;
+            float hitZ = worldPos.z + t * uShadowLightDir.z;
+            if (abs(hitX) <= uShadowTableHalfExtent.x &&
+                abs(hitZ) <= uShadowTableHalfExtent.y) {
+                shadow = 1.0;
+            }
         }
     }
     vSplatShadow = shadow;

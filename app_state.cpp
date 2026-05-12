@@ -1808,37 +1808,37 @@ void app_release(AppState& a, double mx, double my, int width, int height) {
 // ===========================================================================
 // Per-mode motion handlers
 // ===========================================================================
-// Light-positioning drag (debug; toggled by KEY_D). Same mouse-delta
-// pattern as apply_camera_drag, but the deltas drive azimuth and
-// elevation of the scene light instead of camera rot_y/rot_x.
-// Elevation is clamped so the light never goes flat to the floor or
-// straight overhead, where the ortho shadow projection degenerates.
-static void apply_light_drag(AppState& a, double mx, double my) {
+// Capture the current camera angle into AppState.light_dir_*. Called
+// from the SPACE-key handler while the D-key light-positioning mode
+// is active, so the user navigates the camera normally to whichever
+// vantage point they want (treating the camera as the "light's
+// viewpoint") and then snapshots it. The light then stays there
+// regardless of subsequent camera moves.
+//
+// The camera math here mirrors what renderer_draw computes from
+// rot_x / rot_y / zoom; we just normalize the resulting position so
+// only the direction is kept (the existing shadow code anchors the
+// light at |dir| = 15 from the origin).
+void app_capture_light_from_camera(AppState& a) {
     constexpr float kPi    = 3.14159265358979323846f;
     constexpr float kDegRad = kPi / 180.0f;
-    // Recover current (azimuth, elevation) from light_dir_*. The
-    // round-trip is stable as long as elevation stays inside the
-    // clamp range (no gimbal lock).
-    float lx = a.light_dir_x, ly = a.light_dir_y, lz = a.light_dir_z;
-    float len = std::sqrt(lx*lx + ly*ly + lz*lz);
-    if (len > 1e-6f) { lx /= len; ly /= len; lz /= len; }
-    float elevation = std::asin(ly);              // [−π/2, +π/2]
-    float azimuth   = std::atan2(lx, lz);          // [−π, +π]
-    azimuth   += static_cast<float>(mx - a.last_mouse_x) * 0.3f * kDegRad;
-    elevation -= static_cast<float>(my - a.last_mouse_y) * 0.3f * kDegRad;
-    // Clamp elevation to [5°, 85°] — keeps the shadow-map ortho
-    // frustum well-formed.
-    const float min_el =  5.0f * kDegRad;
-    const float max_el = 85.0f * kDegRad;
-    if (elevation < min_el) elevation = min_el;
-    if (elevation > max_el) elevation = max_el;
-    float ce = std::cos(elevation);
-    a.light_dir_x = ce * std::sin(azimuth);
-    a.light_dir_y = std::sin(elevation);
-    a.light_dir_z = ce * std::cos(azimuth);
-    a.last_mouse_x = mx;
-    a.last_mouse_y = my;
-    queue_redraw(a);
+    float cd  = a.zoom;
+    float cy  = BOARD_Y + cd * std::sin(-a.rot_x * kDegRad);
+    float cxz = cd * std::cos(-a.rot_x * kDegRad);
+    float cx  = cxz * std::sin(-a.rot_y * kDegRad);
+    float cz  = cxz * std::cos(-a.rot_y * kDegRad);
+    // Direction from board origin (Y = BOARD_Y) to camera.
+    float dx = cx;
+    float dy = cy - BOARD_Y;
+    float dz = cz;
+    float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+    if (len > 1e-6f) {
+        a.light_dir_x = dx / len;
+        a.light_dir_y = dy / len;
+        a.light_dir_z = dz / len;
+        set_status(a, "Light locked at current camera angle");
+        queue_redraw(a);
+    }
 }
 
 // ===========================================================================
@@ -1846,10 +1846,6 @@ static void apply_light_drag(AppState& a, double mx, double my) {
 // rot_x to avoid flipping through the floor / ceiling.
 static void apply_camera_drag(AppState& a, double mx, double my) {
     if (!a.dragging) return;
-    if (a.light_positioning) {
-        apply_light_drag(a, mx, my);
-        return;
-    }
     a.rot_y += static_cast<float>(mx - a.last_mouse_x) * 0.3f;
     a.rot_x += static_cast<float>(my - a.last_mouse_y) * 0.3f;
     if (a.rot_x < 5.0f)  a.rot_x = 5.0f;
@@ -2140,9 +2136,16 @@ void app_key(AppState& a, AppKey key) {
         // usual table-and-board view.
         if (!a.light_positioning && a.zoom > 40.0f) a.zoom = 40.0f;
         set_status(a, a.light_positioning
-            ? "Light positioning ON — drag to aim, scroll to zoom out further"
+            ? "Light positioning ON — move the camera, press L to lock the light there"
             : "Light positioning OFF");
         queue_redraw(a);
+        return;
+    }
+
+    // L locks the scene light at the current camera angle, but only
+    // while the D-key light-positioning debug mode is active.
+    if (key == KEY_L) {
+        if (a.light_positioning) app_capture_light_from_camera(a);
         return;
     }
 

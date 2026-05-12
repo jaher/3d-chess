@@ -2883,18 +2883,11 @@ void renderer_draw(GameState& gs,
         glBindVertexArray(0);
     }
 
-    // Optional: add the table to the shadow caster set while the
-    // D-key debug mode is on, so the user can see the table's
-    // shadow projected onto the splat floor as they aim the light.
-    // Gated to keep the normal-play scene unchanged.
-    if (light_positioning && g_table_mesh.count > 0) {
-        constexpr float TABLE_TOP_Y = -0.608f;
-        Mat4 table_model_shadow = mat4_translate(0.0f, TABLE_TOP_Y, 0.0f);
-        glUniformMatrix4fv(smod, 1, GL_FALSE, table_model_shadow.m);
-        glBindVertexArray(g_table_mesh.vao);
-        glDrawArrays(GL_TRIANGLES, 0, g_table_mesh.count);
-        glBindVertexArray(0);
-    }
+    // (The splat-floor shadow no longer uses the depth-map approach,
+    // so the table doesn't need to be added to the shadow caster
+    // set. The chessboard / pieces shadow each other via the
+    // depth map; the splat floor receives the table's shadow via
+    // a polygon-projection test in the splat vertex shader.)
 
     glDisable(GL_POLYGON_OFFSET_FILL);
 
@@ -3163,29 +3156,27 @@ void renderer_draw(GameState& gs,
             glBindTexture(GL_TEXTURE_2D, g_packed.texOrder);
             glUniform1i(glGetUniformLocation(g_splat_program, "uOrdering"), 2);
 
-            // Shadow input (debug — only meaningful while D-mode is
-            // on). Texture unit 3 because 0/1/2 hold the splat's
-            // integer-format streams.
-            //
-            // CRITICAL: uShadowMap (sampler2D) MUST be pointed at unit 3
-            // unconditionally — otherwise it defaults to unit 0, which
-            // holds the RGBA32UI integer texture, and WebGL rejects the
-            // draw with an INVALID_OPERATION because one unit can't host
-            // both a sampler2D and a usampler2D. The runtime gate
-            // uShadowEnabled keeps the actual sample suppressed when D
-            // is off, so the texture content at unit 3 doesn't matter
-            // — but the *binding* still has to point there.
-            glUniform1i(glGetUniformLocation(g_splat_program, "uShadowMap"), 3);
-            glActiveTexture(GL_TEXTURE3);
-            glBindTexture(GL_TEXTURE_2D, g_shadow_tex);
+            // Table-shadow uniforms (debug — only meaningful while
+            // D-mode is on). No texture binding required: the splat
+            // shader tests against an axis-aligned 14×14 rectangle
+            // at the table top Y, traced from the splat along the
+            // light direction. Clean polygonal shadow, no depth-map
+            // artefacts. The uShadowEnabled gate keeps the test
+            // dormant when D is off.
             glUniform1f(glGetUniformLocation(g_splat_program, "uShadowEnabled"),
                         light_positioning ? 1.0f : 0.0f);
             if (light_positioning) {
-                glUniformMatrix4fv(
-                    glGetUniformLocation(g_splat_program, "uLightSpaceMatrix"),
-                    1, GL_FALSE, light_space.m);
+                constexpr float TABLE_TOP_Y = -0.608f;
+                glUniform3f(
+                    glGetUniformLocation(g_splat_program, "uShadowLightDir"),
+                    lx, ly, lz);
+                glUniform1f(
+                    glGetUniformLocation(g_splat_program, "uShadowTableTopY"),
+                    TABLE_TOP_Y);
+                glUniform2f(
+                    glGetUniformLocation(g_splat_program, "uShadowTableHalfExtent"),
+                    7.0f, 7.0f);
             }
-            glActiveTexture(GL_TEXTURE0);
 
             glEnable(GL_BLEND);
             glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -3206,8 +3197,6 @@ void renderer_draw(GameState& gs,
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glActiveTexture(GL_TEXTURE3);
             glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE0);
 
