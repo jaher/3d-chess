@@ -146,17 +146,20 @@ struct GlRasterizer::Impl {
     size_t keys_capacity = 0;
 
     ~Impl() {
-        for (GLuint p : { prog_preprocess, prog_duplicate, prog_hist,
-                          prog_scan, prog_scatter, prog_ranges,
-                          prog_raster, prog_clear }) {
-            if (p) glDeleteProgram(p);
-        }
-        for (GLuint b : { ssbo_splats, ssbo_pre, ssbo_touched,
-                          ssbo_keys_a, ssbo_values_a, ssbo_keys_b,
-                          ssbo_values_b, ssbo_hist, ssbo_counter,
-                          ssbo_base, ssbo_tile_ranges }) {
-            if (b) glDeleteBuffers(1, &b);
-        }
+        // Deliberately empty. This destructor runs during process
+        // static-destruction (the rasterizer is a static singleton),
+        // by which time GTK has already destroyed the GL context.
+        // Calling glDeleteProgram / glDeleteBuffers via libepoxy
+        // then triggers
+        //   epoxy_get_proc_address: "Couldn't find current GLX or
+        //   EGL context."
+        // and aborts the process. The OS reclaims the GPU
+        // resources at process exit regardless, so we just leak
+        // them at shutdown rather than chase the
+        // "is-there-still-a-GL-context?" probe across GLX / EGL /
+        // CGL backends. Anything wanting deterministic teardown
+        // before context destruction should call a future
+        // explicit `shutdown()` method instead.
     }
 
     void compile_all() {
@@ -311,7 +314,13 @@ void GlRasterizer::render(const float* view, const float* proj,
     glUniform1i(8,  impl_->render_h);
     glUniform1i(9,  impl_->tile_grid_x);
     glUniform1i(10, impl_->tile_grid_y);
-    glUniform1f(11, 512.0f);   // max_pixel_radius
+    // max_pixel_radius — the per-quad path uses 512 px because each
+    // splat is one quad and the GPU rasteriser drops fragments cheaply.
+    // The tile path pays in CPU-sort cost per (key, value) emitted,
+    // which scales with the square of the radius. 192 px keeps
+    // brightness ~unchanged for the medieval-room scene (almost no
+    // splats cap there) and ~halves the duplicate count vs 512 px.
+    glUniform1f(11, 192.0f);   // max_pixel_radius
     glUniform1f(12, 0.3f);     // blur_amount
     glDispatchCompute((impl_->N + 255) / 256, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
