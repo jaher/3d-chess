@@ -45,6 +45,13 @@
       background: #000;
       /* width/height (both CSS and drawing buffer) set by JS resizeCanvas() */
     }
+    /* When WebGPU splat backdrop is on, drop the WebGL canvas's
+       opaque CSS background so the WebGPU canvas behind shows
+       through where WebGL isn't drawing. The body keeps its dark
+       background; the WebGL alpha channel does the rest. */
+    body.webgpu-splats #canvas {
+      background: transparent;
+    }
     .footer {
       flex: 0 0 auto;
       text-align: center;
@@ -93,6 +100,14 @@
     // Replaced by web/Makefile at link time (see BUILD_HASH).
     window.__BUILD_HASH = '__BUILD_HASH__';
   </script>
+
+  <!-- WebGPU splat backdrop (opt-in via ?webgpu or
+       localStorage.CHESS_WEBGPU_SPLATS=1). The shader strings live in
+       webgpu_splats_shaders.js — loaded first so webgpu_splats.js can
+       reference WebGPUSplatsShaders. Both are no-ops in browsers
+       without WebGPU. -->
+  <script src="webgpu_splats_shaders.js"></script>
+  <script src="webgpu_splats.js"></script>
 
   <script>
     // Browser autoplay policy: Web Audio is suspended until the page
