@@ -9,6 +9,15 @@
 #include "stl_model.h"
 #include "text_atlas.h"
 
+// GL compute tile-based gsplat rasterizer — desktop-only because
+// WebGL2 has no compute shaders. Wired behind the
+// CHESS_GL_COMPUTE_SPLATS=1 env var; falls back to the existing
+// per-splat-quad path otherwise. See native/gl_raster/ for the
+// algorithm (Kerbl-2023 tile rasterizer ported to GLSL compute).
+#ifndef __EMSCRIPTEN__
+#include "gl_raster/gl_rasterizer.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -265,6 +274,29 @@ static std::vector<Splat>  g_source_splats;
 static GLuint              g_splat_program  = 0;
 static GLuint              g_splat_quad_vbo = 0;
 static GLuint              g_splat_vao      = 0;
+
+#ifndef __EMSCRIPTEN__
+// Tile-based GL compute rasterizer. Uploaded once after the SPZ
+// loads — `g_gl_compute_uploaded` flips the first time we actually
+// render through this path (lazy so the data conversion only runs
+// when the user opts in via env var). The kernel produces visibly
+// crisper output than the per-quad path in heavily-overlapped
+// regions (e.g. the medieval-room interior backdrop) — see
+// docs/screenshots/three_way_inside_room.png in the marble_viewer
+// repo for the side-by-side.
+//
+// Desktop-only — WebGL2 has no compute shaders, so the web build
+// stays on the per-quad path.
+static gl_raster::GlRasterizer g_gl_compute;
+static bool                    g_gl_compute_uploaded = false;
+static bool gl_compute_splats_enabled() {
+    static const bool v = []() {
+        const char* s = std::getenv("CHESS_GL_COMPUTE_SPLATS");
+        return s && *s && std::atoi(s) != 0;
+    }();
+    return v;
+}
+#endif
 // Robust 5–95% per-axis bbox of the splats — used when positioning
 // the cloud relative to the chessboard. Filled in by load_splats().
 static float g_splats_bbox_min[3] = {0, 0, 0};
@@ -3113,10 +3145,56 @@ void renderer_draw(GameState& gs,
                               mat4_multiply(mat4_rotate_y(rot_y * deg2rad),
                                             mat4_translate(0, -BOARD_Y, 0))));
 
-            // Radial sort using the camera's world position.
+            // Radial sort using the camera's world position. (The
+            // per-quad path uses this for its global depth-sort; the
+            // GL compute path below does its own per-tile sort, so
+            // the sort+upload here is wasted there — but it's cheap
+            // and keeping it means CHESS_GL_COMPUTE_SPLATS can be
+            // toggled mid-run without re-loading the splats.)
             float cam_pos[3] = { cx, cy, cz };
             packed_splats_sort_and_upload(g_packed, cam_pos, vd,
                                           splat_model.m, g_source_splats);
+
+#ifndef __EMSCRIPTEN__
+            // ── CHESS_GL_COMPUTE_SPLATS=1: route through the
+            // tile-based GL compute rasterizer (see gl_raster/).
+            // Quality upgrade: cleaner edges + less smearing in
+            // heavy-overlap regions like the medieval-room
+            // interior backdrop. Desktop-only.
+            if (gl_compute_splats_enabled()) {
+                if (!g_gl_compute_uploaded) {
+                    // The chess world flips Marble's Y. The per-quad
+                    // path absorbs this via splat_model = T·S(s,-s,s)
+                    // (a reflection); the GL compute path's preprocess
+                    // kernel uses a rotation-only Shoemake decomp and
+                    // can't represent a reflection, so we pre-flip Y
+                    // in the uploaded SplatGPU data and pass a
+                    // positive-Y model below.
+                    g_gl_compute.upload(g_source_splats, /*flip_y=*/true);
+                    g_gl_compute_uploaded = true;
+                }
+                g_gl_compute.resize(width, height);
+                g_gl_compute.set_output_texture(g_splat_bg_color_tex);
+                // GL compute model: same translation + scale as the
+                // per-quad path but with positive Y scale (the Y-flip
+                // is baked into the splat data on upload above).
+                Mat4 splat_model_compute = mat4_multiply(
+                    mat4_translate(splat_cx, splat_cy, splat_cz),
+                    mat4_scale(splat_scale, splat_scale, splat_scale));
+                g_gl_compute.render(view_no_shake.m, proj.m,
+                                    splat_model_compute.m);
+                // Skip the per-quad draw — the compute kernel
+                // already filled g_splat_bg_color_tex.
+                g_splat_bg_cache_valid = true;
+                g_splat_bg_cached_shadow_enabled = light_positioning;
+                g_splat_bg_cached_light_x = light_dir_x;
+                g_splat_bg_cached_light_y = light_dir_y;
+                g_splat_bg_cached_light_z = light_dir_z;
+                // Re-bind main FBO + reset state below expects to
+                // jump past the per-quad block.
+                goto skip_per_quad_splat_draw;
+            }
+#endif
 
             glBindFramebuffer(GL_FRAMEBUFFER, g_splat_bg_fbo);
             glViewport(0, 0, width, height);
@@ -3205,6 +3283,9 @@ void renderer_draw(GameState& gs,
             g_splat_bg_cached_light_x = light_dir_x;
             g_splat_bg_cached_light_y = light_dir_y;
             g_splat_bg_cached_light_z = light_dir_z;
+#ifndef __EMSCRIPTEN__
+        skip_per_quad_splat_draw: ;
+#endif
         }
 
         // ----- Done with splat-bg FBO. Rebind main pass + paste -----

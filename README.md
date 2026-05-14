@@ -857,6 +857,15 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
+- **Gaussian-splat backdrop** — the medieval-room SPZ behind the board
+  is normally rasterized with the per-splat-quad shader (matches the
+  Spark.js algorithm, runs on WebGL2). Set `CHESS_GL_COMPUTE_SPLATS=1`
+  on the desktop build to route the splat draw through a tile-based
+  GL compute rasterizer instead (one workgroup per 16×16 tile,
+  per-pixel front-to-back compositing — the Kerbl 2023 3DGS
+  algorithm ported to GLSL compute, see `gl_raster/`). Crisper
+  interior detail with less smearing in heavily-overlapped regions.
+  Desktop-only — WebGL2 has no compute shaders.
 
 ## Upgrading Stockfish
 
