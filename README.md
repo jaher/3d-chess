@@ -857,15 +857,19 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
-- **Gaussian-splat backdrop** — the medieval-room SPZ behind the board
-  is normally rasterized with the per-splat-quad shader (matches the
-  Spark.js algorithm, runs on WebGL2). Set `CHESS_GL_COMPUTE_SPLATS=1`
-  on the desktop build to route the splat draw through a tile-based
-  GL compute rasterizer instead (one workgroup per 16×16 tile,
-  per-pixel front-to-back compositing — the Kerbl 2023 3DGS
-  algorithm ported to GLSL compute, see `gl_raster/`). Crisper
-  interior detail with less smearing in heavily-overlapped regions.
-  Desktop-only — WebGL2 has no compute shaders.
+- **Gaussian-splat backdrop** — the medieval-room SPZ behind the board.
+  Desktop default: tile-based GL compute rasterizer (one workgroup
+  per 16×16 tile, per-pixel front-to-back compositing — the Kerbl
+  2023 3DGS algorithm ported to GLSL compute, see `gl_raster/`).
+  Crisper interior detail with less smearing in heavily-overlapped
+  regions than the per-quad shader. Defaults to the 500k SPZ tier
+  because the per-frame CPU sort over per-tile (key, value) pairs
+  scales with splat count. Set `CHESS_GL_COMPUTE_SPLATS=0` to
+  disable and fall back to the per-splat-quad path (matches the
+  Spark.js algorithm). Set `CHESS_SPLAT_TIER=full` to force the
+  1.9M-splat full_res cloud if your machine is fast enough for the
+  heavier sort. Web build keeps the per-quad path — WebGL2 has no
+  compute shaders.
 
 ## Upgrading Stockfish
 

@@ -278,21 +278,28 @@ static GLuint              g_splat_vao      = 0;
 #ifndef __EMSCRIPTEN__
 // Tile-based GL compute rasterizer. Uploaded once after the SPZ
 // loads — `g_gl_compute_uploaded` flips the first time we actually
-// render through this path (lazy so the data conversion only runs
-// when the user opts in via env var). The kernel produces visibly
-// crisper output than the per-quad path in heavily-overlapped
-// regions (e.g. the medieval-room interior backdrop) — see
+// render through this path. The kernel produces visibly crisper
+// output than the per-quad path in heavily-overlapped regions
+// (e.g. the medieval-room interior backdrop) — see
 // docs/screenshots/three_way_inside_room.png in the marble_viewer
 // repo for the side-by-side.
 //
 // Desktop-only — WebGL2 has no compute shaders, so the web build
 // stays on the per-quad path.
+//
+// Default: ON. Set `CHESS_GL_COMPUTE_SPLATS=0` to opt out (the per-
+// quad path still ships in the binary as a fallback). The default
+// SPZ tier auto-picks 500k under this path because the CPU sort
+// over the per-tile (key, value) pairs is currently
+// O(N · radius²) and the 1.9M full_res cloud stalls camera
+// rotation — see the tier-selection block in renderer_init().
 static gl_raster::GlRasterizer g_gl_compute;
 static bool                    g_gl_compute_uploaded = false;
 static bool gl_compute_splats_enabled() {
     static const bool v = []() {
         const char* s = std::getenv("CHESS_GL_COMPUTE_SPLATS");
-        return s && *s && std::atoi(s) != 0;
+        if (!s || !*s) return true;          // default ON
+        return std::atoi(s) != 0;
     }();
     return v;
 }
@@ -1199,17 +1206,58 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // reads with much more detail at 500k, which the user is
     // actually here to see).
     {
-        const char* splat_paths[] = {
+        // On the desktop GL compute path each frame does a 5–40 MiB
+        // CPU readback + std::sort over the per-tile (key, value)
+        // pairs (the GPU radix sort is still wired but bypassed —
+        // see gl_raster/gl_rasterizer.cpp). The 1.9M-splat full_res
+        // tier pushes that sort into >1 s when the camera rotates,
+        // so when GL compute is the active path we *default* to the
+        // 500k tier. CHESS_SPLAT_TIER overrides:
+        //   500k / 500   → force 500k
+        //   full / fullres / full_res → force full_res
+        // 100k was tried and dropped — the medieval-room interior
+        // reads as gappy at that tier.
+        const char* tier = std::getenv("CHESS_SPLAT_TIER");
+        const char* full_paths[] = {
 #ifndef __EMSCRIPTEN__
             "world_labs/medieval_room/splat_full_res.spz",
             "world_labs/medieval_room/splat_500k.spz",
-            "world_labs/medieval_room/splat_100k.spz",
 #else
             "/world_labs/medieval_room/splat_500k.spz",
             "world_labs/medieval_room/splat_500k.spz",
 #endif
         };
-        for (const char* p : splat_paths) {
+        const char* tier_500k[] = {
+#ifndef __EMSCRIPTEN__
+            "world_labs/medieval_room/splat_500k.spz",
+            "world_labs/medieval_room/splat_full_res.spz",
+#else
+            "/world_labs/medieval_room/splat_500k.spz",
+#endif
+        };
+        // Default tier: 500k under the GL compute path (responsive
+        // rotation), full_res otherwise (per-quad path renders the
+        // full cloud cheaply).
+        bool want_500k = false;
+#ifndef __EMSCRIPTEN__
+        if (gl_compute_splats_enabled()) want_500k = true;
+#endif
+        if (tier && *tier) {
+            if (std::strcmp(tier, "500k") == 0 ||
+                std::strcmp(tier, "500") == 0) {
+                want_500k = true;
+            } else if (std::strcmp(tier, "full") == 0 ||
+                       std::strcmp(tier, "fullres") == 0 ||
+                       std::strcmp(tier, "full_res") == 0) {
+                want_500k = false;
+            }
+        }
+        const char** splat_paths = want_500k ? tier_500k : full_paths;
+        size_t n_paths = want_500k
+            ? sizeof(tier_500k) / sizeof(*tier_500k)
+            : sizeof(full_paths) / sizeof(*full_paths);
+        for (size_t i = 0; i < n_paths; ++i) {
+            const char* p = splat_paths[i];
             FILE* f = std::fopen(p, "rb");
             if (!f) continue;
             std::fclose(f);
