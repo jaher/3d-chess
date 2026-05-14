@@ -344,69 +344,92 @@
         return;
       }
 
-      // Readback the per-splat PreprocessedSplat data. The buffer
-      // is *pooled* — recreating a 32 MB GPU buffer per frame
-      // (which the previous version did) tanked WebGPU init time
-      // and trickled allocator pressure on Linux Chrome.
-      const preBytes = this.splatCount * PRE_STRIDE;
-      if (!this.buffers.preReadback ||
-          this.buffers.preReadback.size < preBytes) {
-        if (this.buffers.preReadback) this.buffers.preReadback.destroy();
-        this.buffers.preReadback = this.device.createBuffer({
-          size: preBytes,
+      // ── duplicate on GPU: each splat emits its (key, value) pairs
+      //    into shared keys[]/values[] arrays via an atomic emit
+      //    counter (see DUPLICATE_SRC in webgpu_splats_shaders.js).
+      //    Replaces the previous JS loop that iterated 500k splats ×
+      //    avg N tile-touches and built BigUint64-style keys by
+      //    hand — that loop was the dominant per-frame cost.
+      const totalBytes = total * 4;
+      if (this.buffers.keys && this.buffers.keys.size < totalBytes) {
+        this.buffers.keys.destroy(); this.buffers.keys = null;
+        if (this.buffers.values) { this.buffers.values.destroy(); this.buffers.values = null; }
+        if (this.buffers.keysReadback) { this.buffers.keysReadback.destroy(); this.buffers.keysReadback = null; }
+        if (this.buffers.valuesReadback) { this.buffers.valuesReadback.destroy(); this.buffers.valuesReadback = null; }
+      }
+      if (!this.buffers.keys) {
+        this.buffers.keys = this.device.createBuffer({
+          size: totalBytes,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
+        this.buffers.values = this.device.createBuffer({
+          size: totalBytes,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+        });
+        this.buffers.keysReadback = this.device.createBuffer({
+          size: totalBytes,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        this.buffers.valuesReadback = this.device.createBuffer({
+          size: totalBytes,
           usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
       }
+      if (!this.buffers.emitCounter) {
+        this.buffers.emitCounter = this.device.createBuffer({
+          size: 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+      }
+      // Reset emit counter to 0.
+      this.device.queue.writeBuffer(this.buffers.emitCounter, 0,
+                                    new Uint32Array([0]));
+
+      // Build duplicate bind group + dispatch.
+      const dupBg = this.device.createBindGroup({
+        layout: this.pipelines.duplicate.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this.buffers.pre } },
+          { binding: 1, resource: { buffer: this.buffers.touched } },
+          { binding: 2, resource: { buffer: this.buffers.keys } },
+          { binding: 3, resource: { buffer: this.buffers.values } },
+          { binding: 4, resource: { buffer: this.buffers.emitCounter } },
+          { binding: 5, resource: { buffer: this.buffers.uniforms } },
+        ],
+      });
+      const encDup = this.device.createCommandEncoder();
       {
-        const enc2 = this.device.createCommandEncoder();
-        enc2.copyBufferToBuffer(this.buffers.pre, 0,
-                                this.buffers.preReadback, 0,
-                                preBytes);
-        this.device.queue.submit([enc2.finish()]);
+        const p = encDup.beginComputePass();
+        p.setPipeline(this.pipelines.duplicate);
+        p.setBindGroup(0, dupBg);
+        p.dispatchWorkgroups(Math.ceil(this.splatCount / 256));
+        p.end();
       }
-      await this.buffers.preReadback.mapAsync(GPUMapMode.READ);
-      const preData = new Float32Array(
-          this.buffers.preReadback.getMappedRange().slice(0));
-      const preU32  = new Uint32Array(preData.buffer);
-      this.buffers.preReadback.unmap();
+      // Stage the duplicate output for readback in the same submit
+      // so we get it on the next mapAsync.
+      encDup.copyBufferToBuffer(this.buffers.keys, 0,
+                                this.buffers.keysReadback, 0,
+                                totalBytes);
+      encDup.copyBufferToBuffer(this.buffers.values, 0,
+                                this.buffers.valuesReadback, 0,
+                                totalBytes);
+      this.device.queue.submit([encDup.finish()]);
 
-      // Sort keys are uint32 (NOT uint64) so we can use the native
-      // TypedArray.sort fast path. Pack as:
-      //   bits 19..31  : tile_id (13 bits → up to 8192 tiles, plenty
-      //                  for a 1024×1024 framebuffer @ 16-px tiles)
-      //   bits 0..18   : depth_bits >> 13   (19 bits of float depth
-      //                  precision — close-but-distinct splat depths
-      //                  may tie and resolve in insertion order, which
-      //                  is fine for compositing)
-      // Build the (key, value) pair into TWO parallel arrays then
-      // sort by interleaving on a packed Uint32Array. JS's
-      // TypedArray.sort with a comparator is ~30× faster than
-      // BigUint64Array.sort because it skips BigInt overhead.
-      const keys = new Uint32Array(total);
-      const values = new Uint32Array(total);
-      let w = 0;
+      await Promise.all([
+        this.buffers.keysReadback.mapAsync(GPUMapMode.READ),
+        this.buffers.valuesReadback.mapAsync(GPUMapMode.READ),
+      ]);
+      const keys = new Uint32Array(
+          this.buffers.keysReadback.getMappedRange().slice(0));
+      const values = new Uint32Array(
+          this.buffers.valuesReadback.getMappedRange().slice(0));
+      this.buffers.keysReadback.unmap();
+      this.buffers.valuesReadback.unmap();
+
+      // Sort the (key, value) pairs by key. TypedArray.sort with a
+      // numeric comparator is the fast path; we sort an index array
+      // to keep keys + values in sync.
       const tg = this.tileGridX;
-      for (let i = 0; i < this.splatCount; ++i) {
-        if (touched[i] === 0) continue;
-        const o = i * 16;
-        const txMin = preU32[o + 12];
-        const tyMin = preU32[o + 13];
-        const txMax = preU32[o + 14];
-        const tyMax = preU32[o + 15];
-        const depthBits = preU32[o + 2] >>> 13;
-        for (let ty = tyMin; ty <= tyMax; ++ty) {
-          const rowBase = ty * tg;
-          for (let tx = txMin; tx <= txMax; ++tx) {
-            const tileId = rowBase + tx;
-            keys[w]   = (tileId << 19) | depthBits;
-            values[w] = i;
-            ++w;
-          }
-        }
-      }
-
-      // Indirect sort over an index Uint32Array. The .sort with a
-      // small numeric comparator is the fast path for typed arrays.
       const idx = new Uint32Array(total);
       for (let i = 0; i < total; ++i) idx[i] = i;
       idx.sort((a, b) => keys[a] - keys[b]);
@@ -538,6 +561,10 @@
       this.pipelines.preprocess = dev.createComputePipeline({
         layout: 'auto',
         compute: { module: shaderModules.preprocess, entryPoint: 'main' },
+      });
+      this.pipelines.duplicate = dev.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModules.duplicate, entryPoint: 'main' },
       });
       this.pipelines.rasterize = dev.createComputePipeline({
         layout: 'auto',

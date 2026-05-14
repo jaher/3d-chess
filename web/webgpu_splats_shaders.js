@@ -210,6 +210,59 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+  // ── duplicate kernel ─────────────────────────────────────────────
+  //
+  // Per-splat, emit (key, value) pairs into a flat global array. The
+  // key packs tile_id (13 bits) in the upper bits and the truncated
+  // depth (19 bits) below — same layout the JS path was building
+  // by hand. atomicAdd on emit_counter reserves `count` consecutive
+  // slots for this splat; the actual tile loop writes into those
+  // slots in tile-row-major order.
+  //
+  //   bindings:
+  //     0: storage<read>      pre[]
+  //     1: storage<read>      touched[]
+  //     2: storage<read_write> keys[]       (uint32 packed)
+  //     3: storage<read_write> values[]     (splat index uint32)
+  //     4: storage<atomic_u32> emit_counter
+  //     5: uniform            U
+  //
+  // The order of emit between splats is non-deterministic (atomic
+  // race), but the host sort by key normalises that. Stable enough
+  // for the rasterizer's front-to-back composite.
+  const DUPLICATE_SRC = PREAMBLE + `
+@group(0) @binding(0) var<storage, read>        pre:           array<PreprocessedSplat>;
+@group(0) @binding(1) var<storage, read>        touched:       array<u32>;
+@group(0) @binding(2) var<storage, read_write>  keys:          array<u32>;
+@group(0) @binding(3) var<storage, read_write>  values:        array<u32>;
+@group(0) @binding(4) var<storage, read_write>  emit_counter:  atomic<u32>;
+@group(0) @binding(5) var<uniform>              U:             Uniforms;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i32(i) >= U.ints2.x) { return; }
+  let count = touched[i];
+  if (count == 0u) { return; }
+
+  let ps = pre[i];
+  let depth_bits = bitcast<u32>(ps.depth);
+  let depth_high = depth_bits >> 13u;
+
+  let off = atomicAdd(&emit_counter, count);
+  var w: u32 = 0u;
+  for (var ty: u32 = ps.tile_min.y; ty <= ps.tile_max.y; ty = ty + 1u) {
+    let row_base = ty * u32(U.ints.z);
+    for (var tx: u32 = ps.tile_min.x; tx <= ps.tile_max.x; tx = tx + 1u) {
+      let tile_id = row_base + tx;
+      keys[off + w]   = (tile_id << 19u) | depth_high;
+      values[off + w] = i;
+      w = w + 1u;
+    }
+  }
+}
+`;
+
   const RASTERIZE_SRC = PREAMBLE + `
 @group(0) @binding(0) var<storage, read>  pre:           array<PreprocessedSplat>;
 @group(0) @binding(1) var<storage, read>  values_sorted: array<u32>;
@@ -337,6 +390,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     modules(device) {
       return {
         preprocess: device.createShaderModule({ code: PREPROCESS_SRC }),
+        duplicate:  device.createShaderModule({ code: DUPLICATE_SRC }),
         rasterize:  device.createShaderModule({ code: RASTERIZE_SRC }),
         clear:      device.createShaderModule({ code: CLEAR_SRC }),
         present:    device.createShaderModule({ code: PRESENT_SRC }),
