@@ -269,13 +269,17 @@
       f[28] = view[12]; f[29] = view[13]; f[30] = view[14]; f[31] = 0;
       // 32: mesh_scale
       f[32] = ms.scale;
-      // 33: max_pixel_radius — capped tight on web because the sort
-      // runs on CPU in JS (no GPU radix sort yet). Total tile-touch
-      // count scales with radius², so 96 px keeps ~5× faster sort
-      // than 192 px. The trade-off is sharper falloff on close-camera
-      // splats; in the chess scene's distant-room framing this is
-      // imperceptible.
-      f[33] = 96.0;
+      // 33: max_pixel_radius — bumped from 96 → 256 so larger
+      // splats actually contribute their full Gaussian footprint to
+      // the per-pixel composite. At the chess camera the room
+      // walls are at moderate distance: 96 was clipping splats to
+      // tight discs and the tile-based output read as essentially
+      // identical to the per-quad WebGL backdrop. 256 lets the
+      // front-to-back composite show its quality advantage
+      // (softer falloff, less smearing in overlap regions).
+      // Total tile-touch count goes up ~7× (radius²), still
+      // tractable under the packed-uint32 JS sort path.
+      f[33] = 256.0;
       // 34: blur_amount
       f[34] = 0.3;
       // 35..: ints (render_w, render_h, tile_gx, tile_gy, N)
