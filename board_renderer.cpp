@@ -299,11 +299,11 @@ static GLuint              g_splat_vao      = 0;
 // stays on the per-quad path.
 //
 // Default: ON. Set `CHESS_GL_COMPUTE_SPLATS=0` to opt out (the per-
-// quad path still ships in the binary as a fallback). The default
-// SPZ tier auto-picks 500k under this path because the CPU sort
-// over the per-tile (key, value) pairs is currently
-// O(N · radius²) and the 1.9M full_res cloud stalls camera
-// rotation — see the tier-selection block in renderer_init().
+// quad path still ships in the binary as a fallback). The desktop
+// default SPZ tier is full_res (1.9M splats) — the parallel CPU
+// sort (`__gnu_parallel::sort`) now keeps even that responsive at
+// 16-thread machines. Drop to 500k with `CHESS_SPLAT_TIER=500k` on
+// lower-thread or older hardware.
 static gl_raster::GlRasterizer g_gl_compute;
 static bool                    g_gl_compute_uploaded = false;
 static bool gl_compute_splats_enabled() {
@@ -1217,15 +1217,17 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // reads with much more detail at 500k, which the user is
     // actually here to see).
     {
-        // On the desktop GL compute path each frame does a 5–40 MiB
-        // CPU readback + std::sort over the per-tile (key, value)
-        // pairs (the GPU radix sort is still wired but bypassed —
-        // see gl_raster/gl_rasterizer.cpp). The 1.9M-splat full_res
-        // tier pushes that sort into >1 s when the camera rotates,
-        // so when GL compute is the active path we *default* to the
-        // 500k tier. CHESS_SPLAT_TIER overrides:
-        //   500k / 500   → force 500k
-        //   full / fullres → force full_res
+        // Splat tier defaults:
+        //   * Desktop: full_res (1.9M splats). The parallel CPU sort
+        //     in gl_raster/gl_rasterizer.cpp now handles this tier
+        //     interactively (~50–60 fps during rotation on a 16-
+        //     thread CPU). CHESS_SPLAT_TIER=500k falls back to the
+        //     lighter cloud for older / lower-thread machines.
+        //   * Web: 500k only. WebGL2 has no compute shaders, and
+        //     the per-quad path's 1.9M splat draw stalls the JS
+        //     main thread; the preload also doubles. The full_res
+        //     SPZ isn't shipped with the web build (see
+        //     web/Makefile's SPLAT_SPZ_PRELOAD).
         // 100k was tried and dropped — the medieval-room interior
         // reads as gappy at that tier.
         const char* tier = std::getenv("CHESS_SPLAT_TIER");
@@ -1244,15 +1246,19 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             "world_labs/medieval_room/splat_full_res.spz",
 #else
             "/world_labs/medieval_room/splat_500k.spz",
+            "world_labs/medieval_room/splat_500k.spz",
 #endif
         };
-        // Default tier: 500k under the GL compute path (responsive
-        // rotation), full_res otherwise (per-quad path renders the
-        // full cloud cheaply).
+        // Default tier: full_res on desktop, 500k on web. CHESS_SPLAT_TIER
+        // overrides on desktop only:
+        //   500k / 500          → force 500k
+        //   full / fullres /
+        //   full_res            → force full_res (already the default)
         bool want_500k = false;
-#ifndef __EMSCRIPTEN__
-        if (gl_compute_splats_enabled()) want_500k = true;
+#ifdef __EMSCRIPTEN__
+        want_500k = true;
 #endif
+#ifndef __EMSCRIPTEN__
         if (tier && *tier) {
             if (std::strcmp(tier, "500k") == 0 ||
                 std::strcmp(tier, "500") == 0) {
@@ -1263,6 +1269,9 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
                 want_500k = false;
             }
         }
+#else
+        (void)tier;  // web has only 500k; env var is desktop-only.
+#endif
         const char** splat_paths = want_500k ? tier_500k : full_paths;
         size_t n_paths = want_500k
             ? sizeof(tier_500k) / sizeof(*tier_500k)

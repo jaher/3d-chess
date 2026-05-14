@@ -863,13 +863,13 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
     workgroup per 16×16 tile, per-pixel front-to-back compositing —
     the Kerbl 2023 3DGS algorithm ported to GLSL compute, see
     `gl_raster/`). Crisper interior detail with less smearing in
-    heavily-overlapped regions than the per-quad shader. Defaults
-    to the 500k SPZ tier because the per-frame CPU sort over per-
-    tile (key, value) pairs scales with splat count. Set
-    `CHESS_GL_COMPUTE_SPLATS=0` to disable and fall back to the
-    per-splat-quad path (matches the Spark.js algorithm). Set
-    `CHESS_SPLAT_TIER=full` to force the 1.9M-splat full_res cloud
-    if your machine is fast enough for the heavier sort.
+    heavily-overlapped regions than the per-quad shader. Loads the
+    full-res SPZ tier (~1.9M splats) by default — the parallel CPU
+    sort (`__gnu_parallel::sort`) keeps rotation interactive on
+    16-thread machines. Drop to the 500k tier with
+    `CHESS_SPLAT_TIER=500k` on lower-thread or older hardware. Set
+    `CHESS_GL_COMPUTE_SPLATS=0` to fall back to the per-splat-quad
+    path (matches the Spark.js algorithm).
   - **Web upgrade**: append `?webgpu` to the URL (or
     `localStorage.CHESS_WEBGPU_SPLATS = "1"`) to route the splat
     backdrop through a WebGPU compute pipeline on a parallel canvas
