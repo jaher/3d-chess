@@ -137,7 +137,14 @@ void build_font_atlas() {
     build_font_atlas_stb(&g_font_tex, ATLAS_W, ATLAS_H);
 #else
     register_app_fonts_once();
-    bake_pango_atlas("Inter Bold 28", &g_font_tex);
+    // 56 pt at Cairo's default 96 DPI → ~75 px glyphs, fills the
+    // 96 px cell with breathing room. The comment near
+    // bake_pango_atlas() above already explained the 28 → 56
+    // jump when CELL_SIZE doubled from 48 → 96, but the font
+    // descriptors here weren't updated to match at the time —
+    // glyphs were baking at 28 pt and rendering as tiny smudges
+    // in the bigger cells. Bringing them in line now.
+    bake_pango_atlas("Inter Bold 56", &g_font_tex);
 #endif
 }
 
@@ -146,7 +153,7 @@ void build_title_font_atlas() {
     build_title_font_atlas_stb(&g_title_font_tex, ATLAS_W, ATLAS_H);
 #else
     register_app_fonts_once();
-    bake_pango_atlas("Cinzel Bold 28", &g_title_font_tex);
+    bake_pango_atlas("Cinzel Bold 56", &g_title_font_tex);
 #endif
 }
 
