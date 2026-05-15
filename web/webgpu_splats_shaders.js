@@ -263,6 +263,162 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+  // ── radix sort ────────────────────────────────────────────────────
+  //
+  // 4-pass 8-bit radix sort over uint32 keys with a parallel uint32
+  // value tagging along. Each pass = three dispatches:
+  //
+  //   histogram  — each workgroup processes 1024 keys (256 threads ×
+  //                4 keys each), counts occurrences of each of 256
+  //                possible 8-bit digit values in workgroup-shared
+  //                memory, then writes the workgroup's bucket
+  //                histogram into `hist[workgroup * 256 + bucket]`.
+  //
+  //   scan       — single workgroup of 256 threads. Each thread (=
+  //                one bucket) walks down the per-group histogram
+  //                column doing an exclusive prefix sum, and stores
+  //                the bucket's grand total in workgroup memory.
+  //                Then thread 0 prefix-sums the bucket totals to
+  //                produce `bucket_base[256]` — the global write
+  //                offset where each digit's run starts in the
+  //                sorted output.
+  //
+  //   scatter    — each workgroup re-reads its 1024 keys and writes
+  //                them (along with the parallel value) into
+  //                `keys_out[bucket_base[digit] + hist[wg, digit]]`,
+  //                atomicAdd'ing into hist[wg, digit] so siblings
+  //                within the workgroup don't collide.
+  //
+  // The host orchestrator (web/webgpu_splats.js) ping-pongs the
+  // (keys, values) buffers between two pairs and re-clears the hist
+  // buffer between passes.
+  //
+  // Same shape as gl_raster/shaders.h on the desktop; the desktop
+  // version had a ~1% mis-sort bug we never tracked down — we'll
+  // see whether the WGSL version reproduces it.
+
+  const SORT_HIST_SRC = `
+struct SortU { N: u32, shift: u32, num_groups: u32, _pad: u32 };
+
+@group(0) @binding(0) var<storage, read>       keys: array<u32>;
+@group(0) @binding(1) var<storage, read_write> hist: array<u32>;
+@group(0) @binding(2) var<uniform>             U:    SortU;
+
+var<workgroup> shared_hist: array<atomic<u32>, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id)        wg:  vec3<u32>) {
+  atomicStore(&shared_hist[lid.x], 0u);
+  workgroupBarrier();
+
+  for (var k: u32 = 0u; k < 4u; k = k + 1u) {
+    let idx = wg.x * 1024u + k * 256u + lid.x;
+    if (idx < U.N) {
+      let digit = (keys[idx] >> U.shift) & 0xFFu;
+      atomicAdd(&shared_hist[digit], 1u);
+    }
+  }
+  workgroupBarrier();
+
+  hist[wg.x * 256u + lid.x] = atomicLoad(&shared_hist[lid.x]);
+}
+`;
+
+  const SORT_SCAN_SRC = `
+struct SortU { N: u32, shift: u32, num_groups: u32, _pad: u32 };
+
+@group(0) @binding(0) var<storage, read_write> hist:        array<u32>;
+@group(0) @binding(1) var<storage, read_write> bucket_base: array<u32>;
+@group(0) @binding(2) var<uniform>             U:           SortU;
+
+var<workgroup> totals: array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
+  let bucket = lid.x;
+  var sum: u32 = 0u;
+  for (var g: u32 = 0u; g < U.num_groups; g = g + 1u) {
+    let v = hist[g * 256u + bucket];
+    hist[g * 256u + bucket] = sum;
+    sum = sum + v;
+  }
+  totals[bucket] = sum;
+  workgroupBarrier();
+
+  if (bucket == 0u) {
+    var acc: u32 = 0u;
+    for (var b: u32 = 0u; b < 256u; b = b + 1u) {
+      bucket_base[b] = acc;
+      acc = acc + totals[b];
+    }
+  }
+}
+`;
+
+  const SORT_SCATTER_SRC = `
+struct SortU { N: u32, shift: u32, num_groups: u32, _pad: u32 };
+
+@group(0) @binding(0) var<storage, read>       keys_in:     array<u32>;
+@group(0) @binding(1) var<storage, read>       values_in:   array<u32>;
+@group(0) @binding(2) var<storage, read_write> hist:        array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read>       bucket_base: array<u32>;
+@group(0) @binding(4) var<storage, read_write> keys_out:    array<u32>;
+@group(0) @binding(5) var<storage, read_write> values_out:  array<u32>;
+@group(0) @binding(6) var<uniform>             U:           SortU;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id)        wg:  vec3<u32>) {
+  for (var k: u32 = 0u; k < 4u; k = k + 1u) {
+    let idx = wg.x * 1024u + k * 256u + lid.x;
+    if (idx < U.N) {
+      let key = keys_in[idx];
+      let val = values_in[idx];
+      let digit = (key >> U.shift) & 0xFFu;
+      let local_slot = atomicAdd(&hist[wg.x * 256u + digit], 1u);
+      let dst = bucket_base[digit] + local_slot;
+      keys_out[dst]   = key;
+      values_out[dst] = val;
+    }
+  }
+}
+`;
+
+  // ── compute_ranges ────────────────────────────────────────────────
+  //
+  // After the sort, the keys are grouped by tile_id (top 13 bits).
+  // For each entry in the sorted array, check if its tile_id differs
+  // from the previous entry — if so, that's the start of a new
+  // tile's run and the end of the previous tile's run. Writes
+  // (start, end) pairs into the tile_ranges SSBO that the rasterize
+  // kernel reads.
+  const RANGES_SRC = `
+struct RangesU { total: u32, num_tiles: u32, _p0: u32, _p1: u32 };
+
+@group(0) @binding(0) var<storage, read>       sorted_keys: array<u32>;
+@group(0) @binding(1) var<storage, read_write> tile_ranges: array<vec2<u32>>;
+@group(0) @binding(2) var<uniform>             U:           RangesU;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= U.total) { return; }
+  let cur = sorted_keys[i] >> 19u;
+  if (cur >= U.num_tiles) { return; }
+  if (i == 0u) {
+    tile_ranges[cur].x = 0u;
+  } else {
+    let prev = sorted_keys[i - 1u] >> 19u;
+    if (prev != cur) {
+      if (prev < U.num_tiles) { tile_ranges[prev].y = i; }
+      tile_ranges[cur].x = i;
+    }
+  }
+  if (i == U.total - 1u) { tile_ranges[cur].y = U.total; }
+}
+`;
+
   const RASTERIZE_SRC = PREAMBLE + `
 @group(0) @binding(0) var<storage, read>  pre:           array<PreprocessedSplat>;
 @group(0) @binding(1) var<storage, read>  values_sorted: array<u32>;
@@ -389,11 +545,15 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   window.WebGPUSplatsShaders = {
     modules(device) {
       return {
-        preprocess: device.createShaderModule({ code: PREPROCESS_SRC }),
-        duplicate:  device.createShaderModule({ code: DUPLICATE_SRC }),
-        rasterize:  device.createShaderModule({ code: RASTERIZE_SRC }),
-        clear:      device.createShaderModule({ code: CLEAR_SRC }),
-        present:    device.createShaderModule({ code: PRESENT_SRC }),
+        preprocess:  device.createShaderModule({ code: PREPROCESS_SRC }),
+        duplicate:   device.createShaderModule({ code: DUPLICATE_SRC }),
+        sortHist:    device.createShaderModule({ code: SORT_HIST_SRC }),
+        sortScan:    device.createShaderModule({ code: SORT_SCAN_SRC }),
+        sortScatter: device.createShaderModule({ code: SORT_SCATTER_SRC }),
+        ranges:      device.createShaderModule({ code: RANGES_SRC }),
+        rasterize:   device.createShaderModule({ code: RASTERIZE_SRC }),
+        clear:       device.createShaderModule({ code: CLEAR_SRC }),
+        present:     device.createShaderModule({ code: PRESENT_SRC }),
       };
     },
   };

@@ -344,133 +344,185 @@
         return;
       }
 
-      // ── duplicate on GPU: each splat emits its (key, value) pairs
-      //    into shared keys[]/values[] arrays via an atomic emit
-      //    counter (see DUPLICATE_SRC in webgpu_splats_shaders.js).
-      //    Replaces the previous JS loop that iterated 500k splats ×
-      //    avg N tile-touches and built BigUint64-style keys by
-      //    hand — that loop was the dominant per-frame cost.
+      // ── duplicate + sort + compute_ranges: all on GPU ──
+      //
+      // Pipeline shape:
+      //   duplicate    →  keys/values  (atomic-emit per splat)
+      //   sort hist×4  →  hist[wgs × 256] of bucket counts per pass
+      //   sort scan×4  →  bucket_base[256] + per-(wg,bucket) prefix
+      //   sort scat×4  →  ping-pong keys/values into keys_alt/values_alt
+      //                   (4 passes total ⇒ result ends back in
+      //                   keys/values; or we end on alt and use those
+      //                   directly).
+      //   ranges       →  scan sorted keys, write (start,end) per tile.
+      //   rasterize    →  per-pixel front-to-back composite.
+      //
+      // No JS sort, no readback (except the tiny touched[] sum at the
+      // top — TODO replace with an atomic reduction in preprocess).
       const totalBytes = total * 4;
       if (this.buffers.keys && this.buffers.keys.size < totalBytes) {
-        this.buffers.keys.destroy(); this.buffers.keys = null;
-        if (this.buffers.values) { this.buffers.values.destroy(); this.buffers.values = null; }
-        if (this.buffers.keysReadback) { this.buffers.keysReadback.destroy(); this.buffers.keysReadback = null; }
-        if (this.buffers.valuesReadback) { this.buffers.valuesReadback.destroy(); this.buffers.valuesReadback = null; }
+        for (const k of ['keys','values','keysAlt','valuesAlt']) {
+          if (this.buffers[k]) { this.buffers[k].destroy(); this.buffers[k] = null; }
+        }
       }
       if (!this.buffers.keys) {
-        this.buffers.keys = this.device.createBuffer({
+        const mk = () => this.device.createBuffer({
           size: totalBytes,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC |
+                 GPUBufferUsage.COPY_DST,
         });
-        this.buffers.values = this.device.createBuffer({
-          size: totalBytes,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-        });
-        this.buffers.keysReadback = this.device.createBuffer({
-          size: totalBytes,
-          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        });
-        this.buffers.valuesReadback = this.device.createBuffer({
-          size: totalBytes,
-          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-        });
+        this.buffers.keys      = mk();
+        this.buffers.values    = mk();
+        this.buffers.keysAlt   = mk();
+        this.buffers.valuesAlt = mk();
       }
       if (!this.buffers.emitCounter) {
         this.buffers.emitCounter = this.device.createBuffer({
           size: 4,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
+        this.buffers.bucketBase = this.device.createBuffer({
+          size: 256 * 4,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.buffers.sortU = this.device.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this.buffers.rangesU = this.device.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
       }
-      // Reset emit counter to 0.
+      // Per-workgroup histogram: each sort pass processes 1024 keys
+      // per workgroup, hence groups = ceil(total / 1024).
+      const groups = Math.ceil(total / 1024);
+      const histBytes = groups * 256 * 4;
+      if (!this.buffers.sortHist || this.buffers.sortHist.size < histBytes) {
+        if (this.buffers.sortHist) this.buffers.sortHist.destroy();
+        this.buffers.sortHist = this.device.createBuffer({
+          size: histBytes,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+      }
+      // Reset emit counter, dispatch duplicate.
       this.device.queue.writeBuffer(this.buffers.emitCounter, 0,
                                     new Uint32Array([0]));
-
-      // Build duplicate bind group + dispatch.
-      const dupBg = this.device.createBindGroup({
-        layout: this.pipelines.duplicate.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this.buffers.pre } },
-          { binding: 1, resource: { buffer: this.buffers.touched } },
-          { binding: 2, resource: { buffer: this.buffers.keys } },
-          { binding: 3, resource: { buffer: this.buffers.values } },
-          { binding: 4, resource: { buffer: this.buffers.emitCounter } },
-          { binding: 5, resource: { buffer: this.buffers.uniforms } },
-        ],
-      });
-      const encDup = this.device.createCommandEncoder();
       {
-        const p = encDup.beginComputePass();
+        const dupBg = this.device.createBindGroup({
+          layout: this.pipelines.duplicate.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.buffers.pre } },
+            { binding: 1, resource: { buffer: this.buffers.touched } },
+            { binding: 2, resource: { buffer: this.buffers.keys } },
+            { binding: 3, resource: { buffer: this.buffers.values } },
+            { binding: 4, resource: { buffer: this.buffers.emitCounter } },
+            { binding: 5, resource: { buffer: this.buffers.uniforms } },
+          ],
+        });
+        const enc2 = this.device.createCommandEncoder();
+        const p = enc2.beginComputePass();
         p.setPipeline(this.pipelines.duplicate);
         p.setBindGroup(0, dupBg);
         p.dispatchWorkgroups(Math.ceil(this.splatCount / 256));
         p.end();
-      }
-      // Stage the duplicate output for readback in the same submit
-      // so we get it on the next mapAsync.
-      encDup.copyBufferToBuffer(this.buffers.keys, 0,
-                                this.buffers.keysReadback, 0,
-                                totalBytes);
-      encDup.copyBufferToBuffer(this.buffers.values, 0,
-                                this.buffers.valuesReadback, 0,
-                                totalBytes);
-      this.device.queue.submit([encDup.finish()]);
-
-      await Promise.all([
-        this.buffers.keysReadback.mapAsync(GPUMapMode.READ),
-        this.buffers.valuesReadback.mapAsync(GPUMapMode.READ),
-      ]);
-      const keys = new Uint32Array(
-          this.buffers.keysReadback.getMappedRange().slice(0));
-      const values = new Uint32Array(
-          this.buffers.valuesReadback.getMappedRange().slice(0));
-      this.buffers.keysReadback.unmap();
-      this.buffers.valuesReadback.unmap();
-
-      // Sort the (key, value) pairs by key. TypedArray.sort with a
-      // numeric comparator is the fast path; we sort an index array
-      // to keep keys + values in sync.
-      const tg = this.tileGridX;
-      const idx = new Uint32Array(total);
-      for (let i = 0; i < total; ++i) idx[i] = i;
-      idx.sort((a, b) => keys[a] - keys[b]);
-      const sortedKeys = new Uint32Array(total);
-      const sortedValues = new Uint32Array(total);
-      for (let i = 0; i < total; ++i) {
-        sortedKeys[i]   = keys[idx[i]];
-        sortedValues[i] = values[idx[i]];
+        this.device.queue.submit([enc2.finish()]);
       }
 
-      // Build tile ranges on CPU.
-      const nTiles = tg * this.tileGridY;
-      const ranges = new Uint32Array(nTiles * 2);   // (start, end) pairs
-      for (let i = 0; i < total; ++i) {
-        const tid = sortedKeys[i] >>> 19;
-        if (tid >= nTiles) continue;
-        if (i === 0) ranges[tid * 2] = 0;
-        else {
-          const prev = sortedKeys[i - 1] >>> 19;
-          if (prev !== tid) {
-            if (prev < nTiles) ranges[prev * 2 + 1] = i;
-            ranges[tid * 2] = i;
-          }
-        }
-        if (i === total - 1) ranges[tid * 2 + 1] = total;
-      }
+      // ── 4-pass radix sort over uint32 keys ──
+      let keysIn  = this.buffers.keys,    keysOut  = this.buffers.keysAlt;
+      let valsIn  = this.buffers.values,  valsOut  = this.buffers.valuesAlt;
+      for (let pass = 0; pass < 4; ++pass) {
+        const shift = pass * 8;
+        // Update sortU = (N=total, shift, num_groups, _pad)
+        this.device.queue.writeBuffer(this.buffers.sortU, 0,
+            new Uint32Array([total, shift, groups, 0]));
 
-      // Upload sorted values + tile ranges + dispatch rasterize.
-      if (this.buffers.valuesSorted &&
-          this.buffers.valuesSorted.size < total * 4) {
-        this.buffers.valuesSorted.destroy();
-        this.buffers.valuesSorted = null;
-      }
-      if (!this.buffers.valuesSorted) {
-        this.buffers.valuesSorted = this.device.createBuffer({
-          size: total * 4,
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        // Zero hist before this pass.
+        this.device.queue.writeBuffer(this.buffers.sortHist, 0,
+            new Uint32Array(histBytes / 4));
+
+        const histBg = this.device.createBindGroup({
+          layout: this.pipelines.sortHist.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: keysIn } },
+            { binding: 1, resource: { buffer: this.buffers.sortHist } },
+            { binding: 2, resource: { buffer: this.buffers.sortU } },
+          ],
         });
+        const scanBg = this.device.createBindGroup({
+          layout: this.pipelines.sortScan.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: this.buffers.sortHist } },
+            { binding: 1, resource: { buffer: this.buffers.bucketBase } },
+            { binding: 2, resource: { buffer: this.buffers.sortU } },
+          ],
+        });
+        const scatterBg = this.device.createBindGroup({
+          layout: this.pipelines.sortScatter.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: { buffer: keysIn } },
+            { binding: 1, resource: { buffer: valsIn } },
+            { binding: 2, resource: { buffer: this.buffers.sortHist } },
+            { binding: 3, resource: { buffer: this.buffers.bucketBase } },
+            { binding: 4, resource: { buffer: keysOut } },
+            { binding: 5, resource: { buffer: valsOut } },
+            { binding: 6, resource: { buffer: this.buffers.sortU } },
+          ],
+        });
+        const enc = this.device.createCommandEncoder();
+        let p = enc.beginComputePass();
+        p.setPipeline(this.pipelines.sortHist);
+        p.setBindGroup(0, histBg);
+        p.dispatchWorkgroups(groups);
+        p.end();
+        p = enc.beginComputePass();
+        p.setPipeline(this.pipelines.sortScan);
+        p.setBindGroup(0, scanBg);
+        p.dispatchWorkgroups(1);
+        p.end();
+        p = enc.beginComputePass();
+        p.setPipeline(this.pipelines.sortScatter);
+        p.setBindGroup(0, scatterBg);
+        p.dispatchWorkgroups(groups);
+        p.end();
+        this.device.queue.submit([enc.finish()]);
+
+        // Swap pointers — output of this pass becomes input of next.
+        [keysIn, keysOut] = [keysOut, keysIn];
+        [valsIn, valsOut] = [valsOut, valsIn];
       }
-      this.device.queue.writeBuffer(this.buffers.valuesSorted, 0, sortedValues);
-      this.device.queue.writeBuffer(this.buffers.tileRanges, 0, ranges);
+      // After 4 passes the sorted result is in (keysIn, valsIn).
+
+      // ── compute_ranges on GPU ──
+      const nTiles = this.tileGridX * this.tileGridY;
+      this.device.queue.writeBuffer(this.buffers.rangesU, 0,
+          new Uint32Array([total, nTiles, 0, 0]));
+      // Zero tile_ranges.
+      this.device.queue.writeBuffer(this.buffers.tileRanges, 0,
+          new Uint32Array(nTiles * 2));
+      const rangesBg = this.device.createBindGroup({
+        layout: this.pipelines.ranges.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: keysIn } },
+          { binding: 1, resource: { buffer: this.buffers.tileRanges } },
+          { binding: 2, resource: { buffer: this.buffers.rangesU } },
+        ],
+      });
+      {
+        const enc = this.device.createCommandEncoder();
+        const p = enc.beginComputePass();
+        p.setPipeline(this.pipelines.ranges);
+        p.setBindGroup(0, rangesBg);
+        p.dispatchWorkgroups(Math.ceil(total / 256));
+        p.end();
+        this.device.queue.submit([enc.finish()]);
+      }
+
+      // Cache the sorted-values buffer for the rasterize bind group
+      // (it ping-pongs each frame, so the bind-group builder gets a
+      // dynamic buffer reference rather than a fixed `valuesSorted`).
+      this.buffers.valuesSorted = valsIn;
 
       const enc3 = this.device.createCommandEncoder();
       {
@@ -565,6 +617,22 @@
       this.pipelines.duplicate = dev.createComputePipeline({
         layout: 'auto',
         compute: { module: shaderModules.duplicate, entryPoint: 'main' },
+      });
+      this.pipelines.sortHist = dev.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModules.sortHist, entryPoint: 'main' },
+      });
+      this.pipelines.sortScan = dev.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModules.sortScan, entryPoint: 'main' },
+      });
+      this.pipelines.sortScatter = dev.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModules.sortScatter, entryPoint: 'main' },
+      });
+      this.pipelines.ranges = dev.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModules.ranges, entryPoint: 'main' },
       });
       this.pipelines.rasterize = dev.createComputePipeline({
         layout: 'auto',
