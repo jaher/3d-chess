@@ -5,9 +5,17 @@
 //
 // Activation: append `?webgpu` to the URL or set
 // `localStorage.CHESS_WEBGPU_SPLATS = "1"`. The init pass detects
-// support at startup; if WebGPU isn't available (e.g. Firefox
-// without the flag, older Safari), the activation flag is ignored
-// and the chess web build keeps its existing per-quad path.
+// support at startup; if WebGPU isn't available (e.g. Linux Chrome
+// without `chrome://flags/#enable-unsafe-webgpu`, Firefox stable,
+// older Safari), the activation flag is honoured but harmless —
+// init returns false, a small dismissible banner explains the
+// fallback, and the chess web build renders splats via its existing
+// per-quad WebGL path (which needs no flag anywhere).
+//
+// We never enable the software (forceFallbackAdapter) WebGPU path:
+// SwiftShader running the 500k-splat compute pipelines is far
+// slower than the per-quad WebGL renderer the page would otherwise
+// use, so silently activating it would be a net downgrade.
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -29,6 +37,12 @@ extern "C" {
 // Called once at startup from main_web.cpp. Returns immediately —
 // the actual WebGPU init is async; further calls poll
 // chess_webgpu_splats_supported() until it returns 2 or -1.
+//
+// If the user opted in (`?webgpu` / localStorage) but WebGPU couldn't
+// activate, the page falls back to the per-quad WebGL splat
+// renderer and a brief dismissible banner explains why. Without
+// opt-in, no banner appears — the page works exactly as it did
+// before this file ever existed.
 EM_JS(void, _chess_webgpu_init, (), {
   const url = new URL(window.location);
   const want = url.searchParams.has('webgpu') ||
@@ -36,8 +50,41 @@ EM_JS(void, _chess_webgpu_init, (), {
                (window.localStorage &&
                 window.localStorage.getItem('CHESS_WEBGPU_SPLATS') === '1');
   if (!want) { Module._chess_webgpu_set_state(-1); return; }
+
+  // ── Small dismissible "WebGPU unavailable" banner. Mounted on
+  //    fallback so the user — who explicitly asked for WebGPU via
+  //    `?webgpu` — sees a hint instead of silently getting the
+  //    WebGL path. Auto-dismisses after 12s.
+  const showFallbackBanner = (msg) => {
+    if (document.getElementById('webgpu-fallback-banner')) return;
+    const b = document.createElement('div');
+    b.id = 'webgpu-fallback-banner';
+    b.style.cssText =
+        'position:fixed;top:8px;right:8px;z-index:1000;' +
+        'max-width:340px;padding:10px 28px 10px 12px;' +
+        'background:#222;color:#ddd;border:1px solid #444;' +
+        'border-radius:6px;font:12px/1.4 monospace;' +
+        'box-shadow:0 2px 8px rgba(0,0,0,0.5);';
+    b.textContent = msg;
+    const x = document.createElement('button');
+    x.textContent = 'x';
+    x.style.cssText =
+        'position:absolute;top:4px;right:6px;width:18px;height:18px;' +
+        'padding:0;border:0;background:transparent;color:#888;' +
+        'cursor:pointer;font:14px monospace;';
+    x.onclick = () => b.remove();
+    b.appendChild(x);
+    document.body.appendChild(b);
+    setTimeout(() => { if (b.parentNode) b.remove(); }, 12000);
+  };
+
   if (!window.WebGPUSplats || !window.WebGPUSplats.supported()) {
-    console.warn('[webgpu-splats] not supported in this browser');
+    console.info('[webgpu-splats] WebGPU not exposed by this ' +
+                 'browser. Using the standard WebGL splat renderer.');
+    showFallbackBanner(
+        'WebGPU is not available in this browser. Rendering with ' +
+        'the standard WebGL splat path. (Try a recent Chrome / ' +
+        'Edge / Safari, or Firefox Nightly.)');
     Module._chess_webgpu_set_state(-1);
     return;
   }
@@ -47,11 +94,23 @@ EM_JS(void, _chess_webgpu_init, (), {
       console.log('[webgpu-splats] enabled');
       Module._chess_webgpu_set_state(2);
     } else {
-      console.warn('[webgpu-splats] init failed');
+      // WebGPUSplats.init() has already logged a clear info line
+      // explaining which step bailed (no adapter / no context /
+      // pipeline build). The banner echoes the most common cause
+      // — Linux Chrome's chrome://flags/#enable-unsafe-webgpu gate
+      // — without claiming it's definitely that.
+      showFallbackBanner(
+          'WebGPU could not activate. Rendering with the standard ' +
+          'WebGL splat path. On Linux Chrome, enable ' +
+          'chrome://flags/#enable-unsafe-webgpu and restart.');
       Module._chess_webgpu_set_state(-1);
     }
   }).catch(err => {
-    console.warn('[webgpu-splats] init error:', err);
+    console.info('[webgpu-splats] init error — falling back to ' +
+                 'the standard WebGL splat renderer.', err);
+    showFallbackBanner(
+        'WebGPU init error: ' + (err && err.message ? err.message : err) +
+        '. Rendering with the standard WebGL splat path.');
     Module._chess_webgpu_set_state(-1);
   });
 });

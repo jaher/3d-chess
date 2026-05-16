@@ -68,46 +68,43 @@
     },
 
     async init() {
-      // Each failure path logs exactly where it bailed so the user
-      // can paste the line into a bug report — the bare
-      // "[webgpu-splats] init failed" from the outer callback
-      // doesn't say which step dropped.
+      // Outcomes: one clear line per result. Caller (webgpu_splats_web.cpp)
+      // surfaces a brief on-page banner when init returns false so the
+      // user knows the per-quad WebGL fallback is rendering instead.
+      //
+      // We intentionally do NOT try the software (forceFallbackAdapter)
+      // path: SwiftShader running the 500k-splat compute pipelines
+      // tanks to single-digit fps and is strictly slower than the
+      // per-quad WebGL2 path the page would otherwise use. Better to
+      // return false and let the chess renderer take its existing
+      // no-flag fallback.
       if (!this.supported()) {
-        console.warn('[webgpu-splats] supported() returned false ' +
-                     '(navigator.gpu missing?)');
+        console.info('[webgpu-splats] WebGPU not available in this ' +
+                     'browser (navigator.gpu missing). Using the ' +
+                     'standard WebGL splat renderer instead.');
         return false;
       }
       try {
-        // First try the hardware adapter (high-perf, discrete GPU
-        // on dual-GPU systems).
-        let adapter = await navigator.gpu.requestAdapter(
+        const adapter = await navigator.gpu.requestAdapter(
             { powerPreference: 'high-performance' });
-        // On Linux Chrome without `chrome://flags/#enable-unsafe-webgpu`
-        // the hardware adapter returns null. Fall back to the
-        // software (Dawn/SwiftShader) adapter — slow but it at
-        // least proves the pipeline + WGSL compile path works.
         if (!adapter) {
-          console.warn('[webgpu-splats] hardware adapter null — ' +
-                       'trying software fallback. For full speed ' +
-                       'enable chrome://flags/#enable-unsafe-webgpu ' +
-                       'and restart Chrome.');
-          adapter = await navigator.gpu.requestAdapter(
-              { forceFallbackAdapter: true });
-        }
-        if (!adapter) {
-          console.warn('[webgpu-splats] no adapter (hardware or ' +
-                       'software). WebGPU is unavailable in this ' +
-                       'browser/profile. Enable ' +
+          // Most common cause on Linux Chrome: WebGPU is gated
+          // behind chrome://flags/#enable-unsafe-webgpu. We can't
+          // override that from JS. Print a single actionable hint;
+          // the banner in webgpu_splats_web.cpp echoes it on-page.
+          console.info('[webgpu-splats] requestAdapter() returned ' +
+                       'null — no compatible GPU adapter is exposed ' +
+                       'to WebGPU. On Linux Chrome enable ' +
                        'chrome://flags/#enable-unsafe-webgpu and ' +
-                       'restart Chrome.');
+                       'restart the browser. Falling back to the ' +
+                       'standard WebGL splat renderer.');
           return false;
         }
-        console.log('[webgpu-splats] adapter info:',
-                    adapter.info || adapter);
         this.device = await adapter.requestDevice();
-        console.log('[webgpu-splats] device created');
       } catch (e) {
-        console.warn('[webgpu-splats] adapter/device init threw:', e);
+        console.info('[webgpu-splats] adapter/device init threw — ' +
+                     'falling back to the standard WebGL splat ' +
+                     'renderer.', e);
         return false;
       }
       // Create the backdrop canvas, behind the chess WebGL canvas.
@@ -127,7 +124,9 @@
         this.canvas = c;
         const ctx = c.getContext('webgpu');
         if (!ctx) {
-          console.warn('[webgpu-splats] canvas.getContext("webgpu") returned null');
+          console.info('[webgpu-splats] canvas.getContext("webgpu") ' +
+                       'returned null — falling back to the standard ' +
+                       'WebGL splat renderer.');
           return false;
         }
         this.canvasContext = ctx;
@@ -138,16 +137,21 @@
           alphaMode: 'premultiplied',
         });
       } catch (e) {
-        console.warn('[webgpu-splats] canvas/context setup threw:', e);
+        console.info('[webgpu-splats] canvas/context setup threw — ' +
+                     'falling back to the standard WebGL splat ' +
+                     'renderer.', e);
         return false;
       }
       try {
         this._buildPipelines();
       } catch (e) {
-        console.warn('[webgpu-splats] _buildPipelines threw:', e);
+        console.info('[webgpu-splats] _buildPipelines threw — ' +
+                     'falling back to the standard WebGL splat ' +
+                     'renderer.', e);
         return false;
       }
-      console.log('[webgpu-splats] init ok, canvasFormat=', this.canvasFormat);
+      console.log('[webgpu-splats] ready (canvasFormat=' +
+                  this.canvasFormat + ')');
       return true;
     },
 
