@@ -26,6 +26,7 @@
 
 #include "../app_state.h"
 #include "../ai_player.h"
+#include "../chess_rules.h"
 #include "../chessnut_encode.h"
 #include "../phantom_encode.h"
 
@@ -339,6 +340,39 @@ void app_chessnut_sync_board(AppState& a, bool force) {
         }
     }
     chessnut_web_write_frame_js(frame.data(), static_cast<int>(frame.size()));
+}
+
+// Web mirror of the desktop helper in app_state.cpp. Same idea: run
+// execute_move on a throwaway GameState copy, serialise the
+// resulting FEN, and write the bridge frame NOW so the physical
+// board starts moving while the on-screen animation plays.
+bool app_chessnut_send_ai_move_preview(AppState& a,
+                                       int fc, int fr,
+                                       int tc, int tr) {
+    if (!a.chessnut_enabled || !a.chessnut_connected) return false;
+    const GameState& live = cur_gs(a);
+    GameState preview = live;
+    execute_move(preview, fc, fr, tc, tr);
+    std::vector<uint8_t> frame;
+    if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
+        // Phantom takes a per-move ASCII command (not a FEN), so the
+        // copy is only needed for the alive-piece-delta capture
+        // check (covers en passant).
+        int n_before = 0, n_after = 0;
+        for (const auto& p : live.pieces)    if (p.alive) n_before++;
+        for (const auto& p : preview.pieces) if (p.alive) n_after++;
+        bool capture = (n_after < n_before);
+        frame = phantom::make_move_cmd_bytes(fc, fr, tc, tr, capture);
+    } else {
+        std::string fen = app_fen_from_state(preview, preview.white_turn);
+        try {
+            frame = chessnut::make_set_move_board(fen, /*force=*/false);
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+    chessnut_web_write_frame_js(frame.data(), static_cast<int>(frame.size()));
+    return true;
 }
 
 void app_chessnut_shutdown(AppState& a) {

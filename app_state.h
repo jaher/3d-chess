@@ -736,6 +736,20 @@ void app_chessnut_set_enabled(
     std::function<void(const std::string& status)> on_status);
 void app_chessnut_apply_status(AppState& a, const std::string& status);
 void app_chessnut_sync_board(AppState& a, bool force);
+// Pre-emptive bridge sync called from start_ai_animation. Builds the
+// post-move FEN on a throwaway GameState copy (the live game stays
+// at its pre-move state until the on-screen animation completes)
+// and pushes it to the physical Chessnut Move / Phantom board NOW
+// so its motors begin moving in parallel with the animation — the
+// motor traversal takes seconds, the on-screen animation ~500 ms,
+// so sending afterwards would add the full motor time to the
+// turn-around. Returns true when a sync was actually emitted (bridge
+// connected, kind known); caller then sets ai_anim_skip_chessnut_sync
+// so the post-animation app_chessnut_sync_board doesn't double up.
+// No-op when nothing is connected.
+bool app_chessnut_send_ai_move_preview(AppState& a,
+                                       int from_col, int from_row,
+                                       int to_col,   int to_row);
 void app_chessnut_shutdown(AppState& a);
 void app_chessnut_toggle_request(AppState& a);
 bool app_chessnut_supported();
@@ -744,6 +758,11 @@ bool app_chessnut_supported();
 // AppState so non-app_state.cpp callers (e.g. web/chessnut_web.cpp)
 // can drive the bridge without re-implementing FEN serialisation.
 std::string app_current_fen(const AppState& a);
+// FEN-serialise an arbitrary GameState. Used by
+// app_chessnut_send_ai_move_preview (and its web equivalent) to
+// build the FEN of the *post-move* state on a throwaway copy
+// without mutating the live game.
+std::string app_fen_from_state(const GameState& gs, bool white_turn);
 
 // Persistence for user-visible toggles (cartoon outline, Chessnut
 // Move enabled). Continuous voice is intentionally NOT persisted

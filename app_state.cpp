@@ -2225,6 +2225,18 @@ static bool is_legal_ai_move(const AppState& a, int fc, int fr, int tc, int tr) 
 
 static void start_ai_animation(AppState& a, int fc, int fr, int tc, int tr) {
     GameState& gs = cur_gs(a);
+    // Kick the physical board's motors off NOW, in parallel with the
+    // on-screen animation. ai_anim_skip_chessnut_sync may already be
+    // set by the sensor-driven move path (line ~4732) — that case
+    // means the piece is already at its destination on the board,
+    // so we must NOT re-send the FEN. For AI / fallback moves the
+    // flag is clear; if the preview send succeeds, set it to
+    // suppress the redundant post-animation sync in
+    // tick_ai_animation.
+    if (!gs.ai_anim_skip_chessnut_sync &&
+        app_chessnut_send_ai_move_preview(a, fc, fr, tc, tr)) {
+        gs.ai_anim_skip_chessnut_sync = true;
+    }
     gs.ai_from_col = fc;
     gs.ai_from_row = fr;
     gs.ai_to_col   = tc;
@@ -4141,6 +4153,14 @@ std::string app_current_fen(const AppState& a) {
     return current_fen(cur_gs(a), cur_gs(a).white_turn);
 }
 
+// Thin wrapper exposing the file-local current_fen() through the
+// header so non-app_state.cpp callers (web/chessnut_web.cpp) can
+// FEN-serialise a throwaway GameState — used by the AI-move-preview
+// path to build the post-move FEN without mutating the live game.
+std::string app_fen_from_state(const GameState& gs, bool white_turn) {
+    return current_fen(gs, white_turn);
+}
+
 // ---------------------------------------------------------------------------
 // Inbound sensor-frame mirroring (board → digital).
 // ---------------------------------------------------------------------------
@@ -5108,6 +5128,39 @@ void app_chessnut_sync_board(AppState& a, bool force) {
     g_active_bridge->on_move_played(fen, fc, fr, tc, tr, capture);
     a.chessnut_last_sync_us = now_us(a);
     app_chessnut_highlight_last_move(a);
+}
+
+// Used by start_ai_animation to send the AI move to the physical
+// board BEFORE the on-screen animation plays. We can't mutate the
+// live GameState yet — the animation pipeline reads gs.pieces /
+// gs.grid mid-frame to draw the flying piece — so we run
+// execute_move on a throwaway copy, FEN-serialise that, and hand it
+// to the bridge. The motors begin traversing immediately while the
+// animation runs on screen; by the time tick_ai_animation tail
+// fires execute_move on the live state, the bridge already knows
+// about the move, hence the ai_anim_skip_chessnut_sync hand-off.
+bool app_chessnut_send_ai_move_preview(AppState& a,
+                                       int fc, int fr,
+                                       int tc, int tr) {
+    if (!g_active_bridge || !a.chessnut_connected) return false;
+    const GameState& live = cur_gs(a);
+    GameState preview = live;
+    execute_move(preview, fc, fr, tc, tr);
+    // Capture-by-alive-count covers regular captures + en passant
+    // uniformly (en passant removes a pawn that isn't at the
+    // destination square).
+    int n_before = 0, n_after = 0;
+    for (const auto& p : live.pieces)    if (p.alive) n_before++;
+    for (const auto& p : preview.pieces) if (p.alive) n_after++;
+    bool capture = (n_after < n_before);
+    std::string fen = current_fen(preview, preview.white_turn);
+    std::fprintf(stderr,
+        "[bridge/sync] %s on_move_played %s capture=%d (early/AI)\n",
+        g_active_bridge->label(),
+        move_to_uci(fc, fr, tc, tr).c_str(), capture ? 1 : 0);
+    g_active_bridge->on_move_played(fen, fc, fr, tc, tr, capture);
+    a.chessnut_last_sync_us = now_us(a);
+    return true;
 }
 
 // Light up the from + to squares of the last move via whatever
