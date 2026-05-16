@@ -2336,41 +2336,52 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     auto drain_pending_speech_no_classify = [&]() {
         if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
             std::string utterance = cur(a).pending_move_speech;
-            if (!cur(a).pending_move_tactic.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_tactic;
-            }
-            if (!cur(a).pending_move_mate_in.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_mate_in;
-            }
-            if (!cur(a).pending_move_opening.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_opening;
-            }
-            if (!cur(a).pending_move_endgame.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_endgame;
-            }
-            if (!cur(a).pending_move_pawn_structure.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_pawn_structure;
-            }
-            if (!cur(a).pending_move_pawn_family.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_pawn_family;
-            }
-            if (!cur(a).pending_move_critical.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_critical;
-            }
-            if (!cur(a).pending_move_tablebase.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_tablebase;
-            }
-            if (!cur(a).pending_move_opening_plan.empty()) {
-                utterance += ". ";
-                utterance += cur(a).pending_move_opening_plan;
+            // When the move just ended the game in checkmate,
+            // uci_to_speech already appended ", checkmate" — the
+            // trailing tactic / mate-in / opening / structure / etc.
+            // labels would land *after* "checkmate" and feel jarring
+            // ("Queen to h four, checkmate. Fork. Mate in 1."). Skip
+            // them all and let the announcement end on the mate.
+            const bool ends_in_checkmate =
+                cur_gs(a).game_over &&
+                cur_gs(a).game_result.find("checkmate") != std::string::npos;
+            if (!ends_in_checkmate) {
+                if (!cur(a).pending_move_tactic.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_tactic;
+                }
+                if (!cur(a).pending_move_mate_in.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_mate_in;
+                }
+                if (!cur(a).pending_move_opening.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_opening;
+                }
+                if (!cur(a).pending_move_endgame.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_endgame;
+                }
+                if (!cur(a).pending_move_pawn_structure.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_pawn_structure;
+                }
+                if (!cur(a).pending_move_pawn_family.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_pawn_family;
+                }
+                if (!cur(a).pending_move_critical.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_critical;
+                }
+                if (!cur(a).pending_move_tablebase.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_tablebase;
+                }
+                if (!cur(a).pending_move_opening_plan.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_opening_plan;
+                }
             }
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
@@ -2695,72 +2706,85 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // overlap them with each other or with the next move.
     if (a.voice_tts_enabled && !cur(a).pending_move_speech.empty()) {
         std::string utterance = cur(a).pending_move_speech;
-        // Order: move text → tactic motif (per-move event,
-        // matches the move) → opening / endgame phase label (a
-        // fact about the position, fires on transitions) → quality
-        // label (human moves only). The tactic comes right after
-        // the move because it describes *that move*; phase labels
-        // sit further out because they describe the position.
-        if (!cur(a).pending_move_tactic.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_tactic;
-        }
-        // Mate-in-N is loud and timely; comes right after the
-        // tactic (since "Knight f6, fork, mate in 3" reads more
-        // dramatic than burying it after the opening label).
-        if (!cur(a).pending_move_mate_in.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_mate_in;
-        }
-        if (!cur(a).pending_move_opening.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_opening;
-        }
-        if (!cur(a).pending_move_endgame.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_endgame;
-        }
-        // Pawn-structure label (IQP, hanging pawns, passed pawn,
-        // doubled pawns) — same family as opening / endgame phase
-        // labels: facts about the position rather than the move.
-        if (!cur(a).pending_move_pawn_structure.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_pawn_structure;
-        }
-        // Named pawn-family label (Maroczy, Stonewall, Hedgehog,
-        // Carlsbad, French / Caro-Kann / King's Indian chains,
-        // Closed Sicilian, Benoni). Goes after the structure
-        // facts because it's a more specific reading.
-        if (!cur(a).pending_move_pawn_family.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_pawn_family;
-        }
-        // Critical theoretical position (Lucena, Philidor,
-        // Vancura). Slots in after the family label since it's
-        // even more specific.
-        if (!cur(a).pending_move_critical.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_critical;
-        }
-        // Tablebase-style verdict (≤ 7-piece territory) — slots
-        // in after the named-position label since it's the
-        // ultimate "what's the result of this position" reading.
-        if (!cur(a).pending_move_tablebase.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_tablebase;
-        }
-        // Opening-plan tail — pairs with the opening name above
-        // and fires only once per opening family. Goes last among
-        // the position labels because it's the longest sentence
-        // and feels weird sandwiched between shorter items.
-        if (!cur(a).pending_move_opening_plan.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_opening_plan;
-        }
-        if (cur(a).pending_move_speech_was_human &&
-            !cur(a).pending_move_classification.empty()) {
-            utterance += ". ";
-            utterance += cur(a).pending_move_classification;
+        // When the move just ended the game in checkmate,
+        // uci_to_speech already appended ", checkmate". Drop the
+        // trailing labels so the announcement ends on the mate
+        // instead of trailing into "Queen to h four, checkmate.
+        // Fork. Mate in 1. Great move." — the labels are about
+        // the move that happened to deliver mate, and reading
+        // them after the mate is awkward.
+        const bool ends_in_checkmate =
+            cur_gs(a).game_over &&
+            cur_gs(a).game_result.find("checkmate") != std::string::npos;
+        if (!ends_in_checkmate) {
+            // Order: move text → tactic motif (per-move event,
+            // matches the move) → opening / endgame phase label (a
+            // fact about the position, fires on transitions) →
+            // quality label (human moves only). The tactic comes
+            // right after the move because it describes *that
+            // move*; phase labels sit further out because they
+            // describe the position.
+            if (!cur(a).pending_move_tactic.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_tactic;
+            }
+            // Mate-in-N is loud and timely; comes right after the
+            // tactic (since "Knight f6, fork, mate in 3" reads more
+            // dramatic than burying it after the opening label).
+            if (!cur(a).pending_move_mate_in.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_mate_in;
+            }
+            if (!cur(a).pending_move_opening.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_opening;
+            }
+            if (!cur(a).pending_move_endgame.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_endgame;
+            }
+            // Pawn-structure label (IQP, hanging pawns, passed pawn,
+            // doubled pawns) — same family as opening / endgame phase
+            // labels: facts about the position rather than the move.
+            if (!cur(a).pending_move_pawn_structure.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_pawn_structure;
+            }
+            // Named pawn-family label (Maroczy, Stonewall, Hedgehog,
+            // Carlsbad, French / Caro-Kann / King's Indian chains,
+            // Closed Sicilian, Benoni). Goes after the structure
+            // facts because it's a more specific reading.
+            if (!cur(a).pending_move_pawn_family.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_pawn_family;
+            }
+            // Critical theoretical position (Lucena, Philidor,
+            // Vancura). Slots in after the family label since it's
+            // even more specific.
+            if (!cur(a).pending_move_critical.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_critical;
+            }
+            // Tablebase-style verdict (≤ 7-piece territory) — slots
+            // in after the named-position label since it's the
+            // ultimate "what's the result of this position" reading.
+            if (!cur(a).pending_move_tablebase.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_tablebase;
+            }
+            // Opening-plan tail — pairs with the opening name above
+            // and fires only once per opening family. Goes last among
+            // the position labels because it's the longest sentence
+            // and feels weird sandwiched between shorter items.
+            if (!cur(a).pending_move_opening_plan.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_opening_plan;
+            }
+            if (cur(a).pending_move_speech_was_human &&
+                !cur(a).pending_move_classification.empty()) {
+                utterance += ". ";
+                utterance += cur(a).pending_move_classification;
+            }
         }
         voice_tts_speak(utterance);
         cur(a).pending_move_speech.clear();
