@@ -485,6 +485,67 @@ extern "C" void renderer_begin_frame() {
     g_splat_bg_cache_valid = false;
 }
 
+// See board_renderer.h for the why. Draws g_splat_bg_color_tex into
+// dst_fbo using a "draw under" blend, so existing opaque pixels in
+// dst stay put and the splat colour fills in the alpha=0 regions.
+// Used by the shatter capture path on web when WebGPU mode is on:
+// in that mode the per-quad splat blit was skipped on FBO 0 so the
+// WebGPU canvas behind could show through, and the captured FBO 0
+// is alpha-cleared in the splat region; this re-introduces the
+// splat backdrop into the capture so the shatter shards aren't
+// dark/empty.
+void renderer_composite_splat_under(unsigned int dst_fbo,
+                                    int width, int height) {
+    if (!g_splat_program || !g_splat_blit_program ||
+        !g_splat_bg_color_tex || !g_fullscreen_vao ||
+        g_packed.count <= 0) {
+        return;
+    }
+    // The per-quad path populates g_splat_bg_color_tex when it
+    // draws splats this frame, even when the subsequent blit is
+    // skipped for WebGPU. If the cache isn't valid the texture is
+    // either stale (from a prior frame) or never written; bail
+    // either way — the capture stays whatever the caller already
+    // grabbed.
+    if (!g_splat_bg_cache_valid) return;
+
+    GLint prev_fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fb);
+    GLboolean prev_depth_test = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean prev_blend      = glIsEnabled(GL_BLEND);
+    GLboolean prev_scissor    = glIsEnabled(GL_SCISSOR_TEST);
+    GLint prev_blend_src = 0, prev_blend_dst = 0;
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prev_blend_src);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prev_blend_dst);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);
+    // "Under" composite: out = src * (1 - dst_alpha) + dst. Where
+    // dst is opaque (chess pieces, alpha=1) the splat is masked out;
+    // where dst is alpha=0 (the cleared backdrop region) the splat
+    // fills in.
+    glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+
+    glUseProgram(g_splat_blit_program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);
+    glUniform1i(glGetUniformLocation(g_splat_blit_program, "uTex"), 0);
+    glBindVertexArray(g_fullscreen_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    glDepthMask(GL_TRUE);
+    if (prev_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prev_blend)      glEnable(GL_BLEND);      else glDisable(GL_BLEND);
+    if (prev_scissor)    glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    glBlendFunc(prev_blend_src, prev_blend_dst);
+    glBindFramebuffer(GL_FRAMEBUFFER, prev_fb);
+}
+
 // Multisample FBO used as the actual 3D-pass target. Color +
 // depth are renderbuffers (we never sample them as textures —
 // the resolve pass blits into the single-sample g_scene_fbo /

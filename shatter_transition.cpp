@@ -1,5 +1,6 @@
 #include "shatter_transition.h"
 
+#include "board_renderer.h"
 #include "shader.h"
 
 #ifdef __EMSCRIPTEN__
@@ -10,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 namespace {
@@ -221,6 +223,40 @@ void renderer_capture_frame(int width, int height) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_capture_fbo);
     glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+#ifdef __EMSCRIPTEN__
+    // When `?webgpu` is active the per-quad WebGL splat blit is
+    // skipped during the live frame so the WebGPU canvas behind can
+    // show through — which means the FBO 0 we just captured has
+    // chess pieces over an alpha-cleared transparent region instead
+    // of a splat backdrop. Re-composite the WebGL splat colour
+    // texture *under* the captured chess content so the shatter
+    // shards show a full scene instead of dark voids. Cheap: one
+    // fullscreen quad. No-op when no splat data is loaded or the
+    // per-quad splat cache isn't valid (e.g. challenge-summary
+    // screen where renderer_draw didn't run this frame).
+    renderer_composite_splat_under(g_capture_fbo, width, height);
+#endif
+
+    // One-shot diagnostic: read a single pixel from the centre of
+    // the capture and print its RGBA. If this prints (0,0,0,*) the
+    // capture isn't reading what we expected; if it prints non-zero
+    // RGB the capture is fine and the bug is downstream (shader,
+    // bindings, blend). Logged once so the console doesn't drown.
+    static bool s_diag_done = false;
+    if (!s_diag_done) {
+        s_diag_done = true;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_capture_fbo);
+        unsigned char px[4] = {0, 0, 0, 0};
+        glReadPixels(width / 2, height / 2, 1, 1,
+                     GL_RGBA, GL_UNSIGNED_BYTE, px);
+        std::fprintf(stderr,
+            "[shatter] capture diag: center pixel RGBA = "
+            "(%u, %u, %u, %u), size=%dx%d, src_fb=%d\n",
+            px[0], px[1], px[2], px[3], width, height,
+            static_cast<int>(src_fb));
+    }
+
     // Restore the original FBO binding for both read and draw so
     // subsequent draws (the new puzzle render inside the trigger)
     // land where the caller expects.
