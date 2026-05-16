@@ -3517,7 +3517,25 @@ static void render_challenge_overlay_and_buttons(AppState& a, int width, int hei
 static void render_challenge_transition_trigger(AppState& a, int width, int height,
                                                 int64_t now) {
     if (a.transition_pending_next < 0) return;
+#ifdef __EMSCRIPTEN__
+    // On web, glBlitFramebuffer from the multisample WebGL2 default
+    // framebuffer doesn't reliably resolve to a single-sample user
+    // FBO across all implementations — the capture texture came
+    // back empty / transparent and the shatter shards rendered as
+    // dark voids. Re-render the live chess scene into the shatter
+    // capture FBO directly to sidestep that quirk. Cost: one extra
+    // renderer_draw per puzzle advance; the splat cache hits so
+    // the splat backdrop pass is just a blit.
+    renderer_redraw_into_capture_fbo(cur_gs(a), width, height,
+                                      a.rot_x, a.rot_y, a.zoom,
+                                      a.human_plays_white,
+                                      a.splats_enabled,
+                                      a.light_dir_x, a.light_dir_y,
+                                      a.light_dir_z,
+                                      a.light_positioning);
+#else
     renderer_capture_frame(width, height);
+#endif
     app_load_challenge_puzzle(a, a.transition_pending_next);
     a.transition_pending_next = -1;
     a.transition_active = true;

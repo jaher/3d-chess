@@ -13,6 +13,17 @@ void shatter_init();
 // texture so renderer_draw_shatter can animate it afterwards.
 void renderer_capture_frame(int width, int height);
 
+// Ensure the capture FBO + texture + depth attachment exist at the
+// given size and return the FBO handle. Use it when the caller wants
+// to render directly into the capture target instead of relying on
+// renderer_capture_frame to read from the default FB — on web that
+// read path is unreliable because the WebGL2 multisample default
+// framebuffer doesn't always resolve via glBlitFramebuffer the way
+// the spec implies, and re-rendering the live state straight into
+// our own single-sample FBO sidesteps the quirk entirely.
+unsigned int shatter_ensure_capture_target(int width, int height);
+unsigned int shatter_capture_color_texture();
+
 // Draw the shattered captured frame at animation time `t` (seconds).
 // No-op before the first capture.
 void renderer_draw_shatter(float t, int width, int height);

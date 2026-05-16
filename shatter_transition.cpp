@@ -1,6 +1,5 @@
 #include "shatter_transition.h"
 
-#include "board_renderer.h"
 #include "shader.h"
 
 #ifdef __EMSCRIPTEN__
@@ -11,7 +10,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <vector>
 
 namespace {
@@ -21,23 +19,52 @@ GLuint g_shatter_vao          = 0;
 GLuint g_shatter_vbo          = 0;
 int    g_shatter_vertex_count = 0;
 
-GLuint g_capture_tex = 0;
-// Single-sample FBO that the (possibly multisample) source framebuffer
-// gets resolved into via glBlitFramebuffer. Needed on both platforms:
-//   * Web: WebGL2's default backbuffer is created with antialias=true,
-//     so it's multisampled and glCopyTexSubImage2D from it is
-//     UNDEFINED (produces an all-zero texture in practice — black
-//     shards).
-//   * Desktop: the splat backdrop introduced an MS scene FBO and a
-//     dedicated splat FBO. The chain of resolves leaves the
-//     GtkGLArea-owned default FBO in a state where the safest read
-//     is still an explicit glBlitFramebuffer into our own single-
-//     sample texture-backed FBO; glCopyTexSubImage2D used to work
-//     because the only target was the simple default FB, but post-
-//     splat the implicit-source assumption stopped capturing what
-//     we expected. Result was the same all-black shard texture.
-GLuint g_capture_fbo = 0;
+GLuint g_capture_tex      = 0;
+GLuint g_capture_fbo      = 0;
+GLuint g_capture_depth_rb = 0;
 int g_capture_w = 0, g_capture_h = 0;
+
+// Lazily (re-)build the capture FBO + colour texture + depth
+// renderbuffer at the requested size. We need a depth attachment
+// because the caller renders the whole 3D chess scene into this
+// FBO (depth-tested), not just blits a 2D snapshot. RGBA8 colour
+// matches the chess scene's clear colour layout; DEPTH_COMPONENT24
+// is enough for the chess scene's z range and matches what
+// renderer_draw configures elsewhere.
+static void ensure_capture_target(int width, int height) {
+    if (g_capture_tex && g_capture_w == width && g_capture_h == height) {
+        return;
+    }
+    if (g_capture_tex)      glDeleteTextures(1, &g_capture_tex);
+    if (g_capture_depth_rb) glDeleteRenderbuffers(1, &g_capture_depth_rb);
+
+    glGenTextures(1, &g_capture_tex);
+    glBindTexture(GL_TEXTURE_2D, g_capture_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &g_capture_depth_rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_capture_depth_rb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+    if (!g_capture_fbo) glGenFramebuffers(1, &g_capture_fbo);
+    GLint prev_fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_capture_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, g_capture_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, g_capture_depth_rb);
+    glBindFramebuffer(GL_FRAMEBUFFER, prev_fb);
+
+    g_capture_w = width;
+    g_capture_h = height;
+}
 
 // Build shatter mesh: voronoi-like cells. For each jittered cell
 // centre, compute its voronoi polygon via Sutherland-Hodgman
@@ -189,78 +216,30 @@ void shatter_init() {
 void renderer_capture_frame(int width, int height) {
     // Snapshot whichever framebuffer is currently bound — that's the
     // one app_state.cpp's render_board just finished drawing into.
-    // On desktop it's the GtkGLArea's internal FBO; on web it's FBO 0
-    // (the WebGL canvas). Either way we want to resolve it into our
-    // own single-sample texture-backed FBO so glBlitFramebuffer
-    // handles multisample auto-resolve and the captured pixels match
-    // what the user actually saw.
+    // On desktop this is the GtkGLArea's internal FBO and the read
+    // path is reliable. On web FBO 0 is the multisample WebGL2
+    // drawing buffer and the blit-to-single-sample read is not
+    // dependable across implementations (it produced an empty
+    // texture and the shards rendered as transparent voids), so the
+    // web caller is expected to use shatter_ensure_capture_target +
+    // render straight into the FBO instead.
+    ensure_capture_target(width, height);
     GLint src_fb = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &src_fb);
-
-    if (g_capture_tex == 0 || g_capture_w != width || g_capture_h != height) {
-        if (g_capture_tex) glDeleteTextures(1, &g_capture_tex);
-        glGenTextures(1, &g_capture_tex);
-        glBindTexture(GL_TEXTURE_2D, g_capture_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        g_capture_w = width;
-        g_capture_h = height;
-
-        if (!g_capture_fbo) glGenFramebuffers(1, &g_capture_fbo);
-        glBindFramebuffer(GL_FRAMEBUFFER, g_capture_fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, g_capture_tex, 0);
-        // Re-bind whatever was current so we don't yank GTK / the
-        // emscripten canvas out from under the next draw.
-        glBindFramebuffer(GL_FRAMEBUFFER, src_fb);
-    }
-
     glBindFramebuffer(GL_READ_FRAMEBUFFER, src_fb);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_capture_fbo);
     glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-#ifdef __EMSCRIPTEN__
-    // When `?webgpu` is active the per-quad WebGL splat blit is
-    // skipped during the live frame so the WebGPU canvas behind can
-    // show through — which means the FBO 0 we just captured has
-    // chess pieces over an alpha-cleared transparent region instead
-    // of a splat backdrop. Re-composite the WebGL splat colour
-    // texture *under* the captured chess content so the shatter
-    // shards show a full scene instead of dark voids. Cheap: one
-    // fullscreen quad. No-op when no splat data is loaded or the
-    // per-quad splat cache isn't valid (e.g. challenge-summary
-    // screen where renderer_draw didn't run this frame).
-    renderer_composite_splat_under(g_capture_fbo, width, height);
-#endif
-
-    // One-shot diagnostic: read a single pixel from the centre of
-    // the capture and print its RGBA. If this prints (0,0,0,*) the
-    // capture isn't reading what we expected; if it prints non-zero
-    // RGB the capture is fine and the bug is downstream (shader,
-    // bindings, blend). Logged once so the console doesn't drown.
-    static bool s_diag_done = false;
-    if (!s_diag_done) {
-        s_diag_done = true;
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_capture_fbo);
-        unsigned char px[4] = {0, 0, 0, 0};
-        glReadPixels(width / 2, height / 2, 1, 1,
-                     GL_RGBA, GL_UNSIGNED_BYTE, px);
-        std::fprintf(stderr,
-            "[shatter] capture diag: center pixel RGBA = "
-            "(%u, %u, %u, %u), size=%dx%d, src_fb=%d\n",
-            px[0], px[1], px[2], px[3], width, height,
-            static_cast<int>(src_fb));
-    }
-
-    // Restore the original FBO binding for both read and draw so
-    // subsequent draws (the new puzzle render inside the trigger)
-    // land where the caller expects.
     glBindFramebuffer(GL_FRAMEBUFFER, src_fb);
+}
+
+unsigned int shatter_ensure_capture_target(int width, int height) {
+    ensure_capture_target(width, height);
+    return g_capture_fbo;
+}
+
+unsigned int shatter_capture_color_texture() {
+    return g_capture_tex;
 }
 
 void renderer_draw_shatter(float t, int width, int height) {

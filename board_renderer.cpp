@@ -546,6 +546,54 @@ void renderer_composite_splat_under(unsigned int dst_fbo,
     glBindFramebuffer(GL_FRAMEBUFFER, prev_fb);
 }
 
+void renderer_redraw_into_capture_fbo(GameState& gs, int width, int height,
+                                       float rot_x, float rot_y, float zoom,
+                                       bool human_plays_white,
+                                       bool splats_enabled,
+                                       float light_dir_x,
+                                       float light_dir_y,
+                                       float light_dir_z,
+                                       bool light_positioning) {
+    GLuint cap_fbo = shatter_ensure_capture_target(width, height);
+    GLint prev_fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fb);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, cap_fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // The splat backdrop cache may have been invalidated by
+    // renderer_begin_frame and not yet repopulated this frame in
+    // the edge case where this function is called before the first
+    // renderer_draw of the frame. In the normal transition flow
+    // render_board has already run, so the cache is valid here and
+    // renderer_draw's splat path will hit it. Either way the call
+    // below does the right thing.
+    renderer_draw(gs, /*sub_x=*/0, /*sub_y=*/0, width, height,
+                  rot_x, rot_y, zoom,
+                  human_plays_white,
+                  /*endgame_menu_hover=*/false,
+                  /*continue_playing_hover=*/false,
+                  /*flag=*/nullptr, /*draw_flag=*/false,
+                  /*withdraw_confirm_open=*/false,
+                  /*withdraw_hover=*/0,
+                  /*draw_clock=*/false,
+                  /*clock_ms_remaining=*/0,
+                  /*clock_side_is_white=*/false,
+                  /*shake_x=*/0.0f,
+                  /*withdraw_confirm_title=*/"Withdraw from game?",
+                  /*white_thought_ms=*/0, /*black_thought_ms=*/0,
+                  /*white_lever_blend=*/1.0f, /*black_lever_blend=*/0.0f,
+                  /*force_panorama_only=*/!splats_enabled,
+                  light_dir_x, light_dir_y, light_dir_z,
+                  light_positioning);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, prev_fb);
+}
+
 // Multisample FBO used as the actual 3D-pass target. Color +
 // depth are renderbuffers (we never sample them as textures —
 // the resolve pass blits into the single-sample g_scene_fbo /

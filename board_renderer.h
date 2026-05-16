@@ -70,6 +70,27 @@ extern "C" void renderer_begin_frame();
 void renderer_composite_splat_under(unsigned int dst_fbo,
                                     int width, int height);
 
+// Re-render the chess scene directly into the shatter capture FBO.
+// Used on web because the WebGL2 multisample default framebuffer
+// doesn't reliably resolve via glBlitFramebuffer back to a user
+// single-sample FBO across all implementations — the capture texture
+// came back empty and the shatter shards rendered as transparent
+// voids. Re-rendering into our own offscreen FBO sidesteps that
+// quirk: the chess scene draws straight into the capture target
+// using the existing renderer_draw pipeline. Cost: one extra
+// renderer_draw per puzzle advance, which is fine for a one-shot
+// transition event. Pass the same camera / lighting / splats_enabled
+// inputs the live render is using so the captured snapshot matches
+// what was just on screen.
+void renderer_redraw_into_capture_fbo(GameState& gs, int width, int height,
+                                       float rot_x, float rot_y, float zoom,
+                                       bool human_plays_white,
+                                       bool splats_enabled,
+                                       float light_dir_x,
+                                       float light_dir_y,
+                                       float light_dir_z,
+                                       bool light_positioning);
+
 void renderer_draw(GameState& gs,
                    int sub_x, int sub_y,
                    int width, int height,
