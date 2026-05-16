@@ -20,9 +20,21 @@ GLuint g_shatter_vbo          = 0;
 int    g_shatter_vertex_count = 0;
 
 GLuint g_capture_tex = 0;
-#ifdef __EMSCRIPTEN__
+// Single-sample FBO that the (possibly multisample) source framebuffer
+// gets resolved into via glBlitFramebuffer. Needed on both platforms:
+//   * Web: WebGL2's default backbuffer is created with antialias=true,
+//     so it's multisampled and glCopyTexSubImage2D from it is
+//     UNDEFINED (produces an all-zero texture in practice — black
+//     shards).
+//   * Desktop: the splat backdrop introduced an MS scene FBO and a
+//     dedicated splat FBO. The chain of resolves leaves the
+//     GtkGLArea-owned default FBO in a state where the safest read
+//     is still an explicit glBlitFramebuffer into our own single-
+//     sample texture-backed FBO; glCopyTexSubImage2D used to work
+//     because the only target was the simple default FB, but post-
+//     splat the implicit-source assumption stopped capturing what
+//     we expected. Result was the same all-black shard texture.
 GLuint g_capture_fbo = 0;
-#endif
 int g_capture_w = 0, g_capture_h = 0;
 
 // Build shatter mesh: voronoi-like cells. For each jittered cell
@@ -173,11 +185,22 @@ void shatter_init() {
 }
 
 void renderer_capture_frame(int width, int height) {
+    // Snapshot whichever framebuffer is currently bound — that's the
+    // one app_state.cpp's render_board just finished drawing into.
+    // On desktop it's the GtkGLArea's internal FBO; on web it's FBO 0
+    // (the WebGL canvas). Either way we want to resolve it into our
+    // own single-sample texture-backed FBO so glBlitFramebuffer
+    // handles multisample auto-resolve and the captured pixels match
+    // what the user actually saw.
+    GLint src_fb = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &src_fb);
+
     if (g_capture_tex == 0 || g_capture_w != width || g_capture_h != height) {
         if (g_capture_tex) glDeleteTextures(1, &g_capture_tex);
         glGenTextures(1, &g_capture_tex);
         glBindTexture(GL_TEXTURE_2D, g_capture_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -185,34 +208,23 @@ void renderer_capture_frame(int width, int height) {
         g_capture_w = width;
         g_capture_h = height;
 
-#ifdef __EMSCRIPTEN__
-        // Single-sample FBO that the multisample backbuffer can be
-        // resolved into via glBlitFramebuffer.
         if (!g_capture_fbo) glGenFramebuffers(1, &g_capture_fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, g_capture_fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                GL_TEXTURE_2D, g_capture_tex, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-#endif
+        // Re-bind whatever was current so we don't yank GTK / the
+        // emscripten canvas out from under the next draw.
+        glBindFramebuffer(GL_FRAMEBUFFER, src_fb);
     }
 
-#ifdef __EMSCRIPTEN__
-    // The default WebGL 2 backbuffer is created with antialias=true
-    // (the Emscripten/SDL2 default), which makes it multisampled. The
-    // OpenGL ES 3.0 spec leaves glCopyTexSubImage2D from a multisample
-    // read framebuffer UNDEFINED — in practice it produces an all-
-    // zero texture, which then makes the shatter shards render solid
-    // black. Resolve into the single-sample capture FBO via
-    // glBlitFramebuffer instead.
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src_fb);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_capture_fbo);
     glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-#else
-    glBindTexture(GL_TEXTURE_2D, g_capture_tex);
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
-#endif
+    // Restore the original FBO binding for both read and draw so
+    // subsequent draws (the new puzzle render inside the trigger)
+    // land where the caller expects.
+    glBindFramebuffer(GL_FRAMEBUFFER, src_fb);
 }
 
 void renderer_draw_shatter(float t, int width, int height) {
