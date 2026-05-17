@@ -558,11 +558,34 @@ std::string ask_ai_move(const std::string& fen) {
     return uci;
 }
 
+// Strength used for hint / eval / move-classification searches.
+// Independent of the user-facing AI strength slider: the slider sets
+// how strong the *opponent* plays, but a hint should be the
+// strongest move available so the user can trust it. 2850 is well
+// into super-GM territory and stays inside Stockfish's documented
+// UCI_Elo range so apply_elo's clamps don't bite.
+constexpr int HINT_AND_EVAL_ELO = 2850;
+
+// Resolve the ELO the AI opponent should be running at outside of
+// the hint/eval window — matches handshake()'s pick so we can swap
+// back to it after a hint search without depending on the engine to
+// remember its old value.
+static int user_facing_ai_elo_locked() {
+    return g_requested_elo > 0
+        ? g_requested_elo
+        : env_int("CHESS_AI_ELO", 1400);
+}
+
 int stockfish_eval(const std::string& fen, int movetime_ms) {
     std::lock_guard<std::mutex> lk(g_engine_mu);
     StockfishEngine* eng = get_engine_locked();
     if (!eng) return INT_MIN;
-    return eng->eval_position(fen, movetime_ms);
+    const int user_elo = user_facing_ai_elo_locked();
+    const bool swap = (user_elo != HINT_AND_EVAL_ELO);
+    if (swap) eng->set_elo(HINT_AND_EVAL_ELO);
+    int cp = eng->eval_position(fen, movetime_ms);
+    if (swap) eng->set_elo(user_elo);
+    return cp;
 }
 
 int stockfish_eval(const std::string& fen, int movetime_ms,
@@ -577,8 +600,18 @@ int stockfish_eval(const std::string& fen, int movetime_ms,
         if (out_second_cp)  *out_second_cp = 0;
         return INT_MIN;
     }
-    return eng->eval_position(fen, movetime_ms, &out_best_uci,
-                              out_second_uci, out_second_cp);
+    // The hint feature uses out_best_uci from this call. The
+    // opponent's strength slider must not weaken what the user sees
+    // as "the best move" — bump to 2850 for the duration of this
+    // search and restore the slider value afterwards so the next
+    // ask_ai_move plays at the chosen opponent strength.
+    const int user_elo = user_facing_ai_elo_locked();
+    const bool swap = (user_elo != HINT_AND_EVAL_ELO);
+    if (swap) eng->set_elo(HINT_AND_EVAL_ELO);
+    int cp = eng->eval_position(fen, movetime_ms, &out_best_uci,
+                                 out_second_uci, out_second_cp);
+    if (swap) eng->set_elo(user_elo);
+    return cp;
 }
 
 void ai_player_set_elo(int elo) {

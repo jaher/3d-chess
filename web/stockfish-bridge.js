@@ -30,7 +30,16 @@ window.StockfishBridge = (function () {
   let secondPv = '';          // first move of the multipv=2 PV (UCI, "" if none)
   let multipvMode = 1;        // last MultiPV setting we sent to the engine
   let handshakeDone = false;  // becomes true once 'readyok' arrives
-  let pendingElo = 1400;      // latched until the worker exists
+  let pendingElo = 1400;      // latched until the worker exists; this is
+                              // the OPPONENT strength (move searches only)
+  let currentEngineElo = -1;  // last ELO actually applied to the engine, so
+                              // startNext can skip redundant setoption pairs
+                              // when the upcoming job matches what's loaded
+
+  // Hint / eval / move-classification searches always run at this
+  // strength regardless of the opponent slider. Matches HINT_AND_EVAL_ELO
+  // in ai_player.cpp so desktop and web hint quality stay identical.
+  const HINT_AND_EVAL_ELO = 2850;
 
   function safe_ccall(name, retType, argTypes, args) {
     if (typeof Module === 'undefined' || typeof Module.ccall !== 'function') {
@@ -67,6 +76,20 @@ window.StockfishBridge = (function () {
     if (wantMultiPv !== multipvMode) {
       worker.postMessage('setoption name MultiPV value ' + wantMultiPv);
       multipvMode = wantMultiPv;
+    }
+    // Pin the engine to the right strength for this job: hint /
+    // eval / move-classification searches always run at the strong
+    // HINT_AND_EVAL_ELO so the hint UI shows a trustworthy move
+    // regardless of how weak the opponent slider is. Move searches
+    // play at pendingElo (the opponent strength). Skipping the
+    // setoption pair when the engine already matches keeps the
+    // common-case (steady opponent ELO between AI moves) cheap.
+    var targetElo = (active.kind === 'eval')
+        ? HINT_AND_EVAL_ELO
+        : (pendingElo | 0);
+    if (targetElo !== currentEngineElo) {
+      applyEloInternal(targetElo);
+      currentEngineElo = targetElo;
     }
     worker.postMessage('ucinewgame');
     worker.postMessage('position fen ' + active.fen);
@@ -169,6 +192,7 @@ window.StockfishBridge = (function () {
     // messages in order regardless.
     worker.postMessage('uci');
     applyEloInternal(pendingElo);
+    currentEngineElo = pendingElo | 0;
     worker.postMessage('isready');
   }
 
@@ -201,10 +225,15 @@ window.StockfishBridge = (function () {
 
   // Public setElo: safe to call before the worker exists (latches to
   // pendingElo). Once the worker has been started, apply the value
-  // immediately so the next search uses it.
+  // immediately so the next search uses it. Track currentEngineElo
+  // so startNext can skip the redundant per-job setoption pair when
+  // the engine already matches the upcoming job's target strength.
   function applyElo(elo) {
     pendingElo = elo | 0;
-    if (worker) applyEloInternal(pendingElo);
+    if (worker) {
+      applyEloInternal(pendingElo);
+      currentEngineElo = pendingElo;
+    }
   }
 
   return {
