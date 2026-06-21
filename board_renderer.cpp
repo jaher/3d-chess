@@ -320,6 +320,88 @@ static bool gl_compute_splats_enabled() {
 static float g_splats_bbox_min[3] = {0, 0, 0};
 static float g_splats_bbox_max[3] = {0, 0, 0};
 
+// Per-environment scene metadata. Indexed by AppState::Environment
+// (cast to int). The label is what the options-screen "Environment"
+// row shows; splat_paths is a fallback chain because the desktop
+// build runs from the source tree while emscripten preloads under
+// the virtual `/`. splat_scale + floor_y absorb the per-scene
+// tuning that lived as hardcoded constants in the splat-pass below
+// — different SPZ captures have wildly different source-unit
+// extents (a 5 m room vs a 90 m cathedral nave), so a one-size
+// world-scale wrecks the feel.
+//
+// New entries: append to the end (keep enum value stable so
+// settings.ini reads the right environment back). The first entry
+// is the fallback when an unknown int is passed in.
+struct EnvironmentDesc {
+    const char* label;
+    const char* splat_paths[2];
+    const char* panorama_paths[2];
+    float splat_scale;
+    float floor_y;
+};
+static const EnvironmentDesc g_environments[] = {
+    // 0 = MedievalRoom — original Marble tuning.
+    {
+        "Medieval room",
+        {
+#ifndef __EMSCRIPTEN__
+            "world_labs/medieval_room/splat_full_res.spz",
+            "world_labs/medieval_room/splat_500k.spz",
+#else
+            "/world_labs/medieval_room/splat_500k.spz",
+            "world_labs/medieval_room/splat_500k.spz",
+#endif
+        },
+        {
+            "world_labs/medieval_room/panorama.jpg",
+            "/world_labs/medieval_room/panorama.jpg",
+        },
+        25.0f,
+        -8.878f,
+    },
+    // 1 = SagradaFamilia — interior canopy generated via Spaitial's
+    // API (different provider from medieval_room's World Labs
+    // capture, hence the separate `spaitial/` asset folder). The
+    // splat_scale below is a starting guess — the cathedral source
+    // bbox is much wider than the medieval room's, so the same 25×
+    // world-scale would dwarf the chess table; tune visually after
+    // first launch.
+    {
+        "Sagrada Familia",
+        {
+            "spaitial/sagrada_familia_interior/splat.spz",
+            "/spaitial/sagrada_familia_interior/splat.spz",
+        },
+        {
+            "spaitial/sagrada_familia_interior/panorama.jpg",
+            "/spaitial/sagrada_familia_interior/panorama.jpg",
+        },
+        12.0f,
+        -8.878f,
+    },
+};
+constexpr int g_environment_count =
+    static_cast<int>(sizeof(g_environments) / sizeof(g_environments[0]));
+
+// Active environment — written by renderer_set_environment, read by
+// the splat-pass for its scale + floor anchor. Defaults to 0
+// (medieval) so behaviour before any settings load matches what the
+// game used to do unconditionally.
+static int g_active_environment = 0;
+
+static const EnvironmentDesc& env_desc(int kind) {
+    if (kind < 0 || kind >= g_environment_count) kind = 0;
+    return g_environments[kind];
+}
+
+// Forward declarations — implementations live further down with the
+// rest of the SPZ helpers / panorama loader. Hoisted here so
+// renderer_set_environment (defined after them) can call into them.
+const char* renderer_environment_label(int env_kind);
+int renderer_environment_count();
+bool renderer_set_environment(int env_kind);
+
 // Off-screen splat-backdrop FBO. The splat draw runs here in
 // isolation — its premultiplied-α blend, depth-mask-off, scissor
 // state, and texture-unit bindings can't leak into the main pass
@@ -949,6 +1031,86 @@ static GLuint gl_load_panorama(const std::string& path) {
 }
 #endif  // !__EMSCRIPTEN__
 
+// Try every path in `candidates` in order until one opens; load the
+// SPZ from it, recompute the bbox, and re-upload to g_packed +
+// g_source_splats. Returns true when something was actually
+// (re-)loaded. The packed-splats upload deletes the old textures
+// before allocating new ones, so calling this repeatedly is safe.
+// Lives outside the `#ifndef __EMSCRIPTEN__` block above — both
+// platforms need to (re-)load SPZs at runtime when the user picks a
+// different environment.
+static bool load_splat_from_candidates(const char* const* candidates,
+                                       size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        const char* p = candidates[i];
+        if (!p || !*p) continue;
+        FILE* f = std::fopen(p, "rb");
+        if (!f) continue;
+        std::fclose(f);
+        std::vector<Splat> sp = splat_load_spz(p);
+        if (sp.empty()) continue;
+        splat_compute_bbox(sp);
+        splat_init_vao();
+        packed_splats_upload(g_packed, sp);
+        g_source_splats = std::move(sp);
+        return true;
+    }
+    return false;
+}
+
+bool renderer_set_environment(int env_kind) {
+    if (env_kind < 0 || env_kind >= g_environment_count) return false;
+    const EnvironmentDesc& d = g_environments[env_kind];
+    const size_t n =
+        sizeof(d.splat_paths) / sizeof(d.splat_paths[0]);
+    if (!load_splat_from_candidates(d.splat_paths, n)) {
+        std::fprintf(stderr,
+            "[env] failed to load splat for '%s' — keeping previous scene\n",
+            d.label);
+        return false;
+    }
+    g_active_environment = env_kind;
+
+#ifndef __EMSCRIPTEN__
+    // GL compute path keeps its own per-load upload flag — flip it
+    // so the next render() ships the freshly-uploaded splats to the
+    // tile rasterizer's internal buffers.
+    g_gl_compute_uploaded = false;
+#endif
+    // Per-frame splat backdrop cache holds the rendered colour for
+    // the previous scene — invalidate so the next renderer_draw
+    // re-runs the splat pass against the new cloud.
+    g_splat_bg_cache_valid = false;
+
+#ifndef __EMSCRIPTEN__
+    // Reload the matching panorama too so the no-splat fallback
+    // (Options → "Gaussian splats" OFF) shows the right room.
+    // Desktop-only — web doesn't have the stb_image JPEG decoder
+    // linked, and there's no panorama fallback there.
+    if (g_panorama_tex) {
+        glDeleteTextures(1, &g_panorama_tex);
+        g_panorama_tex = 0;
+    }
+    for (const char* p : d.panorama_paths) {
+        if (!p) continue;
+        FILE* f = std::fopen(p, "rb");
+        if (!f) continue;
+        std::fclose(f);
+        g_panorama_tex = gl_load_panorama(p);
+        if (g_panorama_tex) break;
+    }
+#endif
+    return true;
+}
+
+const char* renderer_environment_label(int env_kind) {
+    return env_desc(env_kind).label;
+}
+
+int renderer_environment_count() {
+    return g_environment_count;
+}
+
 // Load the three board STLs and the two walnut textures from
 // `dir`. `dir` is "models/board" relative to the working
 // directory at runtime (or "/models/board" inside the
@@ -1326,7 +1488,7 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     // reads with much more detail at 500k, which the user is
     // actually here to see).
     {
-        // Splat tier defaults:
+        // Splat tier defaults (only medieval has tiers right now):
         //   * Desktop: full_res (1.9M splats). The parallel CPU sort
         //     in gl_raster/gl_rasterizer.cpp now handles this tier
         //     interactively (~50–60 fps during rotation on a 16-
@@ -1339,6 +1501,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
         //     web/Makefile's SPLAT_SPZ_PRELOAD).
         // 100k was tried and dropped — the medieval-room interior
         // reads as gappy at that tier.
+        //
+        // The active environment is set by app_settings_load via
+        // renderer_set_environment before renderer_init returns —
+        // for the very first run (no settings file yet) we fall
+        // back to the medieval tier-aware path so existing users
+        // see no change.
         const char* tier = std::getenv("CHESS_SPLAT_TIER");
         const char* full_paths[] = {
 #ifndef __EMSCRIPTEN__
@@ -1358,11 +1526,6 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             "world_labs/medieval_room/splat_500k.spz",
 #endif
         };
-        // Default tier: full_res on desktop, 500k on web. CHESS_SPLAT_TIER
-        // overrides on desktop only:
-        //   500k / 500          → force 500k
-        //   full / fullres /
-        //   full_res            → force full_res (already the default)
         bool want_500k = false;
 #ifdef __EMSCRIPTEN__
         want_500k = true;
@@ -1385,20 +1548,10 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
         size_t n_paths = want_500k
             ? sizeof(tier_500k) / sizeof(*tier_500k)
             : sizeof(full_paths) / sizeof(*full_paths);
-        for (size_t i = 0; i < n_paths; ++i) {
-            const char* p = splat_paths[i];
-            FILE* f = std::fopen(p, "rb");
-            if (!f) continue;
-            std::fclose(f);
-            std::vector<Splat> sp = splat_load_spz(p);
-            if (!sp.empty()) {
-                splat_compute_bbox(sp);
-                splat_init_vao();
-                packed_splats_upload(g_packed, sp);
-                g_source_splats = std::move(sp);
-                break;
-            }
-        }
+        // renderer_init always loads the medieval default (env 0);
+        // on_realize swaps in the saved environment afterward if it
+        // differs.
+        load_splat_from_candidates(splat_paths, n_paths);
     }
 #ifdef __EMSCRIPTEN__
     // Kick off WebGPU init; upload happens once init resolves AND
@@ -3302,19 +3455,22 @@ void renderer_draw(GameState& gs,
         // table_height = 0 - 0.608 - 8.27) so the table reads as
         // sitting on the splat-room floor.
         //
-        // Scale tuned so the table reads as a piece of furniture in
-        // a room, not a stage in a theatre. Table footprint is ~14
-        // world units; at 25× the splat-room footprint is ~55 units,
-        // so the table fills about a quarter of the room width —
-        // close to the proportion of a real chess table in a study.
-        // 30× made the room dwarf everything ("rotation doesn't line
-        // up"); 15× went the other way and the table looked way too
-        // big against the walls.
-        const float splat_scale = 25.0f;
+        // Per-environment scale + floor anchor. The original
+        // medieval-room tuning (25× scale, floor at y=-8.878) lived
+        // here as constants; multi-environment support folds those
+        // into g_environments[] so each captured scene can carry
+        // its own world-space scale (a cathedral nave needs a
+        // smaller multiplier than a small study). Scale tuned so
+        // the table reads as a piece of furniture, not a stage in
+        // a theatre — table footprint is ~14 world units, so the
+        // room's projected footprint should land around 50–60
+        // units for that proportion.
+        const EnvironmentDesc& env = env_desc(g_active_environment);
+        const float splat_scale  = env.splat_scale;
+        const float floor_world_y = env.floor_y;
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
-        const float floor_world_y = -8.878f;
         const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
         const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale;
         Mat4 splat_model = mat4_multiply(

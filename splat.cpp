@@ -18,7 +18,7 @@
 //   byte   13     : uint8  fractionalBits (typ. 12)
 //   byte   14     : uint8  flags
 //   byte   15     : uint8  reserved
-// Then five contiguous attribute blocks (in this exact order — the
+// Then six contiguous attribute blocks (in this exact order — the
 // Niantic reference's `serializePackedGaussians`):
 //   positions  : N × 9 bytes (3 axes, each a 24-bit signed fixed
 //                point with `fractional_bits` bits after the binary
@@ -28,14 +28,19 @@
 //                packed = (sh0 * 0.15 + 0.5) * 255 so the inverse is
 //                sh0 = (packed/255 - 0.5) / 0.15, and the final RGB
 //                is sh0 * 0.282 + 0.5 clamped to [0, 1])
-//   scales     : N × 3 bytes (uint8, log-encoded; we take the
-//                largest axis as an isotropic radius — see splat.h)
-//   rotations  : N × 3 bytes (smallest-three-quaternion compressed
-//                into 24 bits; DROPPED, splats treated as isotropic)
-//   sh         : N × extra (degree-dependent, skipped for sh=0)
-// Total per-splat = 19 bytes, which lines up with the decompressed
-// sizes we see from the marble-1.1 model (98,304 splats → 1,867,776
-// payload + 16-byte header = 1,867,792).
+//   scales     : N × 3 bytes (uint8, log-encoded; linear = exp(b/16-10).
+//                ALL three axes kept — the EWA shader builds the 3D
+//                covariance from anisotropic scales × rotation)
+//   rotations  : VERSION-DEPENDENT width — decoded, NOT dropped (the
+//                splats are anisotropic plates, so orientation matters):
+//                  v1/v2: N × 3 bytes — xyz direct, (byte/127.5 - 1),
+//                         w = +√(1 - x² - y² - z²).
+//                  v3:    N × 4 bytes — smallest-three packing (top 2
+//                         bits select the largest component; three
+//                         10-bit fields give the rest).
+//   sh         : N × extra (degree-dependent, skipped for sh=0):
+//                degree 1 → 9 B, 2 → 24 B, 3 → 45 B.
+// Per-splat = 19 bytes (v1/v2) or 20 bytes (v3) plus the SH tail.
 
 namespace {
 
@@ -111,7 +116,15 @@ std::vector<Splat> splat_load_spz(const std::string& path) {
         case 3: sh_coeffs = 45; break;
         default: sh_coeffs = 0; break;
     }
-    const std::size_t per_splat = 19 + static_cast<std::size_t>(sh_coeffs);
+    // Rotation block width is VERSION-DEPENDENT. v1/v2 store 3 bytes
+    // (xyz components, direct); v3 stores 4 bytes (smallest-three
+    // packing). Treating a v3 file as 3-byte rotations — as this
+    // decoder used to — both mis-strides every splat AND feeds the
+    // quaternion decoder garbage, so the (legitimately thin) plate
+    // splats get random orientations and render as a spiky mess.
+    const std::size_t rot_bytes = (version == 3) ? 4 : 3;
+    const std::size_t per_splat =
+        9 + 1 + 3 + 3 + rot_bytes + static_cast<std::size_t>(sh_coeffs);
     const std::size_t need = 16 + std::size_t(n) * per_splat;
     if (data.size() < need) {
         std::fprintf(stderr,
@@ -125,8 +138,7 @@ std::vector<Splat> splat_load_spz(const std::string& path) {
     const uint8_t* alpha_blk  = pos_blk    + std::size_t(n) * 9;
     const uint8_t* rgb_blk    = alpha_blk  + std::size_t(n) * 1;
     const uint8_t* scale_blk  = rgb_blk    + std::size_t(n) * 3;
-    const uint8_t* rot_blk    = scale_blk  + std::size_t(n) * 3;  // unused
-    (void)rot_blk;
+    const uint8_t* rot_blk    = scale_blk  + std::size_t(n) * 3;
 
     const float frac_div = std::ldexp(1.0f, -static_cast<int>(frac_bits));
 
@@ -144,18 +156,52 @@ std::vector<Splat> splat_load_spz(const std::string& path) {
             uint8_t b = scale_blk[std::size_t(i)*3 + k];
             s.scales[k] = std::exp(static_cast<float>(b) / 16.0f - 10.0f);
         }
-        // Quaternion: 3 bytes carrying the (x, y, z) components,
-        // each unsigned byte 0..255 mapped to (-1, +1) via
-        // `q = byte / 127.5 - 1`. Reconstruct w = √(1 - x² - y² - z²).
-        // This is Spark's `unpack v2` formula.
-        // Stay in double (Splat.quat is double[4]); JS is double
-        // throughout, so anything we narrow to float here drifts
-        // by 1 ULP.
-        const uint8_t* q = rot_blk + std::size_t(i) * 3;
-        double qx = static_cast<double>(q[0]) / 127.5 - 1.0;
-        double qy = static_cast<double>(q[1]) / 127.5 - 1.0;
-        double qz = static_cast<double>(q[2]) / 127.5 - 1.0;
-        double qw = std::sqrt(std::max(0.0, 1.0 - qx*qx - qy*qy - qz*qz));
+        // Quaternion — encoding depends on SPZ version. Stay in double
+        // (Splat.quat is double[4]); JS/Spark is double throughout, so
+        // narrowing to float here drifts by 1 ULP.
+        double qx, qy, qz, qw;
+        if (version == 3) {
+            // v3 smallest-three: 4 bytes → 32-bit LE word. Top 2 bits =
+            // largestIndex (which quat component is largest); the
+            // remaining 30 bits are three 10-bit fields (9-bit magnitude
+            // + 1-bit sign) for the OTHER three components, each mapped
+            // to (−1/√2, +1/√2). Largest component = +√(1 − Σ²). Spark
+            // walks slots 3,2,1,0 — preserve that order or the bit
+            // fields read out of phase.
+            const uint8_t* q = rot_blk + std::size_t(i) * 4;
+            const uint32_t w32 = static_cast<uint32_t>(q[0])
+                               | (static_cast<uint32_t>(q[1]) << 8)
+                               | (static_cast<uint32_t>(q[2]) << 16)
+                               | (static_cast<uint32_t>(q[3]) << 24);
+            const int      largest  = static_cast<int>(w32 >> 30);
+            const double   max_val  = 1.0 / std::sqrt(2.0);
+            const uint32_t mag_mask = (1u << 9) - 1u;
+            double   comp[4] = {0, 0, 0, 0};
+            uint32_t rem     = w32;
+            double   sum_sq  = 0.0;
+            for (int k = 3; k >= 0; --k) {
+                if (k == largest) continue;
+                uint32_t mag  = rem & mag_mask;
+                uint32_t sign = (rem >> 9) & 1u;
+                rem >>= 10;
+                double v = max_val * (static_cast<double>(mag)
+                                      / static_cast<double>(mag_mask));
+                if (sign) v = -v;
+                comp[k] = v;
+                sum_sq += v * v;
+            }
+            comp[largest] = std::sqrt(std::max(0.0, 1.0 - sum_sq));
+            qx = comp[0]; qy = comp[1]; qz = comp[2]; qw = comp[3];
+        } else {
+            // v1/v2: 3 bytes carrying (x, y, z), each unsigned byte
+            // 0..255 mapped to (-1, +1) via `q = byte / 127.5 - 1`.
+            // Reconstruct w = √(1 - x² - y² - z²). (Spark's unpack v2.)
+            const uint8_t* q = rot_blk + std::size_t(i) * 3;
+            qx = static_cast<double>(q[0]) / 127.5 - 1.0;
+            qy = static_cast<double>(q[1]) / 127.5 - 1.0;
+            qz = static_cast<double>(q[2]) / 127.5 - 1.0;
+            qw = std::sqrt(std::max(0.0, 1.0 - qx*qx - qy*qy - qz*qz));
+        }
         // Keep splats in raw SPZ-space here — the world transform
         // (Spark's `mesh.scale.set(1,-1,1)` decomposed-and-averaged
         // to R_z(180°) * uniformScale(1/3)) is applied in the model

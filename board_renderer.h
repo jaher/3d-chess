@@ -70,6 +70,28 @@ extern "C" void renderer_begin_frame();
 void renderer_composite_splat_under(unsigned int dst_fbo,
                                     int width, int height);
 
+// Switch the active Gaussian-splat environment behind the chessboard.
+// Re-reads the SPZ from disk, re-uploads the packed splat textures,
+// resets the per-environment cache flags (GL compute + WebGPU upload
+// gates, the per-frame splat-bg cache), and updates the bbox used to
+// centre the splat cloud on the chess world. The numeric value comes
+// from AppState::Environment (cast to int) — kept loose-typed here so
+// board_renderer.h doesn't need to include app_state.h. Returns true
+// on success; false (and leaves the previous splats loaded) when the
+// chosen environment's SPZ couldn't be loaded.
+bool renderer_set_environment(int env_kind);
+
+// Display label for an environment id, used by the options-screen
+// cycle row. Stable across runs; matches the spelling stored in
+// settings.ini's `environment=` line. Returns a static const string
+// — never null, falls back to the medieval label for out-of-range
+// values.
+const char* renderer_environment_label(int env_kind);
+
+// Number of environments we know how to render. Used by the options
+// row to wrap when the user clicks past the last one.
+int renderer_environment_count();
+
 // Re-render the chess scene directly into the shatter capture FBO.
 // Used on web because the WebGL2 multisample default framebuffer
 // doesn't reliably resolve via glBlitFramebuffer back to a user

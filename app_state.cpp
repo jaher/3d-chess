@@ -1593,6 +1593,26 @@ static void release_options(AppState& a, double mx, double my,
         cur(a).hint_request_pending = false;
         cur(a).hint_confirm_pending = false;
         queue_redraw(a);
+    } else if (btn == 11) {
+        // Cycle to the next environment in the registered list.
+        // renderer_set_environment reloads the SPZ (and the
+        // matching panorama on desktop), recomputes the bbox, and
+        // invalidates the per-frame splat-bg cache so the new
+        // scene renders on the next frame. If the load fails (e.g.
+        // missing asset in a packaging) we revert the AppState
+        // value so the label keeps matching reality.
+        const int n_env = renderer_environment_count();
+        const int next  = (static_cast<int>(a.environment) + 1) % n_env;
+        if (renderer_set_environment(next)) {
+            a.environment = static_cast<AppState::Environment>(next);
+            std::string msg = "Environment: ";
+            msg += renderer_environment_label(next);
+            set_status(a, msg.c_str());
+            app_settings_save(a);
+        } else {
+            set_status(a, "Environment switch failed — keeping previous scene");
+        }
+        queue_redraw(a);
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -3318,6 +3338,8 @@ static void render_options(AppState& a, int width, int height) {
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           a.ble_verbose_log,
+                          renderer_environment_label(
+                              static_cast<int>(a.environment)),
                           a.chessnut_picker_open,
                           a.chessnut_picker_scanning,
                           devs.data(),
@@ -5344,6 +5366,31 @@ void app_settings_load(AppState& a) {
             // record the desire; the UI driver flips the toggle
             // through app_chessnut_toggle_request once we're up.
             a.chessnut_enabled = parse_bool(val);
+        } else if (key == "environment") {
+            // Stored as the short name so the ini stays readable
+            // when you tail it. Unknown names fall back silently to
+            // the medieval default so a stale settings file from a
+            // newer build (referencing an environment we removed)
+            // doesn't break startup.
+            int kind = 0;
+            if (val == "sagrada" || val == "sagrada_familia") {
+                kind = static_cast<int>(
+                    AppState::Environment::SagradaFamilia);
+            } else {
+                kind = static_cast<int>(
+                    AppState::Environment::MedievalRoom);
+            }
+            a.environment = static_cast<AppState::Environment>(kind);
+            // Record the choice only — do NOT touch the renderer here.
+            // app_settings_load runs inside app_init(), which fires in
+            // main() long before the GtkGLArea is realized. There is no
+            // current GL context yet, so renderer_set_environment's splat
+            // re-upload would call into epoxy with no context and abort
+            // ("Couldn't find current GLX or EGL context"). main.cpp's
+            // on_realize applies a.environment once renderer_init has run
+            // under a live context. (The old "apply immediately" comment
+            // was wrong about the ordering and is what crashed startup
+            // whenever environment=sagrada was saved.)
         }
     }
     std::fclose(f);
@@ -5374,6 +5421,11 @@ void app_settings_save(const AppState& a) {
     std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
     std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
     std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
+    const char* env_name = "medieval";
+    if (a.environment == AppState::Environment::SagradaFamilia) {
+        env_name = "sagrada";
+    }
+    std::fprintf(f, "environment=%s\n", env_name);
     std::fclose(f);
 }
 #else

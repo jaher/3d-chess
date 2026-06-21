@@ -165,14 +165,28 @@ void main() {
     float T11 = J11*c11 + J12*c12;
     float T12 = J11*c12 + J12*c22;
 
-    float a = T00*J00 + T02*J02 + blur_amount;
-    float b = T01*J11 + T02*J12;
-    float d = T11*J11 + T12*J12 + blur_amount;
+    // EWA 2D covariance, then Mip-Splatting low-pass dilation: adding
+    // blur_amount to the diagonal keeps sub-pixel splats from aliasing.
+    // Keep the PRE-dilation determinant so we can renormalize opacity
+    // below — a dilated gaussian must fade, not brighten.
+    float a_orig = T00*J00 + T02*J02;
+    float b      = T01*J11 + T02*J12;
+    float d_orig = T11*J11 + T12*J12;
+    float det_orig = a_orig * d_orig - b * b;
+    float a = a_orig + blur_amount;
+    float d = d_orig + blur_amount;
 
     float det = a * d - b * b;
     if (det <= 0.0) { touched[i] = 0u; return; }
     float inv_det = 1.0 / det;
     vec3 conic = vec3(d*inv_det, -b*inv_det, a*inv_det);
+
+    // Mip-Splatting opacity compensation (ported from the viewer's
+    // gl_raster): the low-pass dilation grew the splat's footprint, so
+    // scale alpha by √(det_orig/det) to conserve total energy. Without
+    // it, small/distant splats render too bright and soft — the drift
+    // that made the chess backdrop read less crisp than the viewer.
+    alpha *= sqrt(max(0.0, det_orig / det));
 
     float mid = 0.5 * (a + d);
     float disc = max(0.0, mid*mid - det);

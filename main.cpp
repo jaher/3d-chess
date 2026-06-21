@@ -373,6 +373,14 @@ static void on_realize(GtkGLArea* area) {
     if (gtk_gl_area_get_error(area) != nullptr) return;
     renderer_init(g_loaded_models);
 
+    // Apply the splat environment saved by app_settings_load. This is
+    // the right place for it: a GL context is current now (renderer_init
+    // just loaded the medieval default under it), whereas app_settings_load
+    // runs before the area is realized and cannot legally touch GL.
+    if (g_app.environment != AppState::Environment::MedievalRoom) {
+        renderer_set_environment(static_cast<int>(g_app.environment));
+    }
+
     // One continuous tick callback drives all animation.
     gtk_widget_add_tick_callback(GTK_WIDGET(area), on_tick, nullptr, nullptr);
 }

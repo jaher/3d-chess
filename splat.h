@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-// Niantic SPZ (legacy v2, gzip-framed). One Splat is a 3D Gaussian:
+// Niantic SPZ (legacy v1-3, gzip-framed). One Splat is a 3D Gaussian:
 // position + per-axis scales (log) + rotation (quaternion) + RGB +
 // alpha. Spherical-harmonic view-dependent colour is dropped.
 // The renderer projects (R · S · Sᵀ · Rᵀ) through a Jacobian to a

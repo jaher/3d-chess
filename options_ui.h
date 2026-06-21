@@ -20,6 +20,8 @@ struct OptionsScannedDevice {
 //   9 = "Move hints" tri-state cycle (Off / Auto / OnDemand),
 //   10 = "Gaussian splats" backdrop toggle (Marble medieval-room
 //        splat cloud behind the chess board),
+//   11 = "Environment" cycle — click steps through the registered
+//        splat backdrops (e.g. Medieval room → Sagrada Familia → …),
 //   100+i = picker row #i.
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
@@ -27,6 +29,10 @@ struct OptionsScannedDevice {
 //
 // `hint_mode`: 0 = Off (grey), 1 = Auto (green), 2 = OnDemand
 // (amber, distinct from the binary on/off toggles around it).
+// `environment_label`: text shown after "Environment: " on row 7;
+// caller is responsible for the lookup (board_renderer's
+// renderer_environment_label / current value of
+// AppState::environment).
 void renderer_draw_options(bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
@@ -35,6 +41,7 @@ void renderer_draw_options(bool splats_enabled,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,
+                           const char* environment_label,
                            bool picker_open,
                            bool picker_scanning,
                            const OptionsScannedDevice* picker_devices,

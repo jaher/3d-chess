@@ -438,6 +438,17 @@ struct AppState {
     // app_settings_save.
     bool splats_enabled = true;
 
+    // Which Gaussian-splat scene to render behind the chess board.
+    // Cycled from Options → "Environment". The renderer reloads the
+    // SPZ + per-environment camera tuning when the value changes.
+    // Persists across sessions via app_settings_save. Keep the enum
+    // values stable — they appear in settings.ini.
+    enum class Environment : int {
+        MedievalRoom    = 0,
+        SagradaFamilia  = 1,
+    };
+    Environment environment = Environment::MedievalRoom;
+
 #ifndef __EMSCRIPTEN__
     // Voice input (push-to-talk on SPACE). Lazy init on first use so
     // we don't pay the model-load cost or prompt for mic permission
