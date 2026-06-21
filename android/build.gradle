@@ -1,0 +1,7 @@
+// Root build script. The Android Gradle Plugin version is declared here and
+// applied in app/build.gradle. Bump deliberately; keep it in step with the
+// Gradle version in gradle/wrapper/gradle-wrapper.properties and the NDK/SDK
+// you have installed (see docs/ANDROID.md).
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

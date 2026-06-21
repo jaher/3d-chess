@@ -1,0 +1,139 @@
+// ===========================================================================
+// app/build.gradle — the 3D Chess Android application module (experimental).
+// ===========================================================================
+//
+// NOT build-verified: needs the Android SDK + NDK + Gradle (absent in the
+// authoring environment). See docs/ANDROID.md. Open this project in Android
+// Studio (or run ./gradlew assembleDebug) on a machine with the tooling.
+plugins {
+    id 'com.android.application'
+}
+
+// android/ is the Gradle root, sitting at the repo root, so the engine sources
+// and runtime asset directories are one level up.
+def repoRoot = file("${rootDir}/..")
+def stagedAssetsDir = layout.buildDirectory.dir("staged-assets")
+
+android {
+    namespace 'com.example.threedchess'
+    compileSdk 34
+
+    // Pick the NDK revision you have installed (sdkmanager "ndk;<ver>"). r26+
+    // ships a recent clang with full C++17. Bump/adjust to match your setup.
+    ndkVersion '26.3.11579264'
+
+    defaultConfig {
+        // CHANGE before publishing — must be globally unique on the Play Store.
+        applicationId 'com.example.threedchess'
+        minSdk 24        // Android 7.0: GLES 3.0 guaranteed + a modern NDK
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+
+        ndk {
+            // arm64 covers every modern device. Add 'x86_64' for the emulator
+            // and 'armeabi-v7a' for very old phones if you need them.
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared'
+                cppFlags '-std=c++17'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    sourceSets {
+        main {
+            // SDL2's Java glue (org.libsdl.app.*) lives inside the vendored SDL
+            // checkout under src/main/cpp/SDL; pull it in so MainActivity can
+            // extend SDLActivity. (Switch to the SDL2 prefab AAR instead — see
+            // docs/ANDROID.md — and drop this line.)
+            java.srcDirs += "${projectDir}/src/main/cpp/SDL/android-project/app/src/main/java"
+
+            // Runtime assets are staged at build time (stageAssets task below)
+            // into a generated dir, so the repo's models/ sounds/ ... are NOT
+            // duplicated into the source tree.
+            assets.srcDirs += stagedAssetsDir.get().asFile
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        debug {
+            // Debuggable; uses the default debug keystore (no setup needed).
+        }
+        release {
+            minifyEnabled false
+            // TODO(signing): wire a release keystore (signingConfigs) before
+            // distributing. See docs/ANDROID.md.
+        }
+    }
+
+    // The .spz Gaussian-splat backdrops are already compressed; don't let AAPT
+    // re-compress them (it would bloat the APK and slow extraction).
+    androidResources {
+        noCompress += ['spz']
+    }
+}
+
+// ===========================================================================
+// stageAssets — gather the repo's runtime assets into the APK's assets/,
+// preserving sub-directory structure, and emit asset_manifest.txt so the
+// native first-run extractor (main_android.cpp) knows what to pull out of the
+// APK. Keeps a single source of truth (the repo's models/ sounds/ ...).
+// ===========================================================================
+tasks.register('stageAssets', Sync) {
+    description 'Stage runtime assets into the APK assets dir + write asset_manifest.txt.'
+    group 'build'
+    into stagedAssetsDir
+
+    ['models', 'sounds', 'fonts', 'challenges', 'puzzles', 'openings'].each { d ->
+        from("${repoRoot}/${d}") { into d }
+    }
+
+    // Optional Gaussian-splat backdrops (.spz). Bundled only if present — a
+    // clean checkout without them still builds (board_renderer falls back to
+    // the dark clear), exactly like the web/iOS optional preload.
+    [
+        'world_labs/medieval_room/splat_500k.spz',
+        'spaitial/sagrada_familia_interior/splat.spz',
+    ].each { rel ->
+        def f = file("${repoRoot}/${rel}")
+        if (f.exists()) {
+            from(f) { into new File(rel).parent }
+        }
+    }
+
+    // Generate the manifest after the copy (relative paths, one per line).
+    doLast {
+        def root = stagedAssetsDir.get().asFile
+        def lines = []
+        root.eachFileRecurse { f ->
+            if (f.isFile() && f.name != 'asset_manifest.txt') {
+                lines << root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+            }
+        }
+        lines.sort()
+        new File(root, 'asset_manifest.txt').text = lines.join('\n') + '\n'
+    }
+}
+
+// Make sure assets are staged before anything that needs them. preBuild is the
+// earliest umbrella task, so the asset-merge step sees the staged dir + manifest.
+tasks.configureEach { t ->
+    if (t.name == 'preBuild') {
+        t.dependsOn('stageAssets')
+    }
+}

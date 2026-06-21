@@ -1,0 +1,5 @@
+# Runtime assets are STAGED here at build time by the Gradle `stageAssets` task
+# (see app/build.gradle), which copies the repo's models/ sounds/ fonts/
+# challenges/ puzzles/ openings/ (+ optional .spz splats) and writes
+# asset_manifest.txt. They are intentionally NOT committed in duplicate — this
+# .gitkeep just preserves the directory. See docs/ANDROID.md.

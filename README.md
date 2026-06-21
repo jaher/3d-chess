@@ -112,6 +112,42 @@ The Makefile auto-detects Darwin and prepends Homebrew's pkgconfig directory
 > to GTK. Full details, caveats, and the list of what couldn't be verified
 > without Mac hardware are in [`docs/MACOS.md`](docs/MACOS.md).
 
+### iOS / iPadOS (experimental scaffold)
+
+There is an **experimental, not-yet-build-verified** native iOS / iPadOS
+scaffold under [`ios/`](ios/) — a CMake project (`cmake -G Xcode
+-DCMAKE_SYSTEM_NAME=iOS …`) that builds the shared engine against SDL2's iOS
+backend with an **OpenGL ES 3.0** context, the **stb_truetype** text path, and
+**two-finger pinch** touch input — architecturally the same as the web build.
+It can only be built on a Mac with Xcode, so it ships as a complete scaffold to
+open and finish, **not** a working app: the AI is a legal-move *placeholder*
+(iOS forbids `fork`/`exec`, so the subprocess Stockfish can't run — the #1 TODO
+is linking Stockfish **in-process**), and voice / Chessnut are stubbed
+unsupported like the web feature-detect. The Linux GTK, web, and native SDL2
+builds are unaffected (every iOS addition is additive or guarded). Full
+prerequisites, exact build commands, and the "needs a Mac" TODO list are in
+[`docs/IOS.md`](docs/IOS.md).
+
+### Android (experimental scaffold)
+
+There is a matching **experimental, not-yet-build-verified** native Android
+scaffold under [`android/`](android/) — a Gradle + NDK + CMake project
+(open in Android Studio or `cd android && ./gradlew assembleDebug`) that builds
+the **same shared engine** against SDL2's Android backend with an **OpenGL ES
+3.0** context (`<GLES3/gl3.h>`), the **stb_truetype** text path, and the
+**two-finger pinch** touch input — the close sibling of the iOS scaffold. It
+needs the Android SDK + NDK + Gradle (and a device/emulator), so it ships as a
+complete scaffold to open and finish, **not** a working app: the AI is the same
+legal-move *placeholder* (an APK can't `fork`/`exec` the subprocess Stockfish —
+the #1 TODO is linking Stockfish **in-process**), and voice / Chessnut are
+stubbed unsupported like the web feature-detect. Assets are bundled into the
+APK and extracted to internal storage on first run. The Linux GTK, web, native
+SDL2, and iOS builds are unaffected (every Android addition is additive or
+guarded behind the `CHESS_GLES` / `CHESS_PLATFORM_MOBILE` macros). Full
+prerequisites, exact build/install commands, how SDL2-Android is supplied
+(vendored sources vs prefab AAR), the asset-extraction approach, and the "needs
+Android tooling" TODO list are in [`docs/ANDROID.md`](docs/ANDROID.md).
+
 ## Cloning
 
 Clone recursively so that the Stockfish and whisper.cpp submodules are fetched:

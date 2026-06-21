@@ -9,12 +9,18 @@
 #include "stl_model.h"
 #include "text_atlas.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 // GL compute tile-based gsplat rasterizer — desktop-only because
-// WebGL2 has no compute shaders. Wired behind the
+// WebGL2 (and iOS GLES) have no compute shaders. Wired behind the
 // CHESS_GL_COMPUTE_SPLATS=1 env var; falls back to the existing
 // per-splat-quad path otherwise. See native/gl_raster/ for the
 // algorithm (Kerbl-2023 tile rasterizer ported to GLSL compute).
-#ifndef __EMSCRIPTEN__
+// iOS / iPadOS render the splat backdrop via the per-quad path (like
+// web), so the GL-compute rasterizer is excluded there.
+#if !defined(__EMSCRIPTEN__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
 #include "gl_raster/gl_rasterizer.h"
 #endif
 
@@ -31,12 +37,7 @@
 #include <unordered_map>
 #include <vector>
 
-#ifndef __EMSCRIPTEN__
-#include <epoxy/gl.h>
-#include <glib.h>
-#include <cairo.h>
-#include <pango/pangocairo.h>
-#else
+#if defined(__EMSCRIPTEN__)
 #include <GLES3/gl3.h>
 #include <emscripten.h>
 // Provided by web/font_atlas_stb.cpp; bakes the same 16x6 cell atlas the
@@ -48,6 +49,25 @@ typedef int64_t gint64;
 static inline gint64 g_get_monotonic_time() {
     return static_cast<gint64>(emscripten_get_now() * 1000.0);
 }
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS / iPadOS: OpenGL ES 3.0 + stb_truetype text, mirroring the web build.
+// No epoxy, no Cairo/Pango, no glib — the glib monotonic timer is replaced
+// with std::chrono::steady_clock (<chrono> is already included above).
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+extern "C" void build_font_atlas_stb(unsigned int* out_tex,
+                                     int atlas_w, int atlas_h);
+typedef int64_t gint64;
+static inline gint64 g_get_monotonic_time() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+#else
+#include <epoxy/gl.h>
+#include <glib.h>
+#include <cairo.h>
+#include <pango/pangocairo.h>
 #endif
 
 // ---------------------------------------------------------------------------

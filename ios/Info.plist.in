@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  iOS / iPadOS Info.plist template for 3D Chess.
+
+  CMake substitutes the @VAR@ placeholders (configure_file @ONLY) from
+  ios/CMakeLists.txt: @BUNDLE_ID@ from -DBUNDLE_ID=…, @IOS_DEPLOYMENT_TARGET@,
+  @PRODUCT_NAME@. The $(…) tokens are Xcode build-setting variables expanded
+  by the build system, NOT by CMake.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>3D Chess</string>
+    <key>CFBundleName</key>
+    <string>@PRODUCT_NAME@</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>@BUNDLE_ID@</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>MinimumOSVersion</key>
+    <string>@IOS_DEPLOYMENT_TARGET@</string>
+
+    <!-- Empty launch screen → black launch + full native (Retina)
+         resolution. Replace with a LaunchScreen storyboard for a branded
+         splash. Without this the app runs letterboxed at a compatibility
+         resolution. -->
+    <key>UILaunchScreen</key>
+    <dict/>
+
+    <!-- Landscape-only, both directions, iPhone + iPad. -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- arm64 is the universal modern-device gate. iOS does not define a
+         dedicated "opengles-3" capability key; GLES3 is available on every
+         arm64 device. (Switch to "metal" if/when the renderer moves off
+         OpenGL ES, which Apple has deprecated but still ships.) -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+    </array>
+
+    <key>UIStatusBarHidden</key>
+    <true/>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <false/>
+    <key>UIRequiresFullScreen</key>
+    <true/>
+
+    <!-- Allow frame pacing above 60 Hz on ProMotion (120 Hz) displays. -->
+    <key>CADisableMinimumFrameDurationOnPhone</key>
+    <true/>
+
+    <!-- Usage strings for the capabilities listed as TODO in docs/IOS.md.
+         iOS REQUIRES these before the relevant frameworks may be used, so
+         they're pre-seeded here:
+           * microphone / speech  → voice move input (SFSpeechRecognizer)
+           * bluetooth            → Chessnut Move board (CoreBluetooth)
+         Remove the ones you don't ship. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Voice move input lets you speak your moves.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Speech recognition turns your spoken moves into board moves.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Connect to a Chessnut Move electronic board over Bluetooth.</string>
+</dict>
+</plist>

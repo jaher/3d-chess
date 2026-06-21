@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AndroidManifest for the 3D Chess SDL2 app (experimental scaffold).
+
+  The single Activity extends SDL2's org.libsdl.app.SDLActivity (via
+  MainActivity), which owns the GLSurfaceView, the input plumbing, and the
+  native-thread that calls SDL_main in libmain.so. Landscape-only, fullscreen
+  immersive, GLES 3.0 required.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- OpenGL ES 3.0 is mandatory for the renderer. -->
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+
+    <!-- Multi-touch for the two-finger pinch-zoom. -->
+    <uses-feature android:name="android.hardware.touchscreen.multitouch" android:required="false" />
+
+    <!-- Only needed for the (currently stubbed) chess.com puzzle fetch. No
+         microphone / bluetooth perms until voice / Chessnut are wired up —
+         see docs/ANDROID.md. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="3D Chess"
+        android:allowBackup="true"
+        android:hardwareAccelerated="true"
+        android:isGame="true"
+        android:hasCode="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:label="3D Chess"
+            android:exported="true"
+            android:screenOrientation="landscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:preferMinimalPostProcessing="true"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

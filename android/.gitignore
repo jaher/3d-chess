@@ -1,0 +1,16 @@
+# Android / Gradle build outputs and local config — never committed.
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Vendored SDL2 checkout (add as a git submodule or symlink — see docs/ANDROID.md).
+app/src/main/cpp/SDL/
+
+# Wrapper jar is regenerated locally (see gradle/wrapper/README.txt).
+gradle/wrapper/gradle-wrapper.jar

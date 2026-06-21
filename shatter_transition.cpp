@@ -2,7 +2,25 @@
 
 #include "shader.h"
 
-#ifdef __EMSCRIPTEN__
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+// CHESS_GLES — the OpenGL ES family (web / Android / iOS), a superset of
+// __EMSCRIPTEN__. These targets render with OpenGL ES 3.0; desktop Linux /
+// macOS use full GL via libepoxy. Defining it is behaviour-preserving for the
+// existing Linux/web/macOS-desktop/iOS builds (each still selects the SAME GL
+// header below) — it only adds the Android (__ANDROID__) branch.
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+#  ifndef CHESS_GLES
+#    define CHESS_GLES 1
+#  endif
+#endif
+#if defined(CHESS_GLES) && defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS / iPadOS: OpenGL ES 3.0 via Apple's OpenGLES.framework (no epoxy on iOS).
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#elif defined(CHESS_GLES)
+// web (emscripten) + Android NDK: OpenGL ES 3.0 system header.
 #include <GLES3/gl3.h>
 #else
 #include <epoxy/gl.h>

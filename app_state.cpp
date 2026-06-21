@@ -1,5 +1,49 @@
 #include "app_state.h"
 
+// ---------------------------------------------------------------------------
+// Platform selection for iOS / iPadOS.
+//
+// iOS forbids fork()/exec() (so the desktop Stockfish subprocess can't run),
+// ships no whisper.cpp / SimpleBLE backends, and resolves assets from the app
+// bundle. It therefore reuses the lightweight web-style platform stubs
+// (ios/platform_ios.cpp + ios/ai_player_ios.cpp) instead of the desktop
+// whisper / SimpleBLE / subprocess paths. CHESS_PLATFORM_IOS gates the blocks
+// below exactly the way __EMSCRIPTEN__ gates them for the web build. It is
+// NEVER defined on the Linux/web/macOS-desktop builds, so their behaviour is
+// byte-for-byte unchanged. The iOS CMake build also passes -DCHESS_PLATFORM_IOS=1.
+// ---------------------------------------------------------------------------
+#if defined(__APPLE__)
+#  include <TargetConditionals.h>
+#  if TARGET_OS_IPHONE && !defined(CHESS_PLATFORM_IOS)
+#    define CHESS_PLATFORM_IOS 1
+#  endif
+#endif
+
+// ---------------------------------------------------------------------------
+// Platform selection for Android.
+//
+// Android is the close sibling of iOS here: an APK cannot fork()/exec() the
+// Stockfish subprocess, ships no whisper.cpp / SimpleBLE backends, and loads
+// assets from the APK (extracted to internal storage). It therefore reuses the
+// SAME web-style platform stubs as iOS (android/platform_android.cpp +
+// android/ai_player_android.cpp). The NDK auto-defines __ANDROID__; the Android
+// CMake build also passes -DCHESS_PLATFORM_ANDROID=1.
+// ---------------------------------------------------------------------------
+#if defined(__ANDROID__) && !defined(CHESS_PLATFORM_ANDROID)
+#  define CHESS_PLATFORM_ANDROID 1
+#endif
+
+// CHESS_PLATFORM_MOBILE — iOS + Android. Both reuse the web-style stub paths
+// (no whisper / SimpleBLE / fork-exec). It is a SUPERSET of CHESS_PLATFORM_IOS,
+// so every guard below that previously read !defined(CHESS_PLATFORM_IOS) keeps
+// behaving identically on iOS while also covering Android; it is NEVER defined
+// on the Linux/web/macOS-desktop builds, so their behaviour is byte-for-byte
+// unchanged.
+#if (defined(CHESS_PLATFORM_IOS) || defined(CHESS_PLATFORM_ANDROID)) && \
+    !defined(CHESS_PLATFORM_MOBILE)
+#  define CHESS_PLATFORM_MOBILE 1
+#endif
+
 #include "ai_player.h"
 #include "audio.h"
 #include "chess_rules.h"
@@ -15,7 +59,7 @@
 #include "chessnut_encode.h"
 #include "phantom_encode.h"
 #include "puzzle.h"
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 #  include "chessnut_bridge.h"
 #  include "phantom_bridge.h"
 #endif
@@ -1425,7 +1469,7 @@ static void release_menu(AppState& a, double mx, double my,
         else if (press_btn == 4) app_enter_options(a);
         else if (press_btn == 5) { a.two_player_mode = true;  app_enter_pregame(a); }
         else if (press_btn == 6) app_enter_puzzle(a);
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
         else if (press_btn == 2) {
             // Quit button — go through the platform hook so main()
             // returns and runs the cleanup chain (voice_tts /
@@ -3241,7 +3285,7 @@ static void tick_clock(AppState& a, int64_t now) {
 // Auto-reconnect tick — desktop body defined in the chessnut block
 // below. Web is single-process / single-call (the browser handles
 // reconnection inside navigator.bluetooth), so it stubs out here.
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 static void chessnut_tick_reconnect(AppState& a, int64_t now);
 #else
 static inline void chessnut_tick_reconnect(AppState&, int64_t) {}
@@ -3539,8 +3583,8 @@ static void render_challenge_overlay_and_buttons(AppState& a, int width, int hei
 static void render_challenge_transition_trigger(AppState& a, int width, int height,
                                                 int64_t now) {
     if (a.transition_pending_next < 0) return;
-#ifdef __EMSCRIPTEN__
-    // On web, glBlitFramebuffer from the multisample WebGL2 default
+#if defined(__EMSCRIPTEN__) || defined(CHESS_PLATFORM_MOBILE)
+    // On web (and iOS / Android GLES), glBlitFramebuffer from the multisample default
     // framebuffer doesn't reliably resolve to a single-sample user
     // FBO across all implementations — the capture texture came
     // back empty / transparent and the shatter shards rendered as
@@ -4064,7 +4108,7 @@ void app_voice_toggle_speak_moves_request(AppState& a) {
 // desktop only. Web has its own continuous-mode driver in
 // web/voice_web.cpp.
 // ===========================================================================
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 
 namespace {
 
@@ -4959,7 +5003,7 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
     queue_redraw(a);
 }
 
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 namespace {
 // Bridge instances owned here so their destructors reap the
 // SimpleBLE / subprocess resources on app exit. Only one of the
@@ -5322,7 +5366,7 @@ void app_init(AppState& a, const AppPlatform* platform) {
 // $XDG_CONFIG_HOME/3d_chess/settings.ini (or ~/.config/3d_chess/...).
 // Web stubs both calls in chessnut_web.cpp / voice_web.cpp area.
 // ===========================================================================
-#ifndef __EMSCRIPTEN__
+#if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 namespace {
 std::string settings_path() {
     const char* xdg = std::getenv("XDG_CONFIG_HOME");

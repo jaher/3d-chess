@@ -2,8 +2,42 @@
 
 #include "render_internal.h"
 
-#ifdef __EMSCRIPTEN__
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+// Text rasterizer selection. The web build AND the mobile builds
+// (iOS / iPadOS, Android) bake the glyph atlas with stb_truetype
+// (web/font_atlas_stb.cpp); the desktop builds (Linux/macOS, GTK or SDL)
+// bake it with Cairo/Pango. Mobile mirrors web here — Cairo/Pango are
+// desktop-only and painful on iOS/Android. CHESS_TEXT_STB is a superset
+// of __EMSCRIPTEN__, so the existing desktop/web code paths are unchanged.
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+#  define CHESS_TEXT_STB 1
+#endif
+
+// CHESS_GLES — the OpenGL ES family (web / Android / iOS), a superset of
+// __EMSCRIPTEN__ (see render_internal.h, already included above, which also
+// defines it). Re-stating the guarded define keeps this TU self-contained;
+// the #ifndef means it is never redefined. Behaviour-preserving for the
+// existing Linux/web/macOS-desktop/iOS builds.
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+#  ifndef CHESS_GLES
+#    define CHESS_GLES 1
+#  endif
+#endif
+#if defined(CHESS_GLES) && defined(__APPLE__) && TARGET_OS_IPHONE
+// iOS / iPadOS: OpenGL ES 3.0 via Apple's OpenGLES.framework (no epoxy on iOS).
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#elif defined(CHESS_GLES)
+// web (emscripten) + Android NDK: OpenGL ES 3.0 system header.
 #include <GLES3/gl3.h>
+#else
+#include <epoxy/gl.h>
+#endif
+
+#ifdef CHESS_TEXT_STB
 // Provided by web/font_atlas_stb.cpp; both bakers share the 16x6
 // cell layout produced by the desktop Cairo path. The "title" baker
 // uses Cinzel-Bold (the inscriptional Roman face used by the menu
@@ -14,7 +48,6 @@ extern "C" void build_font_atlas_stb(unsigned int* out_tex,
 extern "C" void build_title_font_atlas_stb(unsigned int* out_tex,
                                            int atlas_w, int atlas_h);
 #else
-#include <epoxy/gl.h>
 #include <cairo.h>
 #include <glib.h>
 #include <pango/pangocairo.h>
@@ -51,7 +84,7 @@ void char_uvs(char ch, float& u0, float& v0, float& u1, float& v1) {
     v1 = static_cast<float>(row + 1) / ATLAS_ROWS;
 }
 
-#ifndef __EMSCRIPTEN__
+#ifndef CHESS_TEXT_STB
 // Bake one 16×6-cell atlas from the given Pango font description
 // string ("Inter Bold 28", "Cinzel Bold 28", …) and upload it to a
 // new GL_R8 texture. Shared by the default and title bakers below.
@@ -133,7 +166,7 @@ static void register_app_fonts_once() {
 #endif
 
 void build_font_atlas() {
-#ifdef __EMSCRIPTEN__
+#ifdef CHESS_TEXT_STB
     build_font_atlas_stb(&g_font_tex, ATLAS_W, ATLAS_H);
 #else
     register_app_fonts_once();
@@ -149,7 +182,7 @@ void build_font_atlas() {
 }
 
 void build_title_font_atlas() {
-#ifdef __EMSCRIPTEN__
+#ifdef CHESS_TEXT_STB
     build_title_font_atlas_stb(&g_title_font_tex, ATLAS_W, ATLAS_H);
 #else
     register_app_fonts_once();
