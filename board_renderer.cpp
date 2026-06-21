@@ -43,17 +43,6 @@
 // desktop Cairo path produces, and binds it to *out_tex with GL_R8.
 extern "C" void build_font_atlas_stb(unsigned int* out_tex,
                                      int atlas_w, int atlas_h);
-// WebGPU splat backdrop (web/webgpu_splats_web.cpp). Opt-in via
-// ?webgpu URL flag — see web/webgpu_splats.js for activation rules.
-extern "C" {
-    void chess_webgpu_init();
-    int  chess_webgpu_supported();
-    void chess_webgpu_upload_splats(const Splat* splats, int n, int flip_y);
-    void chess_webgpu_resize(int w, int h);
-    void chess_webgpu_set_visible(int v);
-    void chess_webgpu_render(const float* view, const float* proj,
-                             const float* model);
-}
 // glib monotonic time replacement returning microseconds since process start.
 typedef int64_t gint64;
 static inline gint64 g_get_monotonic_time() {
@@ -441,6 +430,15 @@ static bool   g_splat_bg_cached_shadow_enabled = false;
 static float  g_splat_bg_cached_light_x        = 0.0f;
 static float  g_splat_bg_cached_light_y        = 0.0f;
 static float  g_splat_bg_cached_light_z        = 0.0f;
+// Orbit-camera pose the cached backdrop was rendered for. The room only
+// moves when the camera does, so we keep the cached colour (and, on
+// desktop, surface-depth) texture ACROSS frames and re-render the splats
+// only when rot_x/rot_y/zoom change. Without this a static view re-sorts
+// and re-draws every splat every frame — the dominant cost on the
+// single-threaded web build. Sentinels force a render on the first frame.
+static float  g_splat_bg_cached_rot_x = 1e30f;
+static float  g_splat_bg_cached_rot_y = 1e30f;
+static float  g_splat_bg_cached_zoom  = 1e30f;
 // Pass-through texture-blit program used to paste g_splat_bg_color_tex
 // into the main pass as a full-screen quad before the chessboard is
 // drawn. Same role the panorama skybox shader fills in the no-splat
@@ -600,68 +598,11 @@ static void ensure_splat_bg_fbo(int w, int h) {
 // the same frame (e.g. multi-game mode) will reuse the cached
 // colour texture.
 extern "C" void renderer_begin_frame() {
-    g_splat_bg_cache_valid = false;
-}
-
-// See board_renderer.h for the why. Draws g_splat_bg_color_tex into
-// dst_fbo using a "draw under" blend, so existing opaque pixels in
-// dst stay put and the splat colour fills in the alpha=0 regions.
-// Used by the shatter capture path on web when WebGPU mode is on:
-// in that mode the per-quad splat blit was skipped on FBO 0 so the
-// WebGPU canvas behind could show through, and the captured FBO 0
-// is alpha-cleared in the splat region; this re-introduces the
-// splat backdrop into the capture so the shatter shards aren't
-// dark/empty.
-void renderer_composite_splat_under(unsigned int dst_fbo,
-                                    int width, int height) {
-    if (!g_splat_program || !g_splat_blit_program ||
-        !g_splat_bg_color_tex || !g_fullscreen_vao ||
-        g_packed.count <= 0) {
-        return;
-    }
-    // The per-quad path populates g_splat_bg_color_tex when it
-    // draws splats this frame, even when the subsequent blit is
-    // skipped for WebGPU. If the cache isn't valid the texture is
-    // either stale (from a prior frame) or never written; bail
-    // either way — the capture stays whatever the caller already
-    // grabbed.
-    if (!g_splat_bg_cache_valid) return;
-
-    GLint prev_fb = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fb);
-    GLboolean prev_depth_test = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean prev_blend      = glIsEnabled(GL_BLEND);
-    GLboolean prev_scissor    = glIsEnabled(GL_SCISSOR_TEST);
-    GLint prev_blend_src = 0, prev_blend_dst = 0;
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prev_blend_src);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &prev_blend_dst);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
-    glViewport(0, 0, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_SCISSOR_TEST);
-    glEnable(GL_BLEND);
-    // "Under" composite: out = src * (1 - dst_alpha) + dst. Where
-    // dst is opaque (chess pieces, alpha=1) the splat is masked out;
-    // where dst is alpha=0 (the cleared backdrop region) the splat
-    // fills in.
-    glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_ONE);
-
-    glUseProgram(g_splat_blit_program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);
-    glUniform1i(glGetUniformLocation(g_splat_blit_program, "uTex"), 0);
-    glBindVertexArray(g_fullscreen_vao);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-
-    glDepthMask(GL_TRUE);
-    if (prev_depth_test) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (prev_blend)      glEnable(GL_BLEND);      else glDisable(GL_BLEND);
-    if (prev_scissor)    glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    glBlendFunc(prev_blend_src, prev_blend_dst);
-    glBindFramebuffer(GL_FRAMEBUFFER, prev_fb);
+    // Intentionally a no-op now. The splat backdrop persists across
+    // frames and is re-rendered only when the camera / light / scene
+    // changes (see the cache-key checks in renderer_draw). Blindly
+    // invalidating here re-sorts + re-draws every splat every frame,
+    // which the single-threaded web build can't afford.
 }
 
 void renderer_redraw_into_capture_fbo(GameState& gs, int width, int height,
@@ -1595,14 +1536,6 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
         // differs.
         load_splat_from_candidates(splat_paths, n_paths);
     }
-#ifdef __EMSCRIPTEN__
-    // Kick off WebGPU init; upload happens once init resolves AND
-    // splats are loaded. We poll chess_webgpu_supported() in the
-    // splat-backdrop render block and upload lazily on first ready
-    // frame (the JS side is async, so we can't upload here unless
-    // the device already exists — easier to do it on demand).
-    chess_webgpu_init();
-#endif
 #ifndef __EMSCRIPTEN__
     g_skybox_program  = create_program(skybox_vs_src,  skybox_fs_src);
     // Marble-generated panorama room. Native-only — the equirect
@@ -3435,20 +3368,6 @@ void renderer_draw(GameState& gs,
     const int mp_x = main_pass_is_default ? sub_x : 0;
     const int mp_y = main_pass_is_default ? sub_y : 0;
     glViewport(mp_x, mp_y, width, height);
-#ifdef __EMSCRIPTEN__
-    // When the WebGPU splat backdrop is active we want the WebGL
-    // canvas to composite alpha-correctly with the WebGPU canvas
-    // sitting behind it. Clear the main FBO with alpha=0 so any
-    // pixel the chess geometry doesn't touch ends up transparent
-    // (the WebGPU canvas then shows through). Without this the
-    // WebGL canvas is fully opaque and the WebGPU layer is hidden.
-    const bool wgpu_active = chess_webgpu_supported() != 0;
-    GLfloat prev_clear[4] = {0};
-    if (wgpu_active) {
-        glGetFloatv(GL_COLOR_CLEAR_VALUE, prev_clear);
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-#endif
     if (main_pass_is_default) {
         glScissor(sub_x, sub_y, width, height);
         glEnable(GL_SCISSOR_TEST);
@@ -3457,12 +3376,6 @@ void renderer_draw(GameState& gs,
     } else {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
-#ifdef __EMSCRIPTEN__
-    if (wgpu_active) {
-        glClearColor(prev_clear[0], prev_clear[1],
-                     prev_clear[2], prev_clear[3]);
-    }
-#endif
 
     // Marble integration. The Gaussian-splat backdrop runs on BOTH
     // desktop and web (WebGL2 + GLSL ES 3.00 covers everything the
@@ -3533,9 +3446,22 @@ void renderer_draw(GameState& gs,
                 (g_splat_bg_cached_light_x == light_dir_x &&
                  g_splat_bg_cached_light_y == light_dir_y &&
                  g_splat_bg_cached_light_z == light_dir_z);
-            if (!same_enabled || !same_dir) g_splat_bg_cache_valid = false;
+            // Re-render when the camera moves — the room view changes
+            // with rot_x/rot_y/zoom (exact compare: any motion misses).
+            const bool same_cam =
+                g_splat_bg_cached_rot_x == rot_x &&
+                g_splat_bg_cached_rot_y == rot_y &&
+                g_splat_bg_cached_zoom  == zoom;
+            if (!same_enabled || !same_dir || !same_cam)
+                g_splat_bg_cache_valid = false;
         }
         if (!g_splat_bg_cache_valid) {
+            // Record the camera this (re)render is for, so subsequent
+            // static frames reuse the cached backdrop instead of
+            // re-sorting + re-drawing every splat.
+            g_splat_bg_cached_rot_x = rot_x;
+            g_splat_bg_cached_rot_y = rot_y;
+            g_splat_bg_cached_zoom  = zoom;
             // The room is shake-immune — board_shake is meant to
             // wobble the table, not the world around it. Build a
             // shake-less view here so the cached splat output is
@@ -3557,43 +3483,6 @@ void renderer_draw(GameState& gs,
             float cam_pos[3] = { cx, cy, cz };
             packed_splats_sort_and_upload(g_packed, cam_pos, vd,
                                           splat_model.m, g_source_splats);
-
-#ifdef __EMSCRIPTEN__
-            // ── WebGPU splat backdrop (web only). Activated with
-            // ?webgpu in the URL or localStorage.CHESS_WEBGPU_SPLATS=1.
-            // Same algorithm as gl_raster/ but in WGSL on a second
-            // canvas BEHIND the chess WebGL one. We don't touch the
-            // existing WebGL splat draw — just route around it when
-            // WebGPU is up, hiding/showing the WebGPU canvas via the
-            // CSS display flag.
-            if (chess_webgpu_supported()) {
-                static bool s_wgpu_uploaded = false;
-                if (!s_wgpu_uploaded) {
-                    // Same Y-flip trick as the desktop gl_raster path —
-                    // chess uses splat_model = T·S(s,-s,s) (reflection)
-                    // and the kernel can't represent reflections.
-                    chess_webgpu_upload_splats(g_source_splats.data(),
-                                               int(g_source_splats.size()),
-                                               /*flip_y=*/1);
-                    s_wgpu_uploaded = true;
-                    chess_webgpu_set_visible(1);
-                }
-                chess_webgpu_resize(width, height);
-                Mat4 splat_model_wgpu = mat4_multiply(
-                    mat4_translate(splat_cx, splat_cy, splat_cz),
-                    mat4_scale(splat_scale, splat_scale, splat_scale));
-                chess_webgpu_render(view_no_shake.m, proj.m,
-                                    splat_model_wgpu.m);
-                // The WebGPU canvas paints itself; we still let the
-                // WebGL splat draw run below as a fallback for any
-                // areas not covered by WebGPU, but mark the cache as
-                // valid so multi-board frames don't re-render.
-                // (In practice the WebGPU canvas covers the entire
-                // viewport, so the WebGL draw is overdrawn — harmless
-                // but redundant. TODO: skip it when WebGPU's render
-                // future has actually resolved at least once.)
-            }
-#endif
 
 #ifndef __EMSCRIPTEN__
             // ── CHESS_GL_COMPUTE_SPLATS=1: route through the
@@ -3755,19 +3644,7 @@ void renderer_draw(GameState& gs,
 
         // Paste the splat colour into the main pass as a fullscreen
         // quad. Pure overwrite — no alpha, no depth, no shading.
-        //
-        // When the WebGPU splat backdrop is active (web only),
-        // SKIP this paste. The WebGPU canvas sits BEHIND the
-        // WebGL chess canvas (CSS z-index 0), and the WebGL
-        // canvas is alpha-cleared above. Pasting the WebGL splat
-        // would overwrite the now-transparent background and
-        // hide the WebGPU layer.
-#ifdef __EMSCRIPTEN__
-        const bool skip_blit_for_webgpu = chess_webgpu_supported() != 0;
-#else
-        const bool skip_blit_for_webgpu = false;
-#endif
-        if (!skip_blit_for_webgpu) {
+        {
             glUseProgram(g_splat_blit_program);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);

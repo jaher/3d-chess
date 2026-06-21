@@ -446,12 +446,6 @@ int chess_start(void) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    // Note: we used to set SDL_GL_ALPHA_SIZE=8 here for the WebGPU
-    // splat backdrop (so WebGL composites with alpha and the WebGPU
-    // canvas behind can show through). Reverted because it tripped a
-    // Chrome WebGL2 "Uniform size does not match uniform method"
-    // strict-validation spam at startup. Emscripten's WebGL context
-    // already defaults to alpha=true, so the attribute was redundant.
     // Ask the browser to multisample the WebGL canvas. SDL2 on
     // Emscripten translates these to `antialias = true` on the
     // WebGL context attributes; the browser then picks the

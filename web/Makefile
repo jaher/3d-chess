@@ -38,7 +38,7 @@ LDFLAGS   := \
     -s MINIFY_HTML=0 \
     -s USE_ZLIB=1 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString \
-    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js,_chess_webgpu_set_state,_chess_webgpu_supported,_chess_webgpu_init_state,_chess_webgpu_init,_chess_webgpu_upload_splats,_chess_webgpu_resize,_chess_webgpu_set_visible,_chess_webgpu_render \
+    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js \
     --preload-file ../models-web-packed@/models \
     --preload-file ../models/board@/models/board \
     --preload-file ../models/clock@/models/clock \
@@ -88,8 +88,7 @@ SHARED_SRCS := \
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp \
-    voice_web.cpp voice_tts_web.cpp chessnut_web.cpp \
-    webgpu_splats_web.cpp
+    voice_web.cpp voice_tts_web.cpp chessnut_web.cpp
 
 # Object files live in build/ so `make -jN` can compile each TU in
 # parallel. em++ is clang under the hood — -j20 actually parallelizes

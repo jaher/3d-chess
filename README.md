@@ -870,14 +870,10 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
     `CHESS_SPLAT_TIER=500k` on lower-thread or older hardware. Set
     `CHESS_GL_COMPUTE_SPLATS=0` to fall back to the per-splat-quad
     path (matches the Spark.js algorithm).
-  - **Web upgrade**: append `?webgpu` to the URL (or
-    `localStorage.CHESS_WEBGPU_SPLATS = "1"`) to route the splat
-    backdrop through a WebGPU compute pipeline on a parallel canvas
-    (WGSL ports of the same shaders, see `web/webgpu_splats.js`).
-    Requires Chrome 113+ / Edge 113+ / Safari 18+ / Firefox with
-    `dom.webgpu.enabled`. Falls back to the per-quad WebGL path
-    otherwise. The web build's default stays on the per-quad path
-    because WebGL2 has no compute shaders.
+  - **Web**: uses the per-splat-quad path (WebGL2 has no compute
+    shaders, so the tile rasterizer is desktop-only). The backdrop is
+    cached across frames and only re-rendered when the camera moves, so
+    a static view costs nothing per frame.
 
 ## Upgrading Stockfish
 

@@ -59,21 +59,10 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 // shake-immune by design.
 extern "C" void renderer_begin_frame();
 
-// Used by shatter_transition.cpp's renderer_capture_frame to put the
-// per-quad WebGL splat backdrop *under* the captured chess content
-// when WebGPU mode is active. Without this the WebGPU splat backdrop
-// lives on a separate canvas the WebGL capture can't see, so the
-// captured texture has only chess pieces over an alpha-cleared
-// transparent backdrop and the shatter shards render dark/empty.
-// No-op when no splat data is loaded or the per-quad splat cache
-// hasn't been populated this frame.
-void renderer_composite_splat_under(unsigned int dst_fbo,
-                                    int width, int height);
-
 // Switch the active Gaussian-splat environment behind the chessboard.
 // Re-reads the SPZ from disk, re-uploads the packed splat textures,
-// resets the per-environment cache flags (GL compute + WebGPU upload
-// gates, the per-frame splat-bg cache), and updates the bbox used to
+// resets the per-environment cache flags (the GL compute upload gate
+// and the per-frame splat-bg cache), and updates the bbox used to
 // centre the splat cloud on the chess world. The numeric value comes
 // from AppState::Environment (cast to int) — kept loose-typed here so
 // board_renderer.h doesn't need to include app_state.h. Returns true
