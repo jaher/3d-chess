@@ -136,7 +136,17 @@ void renderer_draw_options(bool splats_enabled,
                            int picker_device_count,
                            int width, int height,
                            int hover) {
+    // Explicit background colour. renderer_init seeds (0.12,0.12,0.15)
+    // and the desktop keeps it, so the options screen inherits that dark
+    // UI grey there — but the web frame loop (main_web.cpp) re-clears to
+    // black every frame, which made the options screen render as a black
+    // "dark screen". Set it here so both platforms match; save/restore so
+    // we don't leak the colour into whatever draws next.
+    GLfloat prev_clear[4];
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, prev_clear);
+    glClearColor(0.12f, 0.12f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glClearColor(prev_clear[0], prev_clear[1], prev_clear[2], prev_clear[3]);
     glViewport(0, 0, width, height);
 
     glDisable(GL_DEPTH_TEST);
