@@ -893,6 +893,33 @@ void main() {
 }
 )";
 
+// Depth-blit: write the GL-compute splat backdrop's surface distance into
+// the main pass depth buffer (gl_FragDepth) so the chess board depth-tests
+// against the room — depth-correct compositing instead of a flat overlay.
+// Reuses splat_blit_vs_src for the fullscreen quad. Color writes are masked
+// off by the caller; this shader only produces depth.
+const char* splat_depth_blit_fs_src = GLSL_VERSION GLSL_FS_PREAMBLE R"(
+in vec2 vUV;
+
+uniform sampler2D uSurfDist;   // R32F view-space surface distance; 1e30 = none
+uniform float uProjA;          // proj[2][2]  (column-major m[10])
+uniform float uProjB;          // proj[3][2]  (column-major m[14])
+
+void main() {
+    float dist = texture(uSurfDist, vUV).r;
+    if (dist >= 1.0e29) {
+        gl_FragDepth = 1.0;        // no splat surface → board draws in front
+        return;
+    }
+    // Camera looks down -Z so the surface's view-space z is -dist. Push it
+    // through the projection's depth row: clip.z = uProjA*z + uProjB,
+    // clip.w = -z = dist; window depth = (clip.z/clip.w)*0.5 + 0.5.
+    float view_z = -dist;
+    float ndc_z  = (uProjA * view_z + uProjB) / dist;
+    gl_FragDepth = clamp(ndc_z * 0.5 + 0.5, 0.0, 1.0);
+}
+)";
+
 // ---------------------------------------------------------------------------
 // Compilation helpers
 // ---------------------------------------------------------------------------

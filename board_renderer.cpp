@@ -412,6 +412,17 @@ bool renderer_set_environment(int env_kind);
 static GLuint g_splat_bg_fbo       = 0;
 static GLuint g_splat_bg_color_tex = 0;
 static GLuint g_splat_bg_depth_tex = 0;
+#ifndef __EMSCRIPTEN__
+// R32F per-pixel splat-cloud surface distance (view-space), produced by
+// the GL-compute rasterizer, depth-blitted into the main pass so the
+// board occludes / is occluded by the room (depth-correct compositing).
+// Desktop only — the GL-compute path needs compute shaders (no WebGL2).
+static GLuint g_splat_surf_depth_tex = 0;
+#endif
+// True when g_splat_surf_depth_tex holds a valid surface-depth map for
+// the current backdrop (only the GL-compute path produces it; always
+// false on web, where the per-quad path keeps the flat overlay).
+static bool   g_splat_surf_depth_valid = false;
 static int    g_splat_bg_w         = 0;
 static int    g_splat_bg_h         = 0;
 // True when g_splat_bg_color_tex holds a valid splat backdrop for
@@ -435,6 +446,13 @@ static float  g_splat_bg_cached_light_z        = 0.0f;
 // drawn. Same role the panorama skybox shader fills in the no-splat
 // path.
 static GLuint g_splat_blit_program = 0;
+#ifndef __EMSCRIPTEN__
+// Depth-blit program: samples g_splat_surf_depth_tex (view-space splat
+// surface distance), converts to a window-space depth via the projection
+// and writes gl_FragDepth into the main pass's depth buffer, so the chess
+// board can depth-test against the splat room. Desktop only.
+static GLuint g_splat_depth_blit_program = 0;
+#endif
 // Multisample FBO that the 3D scene actually renders into. Resolved
 // directly into the default framebuffer before UI overlays draw.
 // GtkGLArea doesn't expose MSAA on the default FB, so we get it via
@@ -521,6 +539,9 @@ static void ensure_splat_bg_fbo(int w, int h) {
     if (g_splat_bg_fbo == 0)       glGenFramebuffers(1, &g_splat_bg_fbo);
     if (g_splat_bg_color_tex == 0) glGenTextures(1, &g_splat_bg_color_tex);
     if (g_splat_bg_depth_tex == 0) glGenTextures(1, &g_splat_bg_depth_tex);
+#ifndef __EMSCRIPTEN__
+    if (g_splat_surf_depth_tex == 0) glGenTextures(1, &g_splat_surf_depth_tex);
+#endif
 
     glBindTexture(GL_TEXTURE_2D, g_splat_bg_color_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
@@ -529,6 +550,20 @@ static void ensure_splat_bg_fbo(int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+#ifndef __EMSCRIPTEN__
+    // Surface-distance target for the GL-compute rasterizer's depth
+    // output. R32F, NEAREST (it's sampled 1:1 by the depth-blit). Not
+    // attached to g_splat_bg_fbo — the rasterizer writes it via
+    // imageStore, not as a render target.
+    glBindTexture(GL_TEXTURE_2D, g_splat_surf_depth_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, w, h, 0,
+                 GL_RED, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#endif
 
     glBindTexture(GL_TEXTURE_2D, g_splat_bg_depth_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
@@ -556,6 +591,7 @@ static void ensure_splat_bg_fbo(int w, int h) {
     // Texture storage was just reallocated, so any cached frame is
     // gone — force the next splat draw to actually run.
     g_splat_bg_cache_valid = false;
+    g_splat_surf_depth_valid = false;
 }
 
 // Call once at the start of every render frame, BEFORE any
@@ -1480,6 +1516,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_wood_button_program = create_program(wood_button_vs_src, wood_button_fs_src);
     g_splat_program       = create_program(splat_vs_src,       splat_fs_src);
     g_splat_blit_program  = create_program(splat_blit_vs_src,  splat_blit_fs_src);
+#ifndef __EMSCRIPTEN__
+    // Desktop-only: depth-correct compositing of the GL-compute splat
+    // backdrop with the chess board (reuses the blit VS for its quad).
+    g_splat_depth_blit_program =
+        create_program(splat_blit_vs_src, splat_depth_blit_fs_src);
+#endif
     // Marble Gaussian splat scene. Pick the heaviest tier the
     // platform can handle: full_res on desktop, 500k on web (the
     // packed-texture render path supports either; the web build
@@ -3573,6 +3615,10 @@ void renderer_draw(GameState& gs,
                 }
                 g_gl_compute.resize(width, height);
                 g_gl_compute.set_output_texture(g_splat_bg_color_tex);
+                // Also emit the per-pixel surface distance so the board
+                // can depth-test against the room (depth-correct compositing,
+                // depth-blitted after the colour paste below).
+                g_gl_compute.set_depth_output_texture(g_splat_surf_depth_tex);
                 // GL compute model: same translation + scale as the
                 // per-quad path but with positive Y scale (the Y-flip
                 // is baked into the splat data on upload above).
@@ -3584,6 +3630,7 @@ void renderer_draw(GameState& gs,
                 // Skip the per-quad draw — the compute kernel
                 // already filled g_splat_bg_color_tex.
                 g_splat_bg_cache_valid = true;
+                g_splat_surf_depth_valid = true;
                 g_splat_bg_cached_shadow_enabled = light_positioning;
                 g_splat_bg_cached_light_x = light_dir_x;
                 g_splat_bg_cached_light_y = light_dir_y;
@@ -3677,6 +3724,9 @@ void renderer_draw(GameState& gs,
             glActiveTexture(GL_TEXTURE0);
 
             g_splat_bg_cache_valid = true;
+            // The per-quad path produces no surface-depth map, so the
+            // board falls back to drawing over the flat backdrop.
+            g_splat_surf_depth_valid = false;
             g_splat_bg_cached_shadow_enabled = light_positioning;
             g_splat_bg_cached_light_x = light_dir_x;
             g_splat_bg_cached_light_y = light_dir_y;
@@ -3726,6 +3776,36 @@ void renderer_draw(GameState& gs,
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glBindVertexArray(0);
         }
+
+#ifndef __EMSCRIPTEN__
+        // Depth-correct compositing: stamp the GL-compute backdrop's
+        // surface distance into the main pass depth buffer (gl_FragDepth)
+        // so the board below depth-tests against the room instead of
+        // always drawing on top. Only the GL-compute path produces the
+        // surface map; the per-quad path keeps the flat-overlay look.
+        // Runs with the same viewport + scissor as the colour paste.
+        if (g_splat_surf_depth_valid && g_splat_depth_blit_program &&
+            g_splat_surf_depth_tex) {
+            glUseProgram(g_splat_depth_blit_program);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_splat_surf_depth_tex);
+            glUniform1i(glGetUniformLocation(g_splat_depth_blit_program,
+                                             "uSurfDist"), 0);
+            glUniform1f(glGetUniformLocation(g_splat_depth_blit_program,
+                                             "uProjA"), proj.m[10]);
+            glUniform1f(glGetUniformLocation(g_splat_depth_blit_program,
+                                             "uProjB"), proj.m[14]);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_ALWAYS);     // overwrite depth everywhere
+            glDepthMask(GL_TRUE);
+            glBindVertexArray(g_fullscreen_vao);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindVertexArray(0);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDepthFunc(GL_LESS);       // restore for the board pass
+        }
+#endif
 
         // Leave TEXTURE0 unbound so it can't double as a stale binding
         // for the next pass. The chessboard pass sets uShadowMap →

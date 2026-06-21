@@ -129,6 +129,7 @@ struct GlRasterizer::Impl {
     int   render_w = 0, render_h = 0;
     int   tile_grid_x = 0, tile_grid_y = 0;
     GLuint out_tex = 0;
+    GLuint out_depth_tex = 0;   // optional R32F surface-distance output
 
     // Compute programs.
     GLuint prog_preprocess = 0;
@@ -276,6 +277,10 @@ void GlRasterizer::resize(int w, int h) {
 
 void GlRasterizer::set_output_texture(GLuint tex) {
     impl_->out_tex = tex;
+}
+
+void GlRasterizer::set_depth_output_texture(GLuint tex) {
+    impl_->out_depth_tex = tex;
 }
 
 void GlRasterizer::render(const float* view, const float* proj,
@@ -444,6 +449,11 @@ void GlRasterizer::render(const float* view, const float* proj,
     bind_ssbo(5, impl_->ssbo_tile_ranges);
     glBindImageTexture(0, impl_->out_tex, 0, GL_FALSE, 0,
                        GL_WRITE_ONLY, GL_RGBA8);
+    // Image unit 1 = optional R32F surface-distance output. Bind the
+    // caller's depth texture, or 0 (the shader's imageStore is then a
+    // no-op) when depth-correct compositing isn't wanted.
+    glBindImageTexture(1, impl_->out_depth_tex, 0, GL_FALSE, 0,
+                       GL_WRITE_ONLY, GL_R32F);
     glUseProgram(impl_->prog_raster);
     glUniform1i(0, impl_->render_w);
     glUniform1i(1, impl_->render_h);

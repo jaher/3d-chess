@@ -455,6 +455,11 @@ layout(std430, binding = 4) readonly buffer ValuesSorted { uint values_sorted[];
 layout(std430, binding = 5) readonly buffer TileRanges  { uvec2 tile_ranges[]; };
 
 layout(rgba8, binding = 0) writeonly uniform image2D out_image;
+// Depth-correct compositing (3d_chess): per-pixel view-space distance of
+// the splat cloud's "surface" (where front-to-back opacity crosses 0.5),
+// so the host can depth-blit it and let the chess board occlude / be
+// occluded by the room instead of always drawing on top.
+layout(r32f, binding = 1) writeonly uniform image2D out_depth;
 
 layout(location = 0) uniform int render_w;
 layout(location = 1) uniform int render_h;
@@ -480,6 +485,8 @@ void main() {
     vec3 color = vec3(0.0);
     float T = 1.0;
     bool done = !inside;
+    // 1e30 = no surface found yet → board draws in front of this pixel.
+    float surf_dist = 1.0e30;
 
     uint linear_tid = px_y_in * TILE_SIZE_X + px_x_in;
     uint batches = (total + 255u) / 256u;
@@ -508,6 +515,9 @@ void main() {
                 float weight = a * T;
                 color += weight * s.color;
                 T *= (1.0 - a);
+                // First splat (front-to-back) to push cumulative opacity
+                // past 0.5 defines the surface depth at this pixel.
+                if (surf_dist > 1.0e29 && (1.0 - T) >= 0.5) surf_dist = s.depth;
                 if (T < MIN_T) { done = true; break; }
             }
         }
@@ -517,6 +527,7 @@ void main() {
     if (inside) {
         vec4 pix = vec4(color, 1.0 - T);
         imageStore(out_image, px, pix);
+        imageStore(out_depth, px, vec4(surf_dist));
     }
 }
 )GLSL";

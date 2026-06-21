@@ -50,6 +50,12 @@ public:
     // Use the HiDPI FBO's color attachment.
     void set_output_texture(GLuint tex);
 
+    // Optional GL_R32F texture receiving the per-pixel splat-cloud
+    // "surface" distance (view-space) for depth-correct compositing.
+    // 0 (default) disables the depth output. See out_depth in
+    // kGlslRasterize.
+    void set_depth_output_texture(GLuint tex);
+
     // Render one frame. `view`, `proj`, `model` are column-major 4x4
     // matrices (same layout as Mat4::m).
     void render(const float* view, const float* proj, const float* model);
