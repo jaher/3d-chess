@@ -1,0 +1,249 @@
+# =============================================================================
+# Makefile.sdl — native SDL2 desktop build (chess_sdl)
+# =============================================================================
+# Builds the platform-agnostic engine against the SDL2 driver
+# (main_sdl.cpp) instead of the GTK driver (main.cpp). This is the
+# native path for macOS — and a GTK-free alternative on Linux/Windows.
+#
+#   make -f Makefile.sdl -j20
+#   ./chess_sdl
+#
+# It is kept entirely separate from the root Makefile (GTK `chess`) and
+# web/Makefile (emscripten): the shared sources are recompiled into a
+# private object dir (obj-sdl/) so the two desktop builds never stomp
+# each other's .o files or flags.
+#
+# OpenGL note (macOS): macOS caps OpenGL at 4.1 core and has NO compute
+# shaders, so main_sdl.cpp forces CHESS_GL_COMPUTE_SPLATS=0 at startup —
+# the Gaussian-splat environment renders via the per-quad (WebGL2-style)
+# path, not the GL-compute tile rasterizer (which needs GL 4.3). See
+# docs/MACOS.md.
+# =============================================================================
+
+CXX      := g++
+CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pthread
+
+# -----------------------------------------------------------------------------
+# OS detection / windowing + GL libraries
+# -----------------------------------------------------------------------------
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+    # --- macOS (Homebrew) -----------------------------------------------------
+    # Toolchain: Xrun clang++ (aliased to g++) + Homebrew SDL2 / libepoxy.
+    #   brew install sdl2 libepoxy curl fontconfig pkg-config
+    # SDL2 comes from sdl2-config (Homebrew keg); epoxy / curl / fontconfig
+    # from pkg-config. The actual GL implementation is Apple's OpenGL.framework
+    # (epoxy resolves its entry points against it); Cocoa is needed for the
+    # NSWindow/NSOpenGLContext SDL creates under the hood.
+    BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+    ifneq ($(BREW_PREFIX),)
+        PKG_CONFIG := PKG_CONFIG_PATH=$(BREW_PREFIX)/lib/pkgconfig:$(BREW_PREFIX)/opt/libffi/lib/pkgconfig pkg-config
+    else
+        PKG_CONFIG := pkg-config
+    endif
+    # NB: pangocairo + glib-2.0 below are NOT the GTK widget toolkit —
+    # they're the shared renderer's text rasterizer (text_atlas.cpp, via
+    # Pango/Cairo) and monotonic timer (board_renderer.cpp, via GLib) on
+    # the desktop code path. Homebrew:
+    #   brew install sdl2 libepoxy pango cairo glib fontconfig curl pkg-config
+    WIN_CFLAGS := $(shell sdl2-config --cflags) \
+                  $(shell $(PKG_CONFIG) --cflags epoxy libcurl fontconfig pangocairo glib-2.0)
+    WIN_LIBS   := $(shell sdl2-config --libs) \
+                  $(shell $(PKG_CONFIG) --libs epoxy libcurl fontconfig pangocairo glib-2.0) \
+                  -framework OpenGL -framework Cocoa
+    # SimpleBLE talks to CoreBluetooth on macOS (vs BlueZ/D-Bus on Linux).
+    PLATFORM_LIBS := -framework CoreBluetooth -framework Foundation
+    # ggml's CPU backend uses Apple's Accelerate (vDSP/BLAS) on macOS; the
+    # static libggml-cpu.a leaves those symbols unresolved. (If whisper.cpp
+    # was built with its default Metal backend, also pass WHISPER_BACKEND=metal
+    # — see docs/MACOS.md.)
+    PLATFORM_LIBS += -framework Accelerate
+else
+    # --- Linux (and other Unixes) --------------------------------------------
+    PKG_CONFIG := pkg-config
+    # pangocairo + glib-2.0: shared renderer text/timing deps (see the
+    # Darwin note above) — not the GTK widget toolkit.
+    WIN_CFLAGS := $(shell $(PKG_CONFIG) --cflags sdl2 epoxy libcurl fontconfig pangocairo glib-2.0)
+    WIN_LIBS   := $(shell $(PKG_CONFIG) --libs sdl2 epoxy libcurl fontconfig pangocairo glib-2.0) -lGL
+    # SimpleBLE talks to BlueZ over D-Bus on Linux.
+    PLATFORM_LIBS := $(shell $(PKG_CONFIG) --libs dbus-1)
+endif
+
+CXXFLAGS += $(WIN_CFLAGS)
+# PLATFORM_LIBS (dbus-1 / CoreBluetooth) is appended *after* the SimpleBLE
+# static lib further down — a static archive must precede the libraries
+# that satisfy its symbols on the link line.
+LDFLAGS  := $(WIN_LIBS) -lz -lm
+
+# -----------------------------------------------------------------------------
+# Target + sources (same shared TUs as the root Makefile, minus main.cpp,
+# plus main_sdl.cpp). Objects go under obj-sdl/ so they never collide with
+# the GTK build's root-level .o files.
+# -----------------------------------------------------------------------------
+TARGET := chess_sdl
+OBJDIR := obj-sdl
+
+SRCS := main_sdl.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cpp \
+        board_renderer.cpp challenge.cpp cloth_flag.cpp vec.cpp mat.cpp \
+        stl_model.cpp shader.cpp ai_player.cpp time_control.cpp audio.cpp \
+        compression.cpp menu_physics.cpp menu_input.cpp \
+        challenge_ui.cpp pregame_ui.cpp shatter_transition.cpp \
+        text_atlas.cpp options_ui.cpp puzzle.cpp openings.cpp \
+        endgame.cpp tactics.cpp pawn_structure.cpp opening_plans.cpp \
+        voice_input.cpp voice_whisper.cpp \
+        voice_tts.cpp voice_tts_native.cpp \
+        chessnut_bridge.cpp phantom_bridge.cpp \
+        splat.cpp packed_splats.cpp \
+        gl_raster/gl_rasterizer.cpp
+OBJS := $(SRCS:%.cpp=$(OBJDIR)/%.o)
+
+HEADERS := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \
+           challenge.h cloth_flag.h vec.h mat.h shader.h stl_model.h \
+           ai_player.h time_control.h audio.h compression.h menu_physics.h \
+           menu_input.h challenge_ui.h pregame_ui.h shatter_transition.h \
+           render_internal.h text_atlas.h options_ui.h puzzle.h \
+           voice_input.h chessnut_bridge.h phantom_bridge.h voice_tts.h
+
+# -----------------------------------------------------------------------------
+# Dependency artifacts (Stockfish, whisper.cpp, SimpleBLE, Piper). These are
+# the SAME outputs the root Makefile builds — shared, so a prior `make` (GTK)
+# leaves them in place and the rules below become no-ops. Rule bodies are
+# mirrored from the root Makefile so this target also bootstraps from a clean
+# checkout.
+# -----------------------------------------------------------------------------
+STOCKFISH_DIR := third_party/stockfish
+STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish
+
+WHISPER_DIR    := third_party/whisper.cpp
+WHISPER_BUILD  := $(WHISPER_DIR)/build
+WHISPER_LIB    := $(WHISPER_BUILD)/src/libwhisper.a
+WHISPER_LIBS   := $(WHISPER_LIB) \
+                  $(WHISPER_BUILD)/ggml/src/libggml.a \
+                  $(WHISPER_BUILD)/ggml/src/libggml-base.a \
+                  $(WHISPER_BUILD)/ggml/src/libggml-cpu.a
+WHISPER_MODEL  := third_party/whisper-models/ggml-distil-small.en.bin
+
+WHISPER_BACKEND ?= auto
+WHISPER_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+                      -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF \
+                      -DWHISPER_BUILD_SERVER=OFF
+ifeq ($(WHISPER_BACKEND),cuda)
+    WHISPER_CMAKE_ARGS += -DGGML_CUDA=ON
+    WHISPER_BACKEND_LIBS := -lcudart -lcublas
+endif
+ifeq ($(WHISPER_BACKEND),metal)
+    WHISPER_CMAKE_ARGS += -DGGML_METAL=ON
+    WHISPER_BACKEND_LIBS := -framework Metal -framework Foundation -framework MetalKit
+endif
+ifeq ($(WHISPER_BACKEND),vulkan)
+    WHISPER_CMAKE_ARGS += -DGGML_VULKAN=ON
+    WHISPER_BACKEND_LIBS := -lvulkan
+endif
+
+CXXFLAGS += -I$(WHISPER_DIR)/include -I$(WHISPER_DIR)/ggml/include
+LDFLAGS  += $(WHISPER_LIBS) $(WHISPER_BACKEND_LIBS) -fopenmp
+
+SIMPLEBLE_DIR    := third_party/simpleble
+SIMPLEBLE_BUILD  := $(SIMPLEBLE_DIR)/build
+SIMPLEBLE_LIB    := $(SIMPLEBLE_BUILD)/lib/libsimpleble.a
+SIMPLEBLE_INC    := $(SIMPLEBLE_DIR)/simpleble/include
+SIMPLEBLE_EXP    := $(SIMPLEBLE_BUILD)/export
+SIMPLEBLE_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+CXXFLAGS += -I$(SIMPLEBLE_INC) -I$(SIMPLEBLE_EXP) \
+            -I$(SIMPLEBLE_DIR)/dependencies/external
+# SimpleBLE archive first, then its platform transport (D-Bus on Linux,
+# CoreBluetooth on macOS) so the static-lib symbol resolution succeeds.
+LDFLAGS  += $(SIMPLEBLE_LIB) $(PLATFORM_LIBS)
+
+PIPER_DIR        := third_party/piper-bin
+PIPER_BIN        := $(PIPER_DIR)/piper/piper
+PIPER_VERSION    := 2023.11.14-2
+PIPER_URL        := https://github.com/rhasspy/piper/releases/download/$(PIPER_VERSION)/piper_linux_x86_64.tar.gz
+PIPER_MODEL_DIR  := third_party/piper-models
+PIPER_MODEL_NAME := en_US-amy-medium
+PIPER_MODEL      := $(PIPER_MODEL_DIR)/$(PIPER_MODEL_NAME).onnx
+PIPER_MODEL_JSON := $(PIPER_MODEL).json
+PIPER_MODEL_BASE_URL := https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/amy/medium
+
+CXXFLAGS += -DPIPER_BINARY_PATH='"$(abspath $(PIPER_BIN))"' \
+            -DPIPER_MODEL_PATH='"$(abspath $(PIPER_MODEL))"'
+
+WHISPER_MODEL_URL := https://huggingface.co/distil-whisper/distil-small.en/resolve/main/ggml-distil-small.en.bin
+
+# -----------------------------------------------------------------------------
+# Build rules
+# -----------------------------------------------------------------------------
+all: $(TARGET) $(STOCKFISH_BIN) $(WHISPER_MODEL) \
+     $(PIPER_BIN) $(PIPER_MODEL) $(PIPER_MODEL_JSON)
+
+$(TARGET): $(OBJS) $(WHISPER_LIBS) $(SIMPLEBLE_LIB) \
+           $(PIPER_BIN) $(PIPER_MODEL) $(PIPER_MODEL_JSON)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+
+# Per-TU compile into obj-sdl/ (mirrors the source tree, incl. gl_raster/).
+$(OBJDIR)/%.o: %.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(STOCKFISH_BIN):
+	@if [ ! -f $(STOCKFISH_DIR)/src/Makefile ]; then \
+		echo "Stockfish submodule not initialized."; \
+		echo "Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	$(MAKE) -C $(STOCKFISH_DIR)/src -j build
+
+$(filter-out $(WHISPER_LIB),$(WHISPER_LIBS)): $(WHISPER_LIB)
+
+$(WHISPER_LIB):
+	@if [ ! -f $(WHISPER_DIR)/CMakeLists.txt ]; then \
+		echo "whisper.cpp submodule not initialized."; \
+		echo "Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	cmake -B $(WHISPER_BUILD) -S $(WHISPER_DIR) $(WHISPER_CMAKE_ARGS)
+	cmake --build $(WHISPER_BUILD) --config Release -j
+
+$(WHISPER_MODEL):
+	@mkdir -p $(dir $@)
+	@echo "Downloading distil-small.en GGML (~166 MB) ..."
+	curl -L --fail -o $@ $(WHISPER_MODEL_URL)
+	@echo "Saved to $@"
+
+$(SIMPLEBLE_LIB):
+	@if [ ! -f $(SIMPLEBLE_DIR)/simpleble/CMakeLists.txt ]; then \
+		echo "SimpleBLE submodule not initialized."; \
+		echo "Run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	cmake -B $(SIMPLEBLE_BUILD) -S $(SIMPLEBLE_DIR)/simpleble \
+		$(SIMPLEBLE_CMAKE_ARGS)
+	cmake --build $(SIMPLEBLE_BUILD) --config Release -j
+
+# Piper TTS — the prebuilt release tarball is linux x86_64 only. On macOS
+# the move-announcer TTS is unavailable unless you supply a mac piper
+# binary; everything else builds and runs. (The PIPER_*_PATH defines still
+# resolve; voice_tts_native.cpp just fails to spawn at runtime.)
+$(PIPER_BIN):
+	@mkdir -p $(PIPER_DIR)
+	@echo "Downloading piper-tts $(PIPER_VERSION) (~26 MB) ..."
+	curl -L --fail -o $(PIPER_DIR)/piper.tar.gz $(PIPER_URL)
+	tar -xzf $(PIPER_DIR)/piper.tar.gz -C $(PIPER_DIR)
+	rm $(PIPER_DIR)/piper.tar.gz
+	@echo "Piper installed at $(PIPER_BIN)"
+
+$(PIPER_MODEL):
+	@mkdir -p $(PIPER_MODEL_DIR)
+	@echo "Downloading piper voice model $(PIPER_MODEL_NAME) (~63 MB) ..."
+	curl -L --fail -o $@ $(PIPER_MODEL_BASE_URL)/$(PIPER_MODEL_NAME).onnx
+	@echo "Saved to $@"
+
+$(PIPER_MODEL_JSON):
+	@mkdir -p $(PIPER_MODEL_DIR)
+	curl -L --fail -o $@ $(PIPER_MODEL_BASE_URL)/$(PIPER_MODEL_NAME).onnx.json
+
+clean:
+	rm -rf $(OBJDIR) $(TARGET)
+
+.PHONY: all clean

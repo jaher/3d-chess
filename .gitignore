@@ -1,5 +1,7 @@
 *.o
 chess
+chess_sdl
+obj-sdl/
 __pycache__/
 .claude_resume.md
 third_party/whisper-models/

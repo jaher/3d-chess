@@ -89,8 +89,28 @@ The Makefile auto-detects Darwin and prepends Homebrew's pkgconfig directory
 > compiles cleanly with the bundled Stockfish, but it is treated as a
 > second-class target by upstream GTK. The renderer requests an OpenGL
 > compatibility profile, while macOS only ships Core profile 3.2/4.1 — so
-> while the build works, the GL rendering may need tweaks before the game
+> while the GTK build works, the GL rendering may need tweaks before the game
 > displays correctly on a Mac. Patches welcome.
+>
+> **Native macOS build (recommended on a Mac):** instead of GTK, build the
+> SDL2 driver — native windowing + OpenGL with no GTK dependency:
+>
+> ```bash
+> brew install sdl2 libepoxy pango cairo glib fontconfig curl pkg-config
+> make -f Makefile.sdl -j8        # produces ./chess_sdl
+> ./chess_sdl
+> ```
+>
+> The window toolkit (SDL2 vs GTK) has **no effect on render quality** — it's
+> the same OpenGL/GLSL engine. The driver requests the highest core profile
+> each OS supports: **4.3 on Linux/Windows** (compute shaders available, so
+> the `gl_raster` tile rasterizer runs — pixel-identical to the GTK build,
+> splat backdrop included) and **4.1 on macOS** (Apple's ceiling). macOS has
+> **no compute shaders**, so only the Gaussian-splat *backdrop* falls back to
+> the per-quad path (`main_sdl.cpp` sets `CHESS_GL_COMPUTE_SPLATS=0`
+> automatically); the board, pieces, PBR, shadows, and 4× MSAA are identical
+> to GTK. Full details, caveats, and the list of what couldn't be verified
+> without Mac hardware are in [`docs/MACOS.md`](docs/MACOS.md).
 
 ## Cloning
 
@@ -113,6 +133,28 @@ make
 ```
 
 The first build compiles Stockfish from source, downloads its NNUE network file, builds whisper.cpp via CMake, and fetches the distil-small.en GGML model (~166 MB) for voice input — together this takes a couple of minutes. Subsequent builds are incremental and the model download is skipped once the file is on disk. CMake (≥ 3.10) is required for the whisper.cpp build; on Debian/Ubuntu install it with `sudo apt-get install -y cmake`. To build without the model download (e.g. on CI), use `make chess` (just the binary target) instead of bare `make`.
+
+### Native SDL2 build (GTK-free)
+
+There is a second desktop driver, `main_sdl.cpp`, that uses **SDL2 + an
+OpenGL 3.3 core context** instead of GTK. It shares the entire engine and
+renderer with the GTK build — only the windowing, input, main loop, and
+worker-thread marshalling differ — and is the recommended path on **macOS**
+(which has no first-class GTK). It also works on Linux/Windows as a GTK-free
+alternative.
+
+```bash
+make -f Makefile.sdl -j20      # produces ./chess_sdl
+./chess_sdl
+```
+
+The SDL build is fully separate from the GTK (`make chess`) and web
+(`make -C web`) targets — it compiles into `obj-sdl/` so none of their object
+files or flags are touched. On macOS it needs a few extra Homebrew kegs; see
+[`docs/MACOS.md`](docs/MACOS.md). Because macOS OpenGL has no compute shaders,
+the SDL driver forces the per-quad Gaussian-splat path
+(`CHESS_GL_COMPUTE_SPLATS=0`); on Linux you can still export
+`CHESS_GL_COMPUTE_SPLATS=1` to exercise the GL-compute tile rasterizer.
 
 ## Running
 
@@ -758,9 +800,23 @@ and `#version 330 core` on desktop, switched via a tiny header macro in
                               after connect from the device's
                               advertised name).
 
-  # Desktop driver
+  # Desktop drivers
   main.cpp                 -- GTK+3 window, GtkGLArea, event wiring
-                              (incl. SPACE push-to-talk → voice_input)
+                              (incl. SPACE push-to-talk → voice_input).
+                              Default Linux driver (`make chess`).
+  main_sdl.cpp             -- Native SDL2 + OpenGL 3.3 core driver, no
+                              GTK. Same platform hooks as main.cpp, but
+                              an explicit while-loop, an SDL_GL context,
+                              and a mutex-guarded main-thread task queue
+                              in place of g_idle_add. Recommended path on
+                              macOS (which has no first-class GTK). Built
+                              with `make -f Makefile.sdl` → `chess_sdl`.
+                              See docs/MACOS.md.
+  Makefile.sdl             -- Standalone build for chess_sdl (uname-S
+                              branch: Linux -lGL/-lSDL2/-lepoxy, macOS
+                              -framework OpenGL/Cocoa + sdl2-config).
+                              Objects land in obj-sdl/ so the GTK build's
+                              .o files are untouched.
 
   # Assets
   third_party/stockfish/   -- Native Stockfish engine (git submodule)
