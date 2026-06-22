@@ -295,6 +295,7 @@ void apply_fen_to_state(GameState& gs, const ParsedFEN& parsed) {
     gs.move_class.clear();
     gs.best_move.clear();
     gs.why_reason.clear();
+    gs.best_pv.clear();
     gs.why_ply = -1;
     gs.why_entered_analysis = false;
     gs.snapshots.clear();

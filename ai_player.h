@@ -57,7 +57,8 @@ int stockfish_eval(const std::string& fen, int movetime_ms = 150);
 int stockfish_eval(const std::string& fen, int movetime_ms,
                    std::string& out_best_uci,
                    std::string* out_second_uci = nullptr,
-                   int* out_second_cp = nullptr);
+                   int* out_second_cp = nullptr,
+                   std::string* out_pv = nullptr);  // full UCI PV of best line
 
 // Update the engine's UCI_Elo strength setting. If the engine is already
 // running this sends `setoption name UCI_Elo value N`, which takes effect

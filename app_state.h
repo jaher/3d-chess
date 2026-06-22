@@ -161,6 +161,11 @@ struct GameInstance {
     std::string last_eval_second_uci;
     int         last_eval_best_cp     = 0;
     int         last_eval_second_cp   = 0;
+    // Full UCI principal variation of the best line ("e2e4 e7e5 …"),
+    // shifted in lockstep with the best-move fields. prev_eval_pv is the
+    // line from the position the player faced — what the why-panel shows.
+    std::string last_eval_pv;
+    std::string prev_eval_pv;
     std::string prev_eval_best_uci;
     std::string prev_eval_second_uci;
     int         prev_eval_best_cp     = 0;
@@ -719,7 +724,8 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci = std::string(),
                     int game_id = 0,
                     const std::string& second_uci = std::string(),
-                    int second_cp = 0);
+                    int second_cp = 0,
+                    const std::string& pv = std::string());
 
 // Platform calls this with the JSON body returned by the chess.com
 // /pub/puzzle endpoint (daily=true) or /pub/puzzle/random

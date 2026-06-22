@@ -737,3 +737,24 @@ TEST_CASE("execute_move that captures the enemy king ends the game") {
     REQUIRE(dead_king != nullptr);
     CHECK_FALSE(dead_king->alive);
 }
+
+// ---------------------------------------------------------------------------
+// pv_to_san — render a UCI principal variation as a SAN line.
+// ---------------------------------------------------------------------------
+TEST_CASE("pv_to_san renders a UCI principal variation as SAN") {
+    GameState gs = state_from_fen(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    BoardSnapshot snap;
+    snap.pieces        = gs.pieces;
+    snap.white_turn    = gs.white_turn;
+    snap.castling      = gs.castling;
+    snap.ep_target_col = gs.ep_target_col;
+    snap.ep_target_row = gs.ep_target_row;
+
+    // Ruy Lopez: 1.e4 e5 2.Nf3 Nc6 3.Bb5
+    CHECK(pv_to_san(snap, "e2e4 e7e5 g1f3 b8c6 f1b5", 5) == "e4 e5 Nf3 Nc6 Bb5");
+    // max_plies truncates the line.
+    CHECK(pv_to_san(snap, "e2e4 e7e5 g1f3 b8c6 f1b5", 3) == "e4 e5 Nf3");
+    // Empty PV yields an empty line.
+    CHECK(pv_to_san(snap, "", 5).empty());
+}

@@ -151,6 +151,22 @@ TEST_CASE("stockfish_eval picks the deepest score when multiple info lines arriv
     CHECK(score == 50);
 }
 
+TEST_CASE("stockfish_eval captures the full multipv=1 principal variation") {
+    write_response(
+        "info depth 4 multipv 1 score cp 30 pv e2e4 e7e5 g1f3\n"
+        "info depth 8 multipv 1 score cp 50 pv e2e4 e7e5 g1f3 b8c6 f1b5\n"
+        "bestmove e2e4\n");
+    std::string best, second, pv;
+    int second_cp = 0;
+    int score = stockfish_eval(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 10,
+        best, &second, &second_cp, &pv);
+    CHECK(score == 50);
+    CHECK(best == "e2e4");
+    // The deepest line's full PV wins, not the shallower one.
+    CHECK(pv == "e2e4 e7e5 g1f3 b8c6 f1b5");
+}
+
 TEST_CASE("ask_ai_move treats 'bestmove (none)' as no move") {
     write_response("bestmove (none)\n");
     std::string mv = ask_ai_move(

@@ -150,11 +150,11 @@ static void plat_trigger_eval(const char* fen_c, int movetime, int idx,
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
     std::thread([fen, mt, idx, game_id]() {
-        std::string best, second;
+        std::string best, second, pv;
         int second_cp = 0;
-        int cp = stockfish_eval(fen, mt, best, &second, &second_cp);
-        post_to_main([cp, idx, best, game_id, second, second_cp]() {
-            app_eval_ready(g_app, cp, idx, best, game_id, second, second_cp);
+        int cp = stockfish_eval(fen, mt, best, &second, &second_cp, &pv);
+        post_to_main([cp, idx, best, game_id, second, second_cp, pv]() {
+            app_eval_ready(g_app, cp, idx, best, game_id, second, second_cp, pv);
         });
     }).detach();
 }

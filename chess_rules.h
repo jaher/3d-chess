@@ -26,3 +26,9 @@ std::vector<BoardPiece> build_starting_position();
 
 // Convert a UCI move + snapshot context to algebraic notation (e.g. "Nf3", "exd5", "O-O")
 std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci);
+
+// Convert a space-joined UCI principal variation ("e2e4 e7e5 g1f3") into a
+// SAN line ("e4 e5 Nf3"), played out from `start`, showing at most
+// max_plies moves. Stops early on a malformed/illegal move.
+std::string pv_to_san(const BoardSnapshot& start, const std::string& pv_uci,
+                      int max_plies);

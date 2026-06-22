@@ -150,6 +150,10 @@ struct GameState {
     // open (clicked in the move list), or -1 when closed.
     std::vector<std::string> best_move;
     std::vector<std::string> why_reason;
+    // best_pv[s] is the engine's full principal variation (space-joined
+    // UCI moves) from the position the player faced at snapshot s — the
+    // "why?" panel renders it as a SAN line. Parallel to best_move.
+    std::vector<std::string> best_pv;
     // why_ply is the ply whose explanation panel is open (clicked in the
     // move list), or -1 when closed. Reset on new game / challenge.
     int why_ply = -1;

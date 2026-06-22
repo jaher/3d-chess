@@ -2335,11 +2335,19 @@ static void draw_why_panel(const GameState& gs, int width, int height) {
         add_text(xr - xw, yt, xw, xh, "x", 0.92f, 0.93f, 0.96f);
 
         std::string line1 = prefix + played + "    " + move_class_label(cls);
-        std::string best;
-        if (P < static_cast<int>(gs.best_move.size()) && !gs.best_move[P].empty())
-            best = uci_to_algebraic(gs.snapshots[P - 1], gs.best_move[P]);
-        std::string line2 = best.empty() ? std::string("Engine line unavailable")
-                                         : ("Better was:  " + best);
+        // Prefer the full principal variation ("Better line: Nf3 Nc6 Bb5");
+        // fall back to just the single best move when no PV is available.
+        std::string san_line;
+        if (P < static_cast<int>(gs.best_pv.size()) && !gs.best_pv[P].empty())
+            san_line = pv_to_san(gs.snapshots[P - 1], gs.best_pv[P], 5);
+        if (san_line.empty() &&
+            P < static_cast<int>(gs.best_move.size()) && !gs.best_move[P].empty())
+            san_line = uci_to_algebraic(gs.snapshots[P - 1], gs.best_move[P]);
+        std::string line2 = san_line.empty()
+            ? std::string("Engine line unavailable")
+            : ((P < static_cast<int>(gs.best_pv.size()) && !gs.best_pv[P].empty())
+                   ? ("Better line:  " + san_line)
+                   : ("Better was:  " + san_line));
         std::string line3 = (P < static_cast<int>(gs.why_reason.size()))
                             ? gs.why_reason[P] : std::string();
         const float tx = px0 + 0.03f;

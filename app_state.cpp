@@ -2666,7 +2666,8 @@ static const char* move_class_speech(MoveClass c) {
 
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci, int game_id,
-                    const std::string& second_uci, int second_cp) {
+                    const std::string& second_uci, int second_cp,
+                    const std::string& pv) {
     // Validate the response is for a real game. For N=1 game_id is
     // always 0; for N>1 a stale response (from before a reset)
     // gets dropped. The body still mutates cur(a) — fine because
@@ -2785,10 +2786,12 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         cur(a).prev_eval_best_cp    = cur(a).last_eval_best_cp;
         cur(a).prev_eval_second_uci = cur(a).last_eval_second_uci;
         cur(a).prev_eval_second_cp  = cur(a).last_eval_second_cp;
+        cur(a).prev_eval_pv         = cur(a).last_eval_pv;
         cur(a).last_eval_best_uci   = best_uci;
         cur(a).last_eval_best_cp    = cp;
         cur(a).last_eval_second_uci = second_uci;
         cur(a).last_eval_second_cp  = second_cp;
+        cur(a).last_eval_pv         = pv;
     }
 
     // ----- "Mate in N" announcement.
@@ -2963,10 +2966,14 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 gs.best_move.resize(gs.score_history.size(), std::string());
             if (gs.why_reason.size() != gs.score_history.size())
                 gs.why_reason.resize(gs.score_history.size(), std::string());
+            if (gs.best_pv.size() != gs.score_history.size())
+                gs.best_pv.resize(gs.score_history.size(), std::string());
             gs.best_move[score_index]  =
                 explain ? cur(a).prev_eval_best_uci : std::string();
             gs.why_reason[score_index] =
                 explain ? generate_why_reason(gs, cls) : std::string();
+            gs.best_pv[score_index] =
+                explain ? cur(a).prev_eval_pv : std::string();
         }
 
         // Cache the spoken phrase for the unified speak block below

@@ -64,6 +64,7 @@ struct EvalArrived {
     // legal move).
     std::string second_uci;
     int         second_cp = 0;
+    std::string pv;          // full UCI principal variation of the best line
 };
 
 static gboolean on_ai_move_ready(gpointer data) {
@@ -76,7 +77,7 @@ static gboolean on_ai_move_ready(gpointer data) {
 static gboolean on_eval_ready(gpointer data) {
     auto* r = static_cast<EvalArrived*>(data);
     app_eval_ready(g_app, r->cp, r->score_index, r->best_uci, r->game_id,
-                   r->second_uci, r->second_cp);
+                   r->second_uci, r->second_cp, r->pv);
     delete r;
     return G_SOURCE_REMOVE;
 }
@@ -99,11 +100,11 @@ static void plat_trigger_eval(const char* fen_c, int movetime, int idx,
     std::string fen = fen_c ? fen_c : "";
     int mt = movetime;
     std::thread([fen, mt, idx, game_id]() {
-        std::string best, second;
+        std::string best, second, pv;
         int second_cp = 0;
-        int cp = stockfish_eval(fen, mt, best, &second, &second_cp);
+        int cp = stockfish_eval(fen, mt, best, &second, &second_cp, &pv);
         auto* r = new EvalArrived{cp, idx, std::move(best), game_id,
-                                  std::move(second), second_cp};
+                                  std::move(second), second_cp, std::move(pv)};
         g_idle_add(on_eval_ready, r);
     }).detach();
 }

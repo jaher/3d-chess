@@ -266,10 +266,12 @@ public:
     int eval_position(const std::string& fen, int movetime_ms,
                       std::string* out_best_uci = nullptr,
                       std::string* out_second_uci = nullptr,
-                      int* out_second_cp = nullptr) {
+                      int* out_second_cp = nullptr,
+                      std::string* out_pv = nullptr) {
         if (out_best_uci) out_best_uci->clear();
         if (out_second_uci) out_second_uci->clear();
         if (out_second_cp)  *out_second_cp = 0;
+        if (out_pv) out_pv->clear();
         const bool want_second = (out_second_uci || out_second_cp);
         if (!write_line("ucinewgame")) { stop(); return INT_MIN; }
         if (!write_line("isready"))    { stop(); return INT_MIN; }
@@ -305,6 +307,7 @@ public:
         int best_score    = 0;   int best_depth    = -1;
         int second_score  = 0;   int second_depth  = -1;
         std::string second_first_move;
+        std::string best_pv_line;   // full multipv=1 PV of the deepest line
         bool got_any = false;
 
         int deadline_budget = movetime_ms + 3000;
@@ -335,6 +338,7 @@ public:
             int score = 0;
             bool have_score = false;
             std::string first_pv_move;
+            std::string pv_full;   // whole "pv m1 m2 m3 …" tail of this line
             std::istringstream iss(line);
             std::string tok;
             while (iss >> tok) {
@@ -357,11 +361,12 @@ public:
                     }
                 } else if (tok == "pv") {
                     iss >> first_pv_move;
-                    // Drain the rest of the PV — we only need the
-                    // first move for the second-PV classification
-                    // hook.
+                    pv_full = first_pv_move;
+                    // Keep the whole line — multipv=1 uses it for the
+                    // "why?" panel's principal variation; multipv=2 only
+                    // needs the first move (read off below).
                     std::string rest;
-                    while (iss >> rest) { /* discard */ }
+                    while (iss >> rest) { pv_full += ' '; pv_full += rest; }
                     break;
                 }
             }
@@ -369,6 +374,7 @@ public:
             if (multipv == 1 && depth >= best_depth) {
                 best_score = score;
                 best_depth = depth;
+                best_pv_line = pv_full;
                 got_any = true;
             } else if (multipv == 2 && depth >= second_depth) {
                 second_score = score;
@@ -390,6 +396,7 @@ public:
         if (out_second_cp && second_depth >= 0) {
             *out_second_cp = second_score;
         }
+        if (out_pv) *out_pv = best_pv_line;
         return best_score;
     }
 
@@ -591,13 +598,15 @@ int stockfish_eval(const std::string& fen, int movetime_ms) {
 int stockfish_eval(const std::string& fen, int movetime_ms,
                    std::string& out_best_uci,
                    std::string* out_second_uci,
-                   int* out_second_cp) {
+                   int* out_second_cp,
+                   std::string* out_pv) {
     std::lock_guard<std::mutex> lk(g_engine_mu);
     StockfishEngine* eng = get_engine_locked();
     if (!eng) {
         out_best_uci.clear();
         if (out_second_uci) out_second_uci->clear();
         if (out_second_cp)  *out_second_cp = 0;
+        if (out_pv) out_pv->clear();
         return INT_MIN;
     }
     // The hint feature uses out_best_uci from this call. The
@@ -609,7 +618,7 @@ int stockfish_eval(const std::string& fen, int movetime_ms,
     const bool swap = (user_elo != HINT_AND_EVAL_ELO);
     if (swap) eng->set_elo(HINT_AND_EVAL_ELO);
     int cp = eng->eval_position(fen, movetime_ms, &out_best_uci,
-                                 out_second_uci, out_second_cp);
+                                 out_second_uci, out_second_cp, out_pv);
     if (swap) eng->set_elo(user_elo);
     return cp;
 }

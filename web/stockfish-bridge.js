@@ -28,6 +28,7 @@ window.StockfishBridge = (function () {
   let bestEval = 0;           // running best eval score for the active eval search (multipv=1)
   let secondEval = 0;         // running second-best eval score (multipv=2)
   let secondPv = '';          // first move of the multipv=2 PV (UCI, "" if none)
+  let bestPv = '';            // full multipv=1 PV ("e2e4 e7e5 …", UCI)
   let multipvMode = 1;        // last MultiPV setting we sent to the engine
   let handshakeDone = false;  // becomes true once 'readyok' arrives
   let pendingElo = 1400;      // latched until the worker exists; this is
@@ -68,6 +69,7 @@ window.StockfishBridge = (function () {
     bestEval = 0;
     secondEval = 0;
     secondPv = '';
+    bestPv = '';
     // Eval queries get MultiPV=2 so the C++ side can detect
     // "Great move" / "Miss" classifications (gap between #1 and
     // #2). Move queries stay on MultiPV=1 — the AI only needs the
@@ -147,6 +149,9 @@ window.StockfishBridge = (function () {
         const slot = mPv ? parseInt(mPv[1], 10) : 1;
         if (slot === 1) {
           bestEval = cp;
+          // Keep the whole multipv=1 PV — the "why?" panel renders it.
+          const pvIdx1 = line.indexOf(' pv ');
+          if (pvIdx1 !== -1) bestPv = line.substring(pvIdx1 + 4).trim();
         } else if (slot === 2) {
           secondEval = cp;
           // First move of the PV — the substring after the first
@@ -172,11 +177,12 @@ window.StockfishBridge = (function () {
         if (bestUci === '(none)' || bestUci === '0000') bestUci = '';
         const gameId = active.game_id | 0;
         const secondUci = secondPv;
+        const pv = bestPv;
         finishActive(function () {
           safe_ccall('on_eval_from_js', null,
                      ['number', 'number', 'string', 'number',
-                      'string', 'number'],
-                     [cp, idx, bestUci, gameId, secondUci, secondCp]);
+                      'string', 'number', 'string'],
+                     [cp, idx, bestUci, gameId, secondUci, secondCp, pv]);
         });
       }
       return;

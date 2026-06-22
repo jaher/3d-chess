@@ -44,6 +44,7 @@ namespace web_ai {
     std::string eval_best_uci;  // populated alongside cp on each eval
     std::string eval_second_uci;
     int         eval_second_cp = 0;
+    std::string eval_pv;        // full UCI principal variation of the best line
     int         eval_game_id = 0;
 }
 
@@ -92,6 +93,7 @@ void web_request_eval(const std::string& fen, int movetime_ms, int score_index,
     web_ai::eval_best_uci.clear();
     web_ai::eval_second_uci.clear();
     web_ai::eval_second_cp = 0;
+    web_ai::eval_pv.clear();
     web_ai::eval_game_id = game_id;
     js_request_eval(fen.c_str(), movetime_ms, score_index, game_id);
 }
@@ -118,12 +120,13 @@ void on_ai_move_from_js(const char* uci, int game_id) {
 
 EMSCRIPTEN_KEEPALIVE
 void on_eval_from_js(int cp, int idx, const char* best_uci, int game_id,
-                     const char* second_uci, int second_cp) {
+                     const char* second_uci, int second_cp, const char* pv) {
     web_ai::eval_cp = cp;
     web_ai::eval_index = idx;
     web_ai::eval_best_uci = (best_uci && *best_uci) ? best_uci : "";
     web_ai::eval_second_uci = (second_uci && *second_uci) ? second_uci : "";
     web_ai::eval_second_cp = second_cp;
+    web_ai::eval_pv = (pv && *pv) ? pv : "";
     web_ai::eval_game_id = game_id;
     web_ai::eval_ready = true;
 }

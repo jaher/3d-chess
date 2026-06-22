@@ -25,6 +25,7 @@ void game_reset(GameState& gs) {
     gs.move_class.clear();
     gs.best_move.clear();
     gs.why_reason.clear();
+    gs.best_pv.clear();
     gs.why_ply = -1;
     gs.why_entered_analysis = false;
     gs.show_control = false;

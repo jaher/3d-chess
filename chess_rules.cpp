@@ -2,6 +2,7 @@
 #include "ai_player.h"
 #include <cmath>
 #include <cstdio>
+#include <sstream>
 
 // ---------------------------------------------------------------------------
 // Position evaluation
@@ -575,4 +576,44 @@ std::string uci_to_algebraic(const BoardSnapshot& before, const std::string& uci
     }
 
     return result;
+}
+
+std::string pv_to_san(const BoardSnapshot& start, const std::string& pv_uci,
+                      int max_plies) {
+    // Reconstruct a playable position from the snapshot so each PV move
+    // can be turned into SAN (relative to the position it's played from)
+    // and then applied to advance to the next.
+    GameState gs;
+    gs.pieces        = start.pieces;
+    gs.white_turn    = start.white_turn;
+    gs.castling      = start.castling;
+    gs.ep_target_col = start.ep_target_col;
+    gs.ep_target_row = start.ep_target_row;
+    gs.rebuild_grid();
+
+    std::istringstream iss(pv_uci);
+    std::string uci, out;
+    int plies = 0;
+    while (plies < max_plies && (iss >> uci)) {
+        if (uci.size() < 4) break;
+
+        BoardSnapshot snap;
+        snap.pieces        = gs.pieces;
+        snap.white_turn    = gs.white_turn;
+        snap.castling      = gs.castling;
+        snap.ep_target_col = gs.ep_target_col;
+        snap.ep_target_row = gs.ep_target_row;
+        std::string san = uci_to_algebraic(snap, uci);
+        if (san.empty()) break;
+        if (!out.empty()) out += ' ';
+        out += san;
+
+        // Apply the move (UCI files map to internal cols a=7..h=0).
+        int fc = 7 - (uci[0] - 'a'), fr = uci[1] - '1';
+        int tc = 7 - (uci[2] - 'a'), tr = uci[3] - '1';
+        if (!in_bounds(fc, fr) || !in_bounds(tc, tr)) break;
+        execute_move(gs, fc, fr, tc, tr);
+        ++plies;
+    }
+    return out;
 }
