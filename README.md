@@ -97,6 +97,7 @@ instant.
 | **A** or **←/→** | Enter analysis mode to replay the game |
 | **←/→** (in analysis) | Step back / forward one move |
 | **C** (in analysis) | Toggle the square-control heatmap (who controls each square) |
+| **R** | Review your mistakes — jump through them with ←/→, see the better move |
 | **Escape** | Exit analysis, or close a dialog |
 
 ## How to Play

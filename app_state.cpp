@@ -1751,6 +1751,28 @@ static void release_puzzle(AppState& a, double mx, double my,
     if (is_click) handle_board_click(a, mx, my, width, height);
 }
 
+// Mistake-review navigation: a "flagged" ply is one with a "why?"
+// explanation (set for mistake-ish classes in app_eval_ready). These
+// walk the flagged plies for the R-key post-game review.
+static int why_next_flagged(const GameState& gs, int from, int dir) {
+    int n = static_cast<int>(gs.why_reason.size());
+    for (int p = from + dir; p >= 1 && p < n; p += dir)
+        if (!gs.why_reason[p].empty()) return p;
+    return -1;
+}
+static int why_count_flagged(const GameState& gs) {
+    int c = 0;
+    for (int p = 1; p < static_cast<int>(gs.why_reason.size()); p++)
+        if (!gs.why_reason[p].empty()) c++;
+    return c;
+}
+static int why_flagged_index(const GameState& gs, int ply) {
+    int idx = 0;
+    for (int p = 1; p <= ply && p < static_cast<int>(gs.why_reason.size()); p++)
+        if (!gs.why_reason[p].empty()) idx++;
+    return idx;
+}
+
 // "Why?" panel board preview: rewind the board to the position the
 // player faced (snapshot P-1) so the engine's recommended move can be
 // ghosted on it. Reuses analysis mode for the state save/restore and
@@ -2278,6 +2300,45 @@ void app_key(AppState& a, AppKey key) {
         set_status(a, g.show_control ? "Control heatmap ON (C)"
                                      : "Control heatmap OFF");
         queue_redraw(a);
+        return;
+    }
+
+    // R starts the post-game mistake review: rewinds to the first
+    // flagged move and opens its "why?" panel + ghost; arrows then step
+    // between mistakes. Works mid-game or after game-over.
+    if (key == KEY_R && a.mode == MODE_PLAYING) {
+        GameState& g = cur_gs(a);
+        int total = why_count_flagged(g);
+        if (total == 0) { set_status(a, "No mistakes to review"); return; }
+        int p = why_next_flagged(g, 0, +1);
+        if (p >= 0) {
+            g.why_ply = p;
+            why_open_preview(a, p);
+            char buf[80];
+            std::snprintf(buf, sizeof(buf),
+                "Reviewing mistake %d of %d  (left/right to step, Esc to exit)",
+                why_flagged_index(g, p), total);
+            set_status(a, buf);
+            queue_redraw(a);
+        }
+        return;
+    }
+
+    // While reviewing (a "why?" panel is open), arrows jump between
+    // flagged moves rather than stepping every ply.
+    if (a.mode == MODE_PLAYING && cur_gs(a).why_ply >= 0 &&
+        (key == KEY_LEFT || key == KEY_RIGHT)) {
+        GameState& g = cur_gs(a);
+        int p = why_next_flagged(g, g.why_ply, key == KEY_RIGHT ? +1 : -1);
+        if (p >= 0) {
+            g.why_ply = p;
+            why_open_preview(a, p);
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Reviewing mistake %d of %d",
+                          why_flagged_index(g, p), why_count_flagged(g));
+            set_status(a, buf);
+            queue_redraw(a);
+        }
         return;
     }
 

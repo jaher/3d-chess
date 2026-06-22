@@ -203,6 +203,7 @@ static AppKey translate_key(SDL_Keycode k) {
         case SDLK_d:      return KEY_D;
         case SDLK_l:      return KEY_L;
         case SDLK_c:      return KEY_C;
+        case SDLK_r:      return KEY_R;
         default:          return KEY_UNKNOWN;
     }
 }

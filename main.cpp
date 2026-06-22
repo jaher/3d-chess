@@ -221,6 +221,8 @@ static AppKey translate_key(guint keyval) {
         case GDK_KEY_L:      return KEY_L;
         case GDK_KEY_c:
         case GDK_KEY_C:      return KEY_C;
+        case GDK_KEY_r:
+        case GDK_KEY_R:      return KEY_R;
         default:             return KEY_UNKNOWN;
     }
 }

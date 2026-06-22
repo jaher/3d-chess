@@ -102,6 +102,7 @@ enum AppKey {
     KEY_D,   // debug: toggles interactive light positioning
     KEY_L,   // debug: while D-mode is on, locks the light at the camera angle
     KEY_C,   // toggles the square-control heatmap overlay
+    KEY_R,   // starts the post-game mistake review walkthrough
 };
 
 // ===========================================================================
