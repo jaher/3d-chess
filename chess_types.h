@@ -106,7 +106,6 @@ struct GameState {
     int64_t ai_anim_start = 0;
     float ai_anim_duration = 0.5f;
     int ai_from_col = 0, ai_from_row = 0, ai_to_col = 0, ai_to_row = 0;
-    unsigned int ai_anim_tick = 0;
     // The animation pipeline (ai_animating + tick_ai_animation) is
     // also reused for sensor-driven moves in two-player mode so the
     // user sees the same arrow + piece-flying visual when their
@@ -164,7 +163,6 @@ struct GameState {
     bool why_entered_analysis = false;
 
     int64_t anim_start_time = 0;
-    unsigned int tick_id = 0;
 
     std::vector<BoardPiece> live_pieces;
     bool live_white_turn = true;

@@ -71,11 +71,6 @@ void load_locked() {
 
 }  // namespace
 
-void openings_init() {
-    std::lock_guard<std::mutex> lk(g_load_mu);
-    load_locked();
-}
-
 std::string opening_name_for_position(const std::string& fen) {
     {
         std::lock_guard<std::mutex> lk(g_load_mu);

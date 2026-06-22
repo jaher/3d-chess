@@ -13,7 +13,6 @@ enum class SoundEffect {
 };
 
 bool audio_init();
-void audio_shutdown();
 void audio_play(SoundEffect effect);
 
 // Play a runtime-generated PCM buffer through the same SFX mixer.

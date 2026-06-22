@@ -22,7 +22,6 @@ void renderer_capture_frame(int width, int height);
 // the spec implies, and re-rendering the live state straight into
 // our own single-sample FBO sidesteps the quirk entirely.
 unsigned int shatter_ensure_capture_target(int width, int height);
-unsigned int shatter_capture_color_texture();
 
 // Draw the shattered captured frame at animation time `t` (seconds).
 // No-op before the first capture.

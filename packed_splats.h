@@ -87,20 +87,7 @@ void packed_splats_sort_and_upload(PackedSplats& ps,
                                    const std::vector<Splat>& source,
                                    float cos_threshold = 0.999f);
 
-void packed_splats_free(PackedSplats& ps);
-
 // Half-float helpers shared with the dump path so we can simulate
 // Spark's PackedSplats pack→unpack roundtrip on the CPU.
 uint16_t to_half(float f);
 float    from_half(uint16_t h);
-
-// Spark's PackedSplats per-field quantisation. Apply each before
-// uploading to the GPU so the splat shader sees the SAME quantised
-// values Spark's WebGL shader does (scales bucketed to 8-bit log
-// levels, quats bucketed to oct-XY 8+8 + 8-bit angle, etc.). Without
-// this the native shader processes finer half-float data than Spark
-// — the rendering reads as more granular even though the source SPZ
-// is the same.
-float roundtrip_half_quant(float f);
-float roundtrip_scale_quant(float scale);
-void  roundtrip_quat_quant(double& x, double& y, double& z, double& w);

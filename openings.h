@@ -13,11 +13,6 @@
 // lookup helper trims the halfmove / fullmove suffix internally.
 
 // Returns the most-specific opening name matching this position, or
-// the empty string if the position isn't in the database. Safe to
-// call before openings_init(); first call populates the cache.
+// the empty string if the position isn't in the database. Thread-safe;
+// the first call lazily loads the database and populates the cache.
 std::string opening_name_for_position(const std::string& fen);
-
-// Optional: pre-load the database. Otherwise the first
-// opening_name_for_position() call does it lazily. No-op if already
-// loaded.
-void openings_init();

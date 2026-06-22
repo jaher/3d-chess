@@ -256,10 +256,6 @@ unsigned int shatter_ensure_capture_target(int width, int height) {
     return g_capture_fbo;
 }
 
-unsigned int shatter_capture_color_texture() {
-    return g_capture_tex;
-}
-
 void renderer_draw_shatter(float t, int width, int height) {
     if (g_capture_tex == 0) return;
     glViewport(0, 0, width, height);

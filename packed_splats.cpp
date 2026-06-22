@@ -275,79 +275,6 @@ float from_half(uint16_t h) {
     return f;
 }
 
-// Spark's PackedSplats per-field quantisation roundtrips. These run
-// at upload time so the GPU sees the same lossy-quantised values
-// Spark's shader reads. Constants from /tmp/spark/src/defines.ts;
-// quat/scale formulas from utils.ts:setPackedSplat / unpackSplat.
-
-float roundtrip_half_quant(float f) {
-    return from_half(to_half(f));
-}
-
-float roundtrip_scale_quant(float scale) {
-    constexpr float kLnScaleMin  = -12.0f;
-    constexpr float kLnScaleMax  =   9.0f;
-    constexpr float kLnScaleZero = -30.0f;
-    if (scale < std::exp(kLnScaleZero)) return 0.0f;
-    const float range  = kLnScaleMax - kLnScaleMin;
-    const float lnInv  = 254.0f / range;
-    const float lnStep = range / 254.0f;
-    int u = static_cast<int>(std::round((std::log(scale) - kLnScaleMin) * lnInv)) + 1;
-    if (u < 1)   u = 1;
-    if (u > 255) u = 255;
-    return std::exp(kLnScaleMin + (u - 1) * lnStep);
-}
-
-void roundtrip_quat_quant(double& x, double& y, double& z, double& w) {
-    double sq = x*x + y*y + z*z + w*w;
-    if (sq <= 0.0) { x = y = z = 0.0; w = 1.0; return; }
-    double inv = 1.0 / std::sqrt(sq);
-    x *= inv; y *= inv; z *= inv; w *= inv;
-    if (w < 0.0) { x = -x; y = -y; z = -z; w = -w; }
-
-    double wclamp = std::max(-1.0, std::min(1.0, w));
-    double theta  = 2.0 * std::acos(wclamp);
-    double xyz_n  = std::sqrt(x*x + y*y + z*z);
-    double ax, ay, az;
-    if (xyz_n < 1e-6) { ax = 1.0; ay = 0.0; az = 0.0; }
-    else              { double k = 1.0 / xyz_n; ax = x*k; ay = y*k; az = z*k; }
-
-    double sum = std::abs(ax) + std::abs(ay) + std::abs(az);
-    double p_x = ax / sum;
-    double p_y = ay / sum;
-    if (az < 0.0) {
-        double tmp = p_x;
-        p_x = (1.0 - std::abs(p_y)) * (p_x >= 0.0 ? 1.0 : -1.0);
-        p_y = (1.0 - std::abs(tmp)) * (p_y >= 0.0 ? 1.0 : -1.0);
-    }
-    int quantU   = static_cast<int>(std::round((p_x * 0.5 + 0.5) * 255.0));
-    int quantV   = static_cast<int>(std::round((p_y * 0.5 + 0.5) * 255.0));
-    int angleInt = static_cast<int>(std::round(theta * (255.0 / 3.14159265358979323846)));
-    quantU   = std::max(0, std::min(255, quantU));
-    quantV   = std::max(0, std::min(255, quantV));
-    angleInt = std::max(0, std::min(255, angleInt));
-
-    double u_f = quantU / 255.0;
-    double v_f = quantV / 255.0;
-    double f_x = (u_f - 0.5) * 2.0;
-    double f_y = (v_f - 0.5) * 2.0;
-    double f_z = 1.0 - (std::abs(f_x) + std::abs(f_y));
-    double t   = std::max(-f_z, 0.0);
-    f_x += (f_x >= 0.0) ? -t : t;
-    f_y += (f_y >= 0.0) ? -t : t;
-    double n2_sq = f_x*f_x + f_y*f_y + f_z*f_z;
-    if (n2_sq <= 0.0) { f_x = 1.0; f_y = 0.0; f_z = 0.0; n2_sq = 1.0; }
-    double n_inv = 1.0 / std::sqrt(n2_sq);
-    f_x *= n_inv; f_y *= n_inv; f_z *= n_inv;
-
-    double theta2 = (angleInt / 255.0) * 3.14159265358979323846;
-    double s = std::sin(theta2 * 0.5);
-    x = f_x * s;
-    y = f_y * s;
-    z = f_z * s;
-    w = std::cos(theta2 * 0.5);
-}
-
 namespace {
 
 // Equivalent to GLSL packHalf2x16: packs (x, y) into a single uint32
@@ -699,19 +626,4 @@ void packed_splats_sort_and_upload(PackedSplats& ps,
         g_first_request = false;
     }
 #endif
-}
-
-
-void packed_splats_free(PackedSplats& ps) {
-#ifndef __EMSCRIPTEN__
-    // Worker must stop FIRST — if it's mid-sort it's holding a
-    // pointer into the source Splat vector and writing into the
-    // ordering texture; freeing under it is undefined.
-    g_worker.stop();
-#endif
-    if (ps.texA)     glDeleteTextures(1, &ps.texA);
-    if (ps.texB)     glDeleteTextures(1, &ps.texB);
-    if (ps.texOrder) glDeleteTextures(1, &ps.texOrder);
-    ps.texA = ps.texB = ps.texOrder = 0;
-    ps.count = ps.tex_width = ps.tex_height = 0;
 }
