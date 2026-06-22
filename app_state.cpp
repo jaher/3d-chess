@@ -67,6 +67,9 @@
 #  include "chessnut_bridge.h"
 #  include "phantom_bridge.h"
 #endif
+#if defined(__EMSCRIPTEN__)
+#  include <emscripten.h>   // localStorage-backed settings persistence
+#endif
 
 #include <algorithm>
 #include <climits>
@@ -5649,6 +5652,103 @@ void app_init(AppState& a, const AppPlatform* platform) {
 // $XDG_CONFIG_HOME/3d_chess/settings.ini (or ~/.config/3d_chess/...).
 // Web stubs both calls in chessnut_web.cpp / voice_web.cpp area.
 // ===========================================================================
+// ---------------------------------------------------------------------------
+// Settings persistence. The serialize / parse logic is platform-agnostic
+// (a tiny INI: one key=value per line, '#' comments); only the storage
+// backend differs — a file under XDG config on desktop, browser
+// localStorage on web, nothing on mobile yet.
+// ---------------------------------------------------------------------------
+namespace {
+bool parse_bool(const std::string& v) {
+    return v == "1" || v == "true" || v == "TRUE" ||
+           v == "yes" || v == "on";
+}
+
+// Fold one "key=value" pair into the AppState. Unknown keys are ignored
+// so a newer build's blob degrades gracefully on an older one.
+void apply_setting(AppState& a, const std::string& key, const std::string& val) {
+    if (key == "splats_enabled") {
+        a.splats_enabled = parse_bool(val);
+    } else if (key == "best_streak") {
+        int v = std::atoi(val.c_str());
+        a.challenge_best_streak = v > 0 ? v : 0;
+    } else if (key == "learner_rating") {
+        int v = std::atoi(val.c_str());
+        a.learner.rating = v > 0 ? v : LEARNER_START_RATING;
+    } else if (key.rfind("learner_", 0) == 0) {
+        int v = std::atoi(val.c_str());
+        if (v < 0) v = 0;
+        auto bump = [&](TacticCategory cat, bool solved) {
+            CategoryStat& s = a.learner.stats[static_cast<int>(cat)];
+            (solved ? s.solved : s.missed) = v;
+        };
+        if      (key == "learner_mate_solved") bump(TacticCategory::Mate, true);
+        else if (key == "learner_mate_missed") bump(TacticCategory::Mate, false);
+        else if (key == "learner_fork_solved") bump(TacticCategory::Fork, true);
+        else if (key == "learner_fork_missed") bump(TacticCategory::Fork, false);
+        else if (key == "learner_pin_solved")  bump(TacticCategory::Pin,  true);
+        else if (key == "learner_pin_missed")  bump(TacticCategory::Pin,  false);
+    } else if (key == "chessnut_enabled") {
+        // Record the desire only; the bridge IO isn't primed during
+        // app_init. The UI driver flips the real toggle later via
+        // app_chessnut_toggle_request.
+        a.chessnut_enabled = parse_bool(val);
+    } else if (key == "environment") {
+        // Short name keeps the blob readable; unknown names fall back to
+        // the medieval default. Record the choice only — do NOT touch the
+        // renderer here (app_settings_load runs before any GL context).
+        int kind = (val == "sagrada" || val == "sagrada_familia")
+            ? static_cast<int>(AppState::Environment::SagradaFamilia)
+            : static_cast<int>(AppState::Environment::MedievalRoom);
+        a.environment = static_cast<AppState::Environment>(kind);
+    }
+}
+
+// Parse a whole settings blob (one key=value per line; '#' comments).
+void parse_settings_blob(AppState& a, const std::string& text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        size_t nl = text.find('\n', i);
+        size_t end = (nl == std::string::npos) ? text.size() : nl;
+        std::string s = text.substr(i, end - i);
+        i = (nl == std::string::npos) ? text.size() : nl + 1;
+        while (!s.empty() && (s.back() == '\r' || s.back() == ' '))
+            s.pop_back();
+        if (s.empty() || s[0] == '#') continue;
+        size_t eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        apply_setting(a, s.substr(0, eq), s.substr(eq + 1));
+    }
+}
+
+// Serialize the persisted settings to INI text (used on every platform).
+std::string serialize_settings(const AppState& a) {
+    const CategoryStat& m  = a.learner.stats[static_cast<int>(TacticCategory::Mate)];
+    const CategoryStat& fk = a.learner.stats[static_cast<int>(TacticCategory::Fork)];
+    const CategoryStat& pn = a.learner.stats[static_cast<int>(TacticCategory::Pin)];
+    const char* env_name = (a.environment == AppState::Environment::SagradaFamilia)
+                           ? "sagrada" : "medieval";
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+        "# 3d_chess user settings — auto-generated\n"
+        "splats_enabled=%d\n"
+        "best_streak=%d\n"
+        "learner_rating=%d\n"
+        "learner_mate_solved=%d\nlearner_mate_missed=%d\n"
+        "learner_fork_solved=%d\nlearner_fork_missed=%d\n"
+        "learner_pin_solved=%d\nlearner_pin_missed=%d\n"
+        "chessnut_enabled=%d\n"
+        "environment=%s\n",
+        a.splats_enabled ? 1 : 0,
+        a.challenge_best_streak,
+        a.learner.rating,
+        m.solved, m.missed, fk.solved, fk.missed, pn.solved, pn.missed,
+        a.chessnut_enabled ? 1 : 0,
+        env_name);
+    return std::string(buf);
+}
+}  // namespace
+
 #if !defined(__EMSCRIPTEN__) && !defined(CHESS_PLATFORM_MOBILE)
 namespace {
 std::string settings_path() {
@@ -5663,11 +5763,6 @@ std::string settings_path() {
     }
     return base + "/3d_chess/settings.ini";
 }
-
-bool parse_bool(const std::string& v) {
-    return v == "1" || v == "true" || v == "TRUE" ||
-           v == "yes" || v == "on";
-}
 }  // namespace
 
 void app_settings_load(AppState& a) {
@@ -5675,93 +5770,18 @@ void app_settings_load(AppState& a) {
     if (path.empty()) return;
     std::FILE* f = std::fopen(path.c_str(), "r");
     if (!f) return;
-    char line[256];
-    while (std::fgets(line, sizeof(line), f)) {
-        std::string s = line;
-        while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
-            s.pop_back();
-        if (s.empty() || s[0] == '#') continue;
-        size_t eq = s.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = s.substr(0, eq);
-        std::string val = s.substr(eq + 1);
-        if (key == "splats_enabled") {
-            a.splats_enabled = parse_bool(val);
-        } else if (key == "best_streak") {
-            // Personal-best tactics streak. Clamp negatives from a
-            // hand-edited file to zero; anything else is trusted.
-            int v = std::atoi(val.c_str());
-            a.challenge_best_streak = v > 0 ? v : 0;
-        } else if (key == "learner_rating") {
-            int v = std::atoi(val.c_str());
-            a.learner.rating = v > 0 ? v : LEARNER_START_RATING;
-        } else if (key.rfind("learner_", 0) == 0) {
-            // learner_<cat>_<solved|missed> counters. Parse the suffix
-            // and fold into the matching category stat; unknown keys are
-            // ignored so a newer build's file degrades gracefully.
-            int v = std::atoi(val.c_str());
-            if (v < 0) v = 0;
-            auto bump = [&](TacticCategory cat, bool solved) {
-                CategoryStat& s = a.learner.stats[static_cast<int>(cat)];
-                (solved ? s.solved : s.missed) = v;
-            };
-            if      (key == "learner_mate_solved") bump(TacticCategory::Mate, true);
-            else if (key == "learner_mate_missed") bump(TacticCategory::Mate, false);
-            else if (key == "learner_fork_solved") bump(TacticCategory::Fork, true);
-            else if (key == "learner_fork_missed") bump(TacticCategory::Fork, false);
-            else if (key == "learner_pin_solved")  bump(TacticCategory::Pin,  true);
-            else if (key == "learner_pin_missed")  bump(TacticCategory::Pin,  false);
-        } else if (key == "chessnut_enabled") {
-            // Don't immediately turn the bridge on here — app_init
-            // runs before the platform's IO is fully primed. Instead
-            // record the desire; the UI driver flips the toggle
-            // through app_chessnut_toggle_request once we're up.
-            a.chessnut_enabled = parse_bool(val);
-        } else if (key == "environment") {
-            // Stored as the short name so the ini stays readable
-            // when you tail it. Unknown names fall back silently to
-            // the medieval default so a stale settings file from a
-            // newer build (referencing an environment we removed)
-            // doesn't break startup.
-            int kind = 0;
-            if (val == "sagrada" || val == "sagrada_familia") {
-                kind = static_cast<int>(
-                    AppState::Environment::SagradaFamilia);
-            } else {
-                kind = static_cast<int>(
-                    AppState::Environment::MedievalRoom);
-            }
-            a.environment = static_cast<AppState::Environment>(kind);
-            // Record the choice only — do NOT touch the renderer here.
-            // app_settings_load runs inside app_init(), which fires in
-            // main() long before the GtkGLArea is realized. There is no
-            // current GL context yet, so renderer_set_environment's splat
-            // re-upload would call into epoxy with no context and abort
-            // ("Couldn't find current GLX or EGL context"). main.cpp's
-            // on_realize applies a.environment once renderer_init has run
-            // under a live context. (The old "apply immediately" comment
-            // was wrong about the ordering and is what crashed startup
-            // whenever environment=sagrada was saved.)
-        }
-    }
+    std::string text;
+    char chunk[256];
+    size_t n;
+    while ((n = std::fread(chunk, 1, sizeof(chunk), f)) > 0)
+        text.append(chunk, n);
     std::fclose(f);
-    // chessnut_enabled persisted as true means "the user wants the
-    // toggle on at startup". The bridge subprocess hasn't started
-    // yet (no platform callback wired), so reset the flag to false
-    // for now — main.cpp will call app_chessnut_toggle_request once
-    // the GTK loop is alive if it sees that the prior session had
-    // it enabled. To pass that signal forward, stash it in a
-    // separate field that app_init doesn't clear.
-    // (Simpler approach implemented here: we leave a.chessnut_enabled
-    //  pre-set to true, and main.cpp reads it on startup to decide
-    //  whether to fire the toggle. This avoids a "ghost" state where
-    //  the flag is on but the bridge isn't.)
+    parse_settings_blob(a, text);
 }
 
 void app_settings_save(const AppState& a) {
     std::string path = settings_path();
     if (path.empty()) return;
-    // mkdir -p on the parent dir.
     std::string dir = path.substr(0, path.find_last_of('/'));
     if (!dir.empty()) {
         std::string cmd = "mkdir -p " + dir + " 2>/dev/null";
@@ -5769,30 +5789,34 @@ void app_settings_save(const AppState& a) {
     }
     std::FILE* f = std::fopen(path.c_str(), "w");
     if (!f) return;
-    std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
-    std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
-    std::fprintf(f, "best_streak=%d\n",       a.challenge_best_streak);
-    std::fprintf(f, "learner_rating=%d\n",    a.learner.rating);
-    {
-        const CategoryStat& m = a.learner.stats[static_cast<int>(TacticCategory::Mate)];
-        const CategoryStat& fk = a.learner.stats[static_cast<int>(TacticCategory::Fork)];
-        const CategoryStat& pn = a.learner.stats[static_cast<int>(TacticCategory::Pin)];
-        std::fprintf(f, "learner_mate_solved=%d\n", m.solved);
-        std::fprintf(f, "learner_mate_missed=%d\n", m.missed);
-        std::fprintf(f, "learner_fork_solved=%d\n", fk.solved);
-        std::fprintf(f, "learner_fork_missed=%d\n", fk.missed);
-        std::fprintf(f, "learner_pin_solved=%d\n",  pn.solved);
-        std::fprintf(f, "learner_pin_missed=%d\n",  pn.missed);
-    }
-    std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
-    const char* env_name = "medieval";
-    if (a.environment == AppState::Environment::SagradaFamilia) {
-        env_name = "sagrada";
-    }
-    std::fprintf(f, "environment=%s\n", env_name);
+    std::string text = serialize_settings(a);
+    std::fwrite(text.data(), 1, text.size(), f);
     std::fclose(f);
 }
+
+#elif defined(__EMSCRIPTEN__)
+// Web: persist to browser localStorage so the tactics rating, streak,
+// best, and toggles survive a page reload — the browser is the primary
+// platform. Read via emscripten_run_script_string (no escaping needed);
+// write via EM_JS with UTF8ToString (already an exported runtime method).
+EM_JS(void, js_settings_set, (const char* s), {
+    try { localStorage.setItem('3d_chess_settings', UTF8ToString(s)); }
+    catch (e) {}
+});
+
+void app_settings_load(AppState& a) {
+    const char* s = emscripten_run_script_string(
+        "(function(){try{return localStorage.getItem('3d_chess_settings')||'';}"
+        "catch(e){return '';}})()");
+    if (s && *s) parse_settings_blob(a, std::string(s));
+}
+
+void app_settings_save(const AppState& a) {
+    js_settings_set(serialize_settings(a).c_str());
+}
+
 #else
+// Mobile: not wired yet.
 void app_settings_load(AppState& /*a*/) {}
 void app_settings_save(const AppState& /*a*/) {}
 #endif
