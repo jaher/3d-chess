@@ -1,7 +1,7 @@
 // Content test: every position in the Practice files we author
-// (challenges/training.md, challenges/forks_pins.md) really does contain
-// the tactic its `type:` claims, checked with the engine's own move
-// generation. Pinned here so a bad edit fails the build.
+// (challenges/training.md) really does contain the tactic its `type:`
+// claims, checked with the engine's own move generation. Pinned here so
+// a bad edit fails the build.
 //
 // mate_in_1  -> some legal move by the side-to-move checkmates.
 // mate_in_2  -> a move that, against every reply, leaves a mate in one.
@@ -112,8 +112,4 @@ void verify_practice_file(const char* path) {
 
 TEST_CASE("training.md: every position contains its declared tactic") {
     verify_practice_file("../challenges/training.md");
-}
-
-TEST_CASE("forks_pins.md: every position contains its declared tactic") {
-    verify_practice_file("../challenges/forks_pins.md");
 }

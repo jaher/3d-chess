@@ -1698,14 +1698,13 @@ static void release_pregame(AppState& a, double mx, double my,
 }
 
 // Maps the learner's weakest category to the Practice file index that
-// best drills it (Mates -> training.md, Forks/Pins -> forks_pins.md),
-// or -1 if no such file is loaded.
+// best drills it, or -1 if no matching file is loaded. Only Mates has a
+// dedicated drill file (training.md) today, so the "Drill your weakness"
+// button only appears when Mates is the weakest area.
 static int challenge_file_for_category(const AppState& a, TacticCategory cat) {
     const char* want = nullptr;
     switch (cat) {
-        case TacticCategory::Mate: want = "training";   break;
-        case TacticCategory::Fork: want = "forks_pins"; break;
-        case TacticCategory::Pin:  want = "forks_pins"; break;
+        case TacticCategory::Mate: want = "training"; break;
         default: return -1;
     }
     for (int i = 0; i < static_cast<int>(a.challenge_files.size()); ++i)
