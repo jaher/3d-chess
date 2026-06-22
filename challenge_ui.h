@@ -6,12 +6,17 @@
 // Challenge select screen.
 // profile_line: optional one-line learner summary ("Tactics rating N …")
 // drawn under the title; pass "" to omit it.
+// drill_label: optional "Drill your weakness: …" action button drawn
+// below the list; pass "" to omit it.
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
                                     const std::string& profile_line,
+                                    const std::string& drill_label,
                                     int width, int height, int hover_index);
-// Returns -2=back, -1=none, 0..N-1=challenge index.
+// Returns -3=drill-weakness button, -2=back, -1=none, 0..N-1=challenge
+// index. The drill button is only hit-tested when drill_label is non-empty.
 int challenge_select_hit_test(double mx, double my, int width, int height,
-                              const std::vector<std::string>& challenge_names);
+                              const std::vector<std::string>& challenge_names,
+                              const std::string& drill_label);
 
 // Challenge in-game overlay (drawn on top of the regular game render
 // while a challenge puzzle is in progress). For tactic puzzles

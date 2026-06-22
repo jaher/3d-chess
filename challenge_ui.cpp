@@ -37,8 +37,15 @@ float cs_button_width_for(const std::string& name) {
 
 }  // namespace
 
+// Y of the top edge of the "Drill your weakness" button — one list slot
+// below the last challenge, plus a little extra gap to set it apart.
+static float cs_drill_button_y(int challenge_count) {
+    return CS_TOP_Y - challenge_count * (CS_BTN_H + CS_GAP) - 0.04f;
+}
+
 int challenge_select_hit_test(double mx, double my, int width, int height,
-                              const std::vector<std::string>& challenge_names) {
+                              const std::vector<std::string>& challenge_names,
+                              const std::string& drill_label) {
     float ndc_x = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float ndc_y = 1.0f - 2.0f * static_cast<float>(my) / height;
 
@@ -55,11 +62,21 @@ int challenge_select_hit_test(double mx, double my, int width, int height,
             ndc_y >= by - CS_BTN_H && ndc_y <= by)
             return i;
     }
+
+    if (!drill_label.empty()) {
+        float by = cs_drill_button_y(static_cast<int>(challenge_names.size()));
+        float bw = cs_button_width_for(drill_label);
+        float bx = -bw * 0.5f;
+        if (ndc_x >= bx && ndc_x <= bx + bw &&
+            ndc_y >= by - CS_BTN_H && ndc_y <= by)
+            return -3;
+    }
     return -1;
 }
 
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
                                     const std::string& profile_line,
+                                    const std::string& drill_label,
                                     int width, int height, int hover_index) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -84,6 +101,11 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
         float by = CS_TOP_Y - i * (CS_BTN_H + CS_GAP);
         float bw = cs_button_width_for(challenge_names[i]);
         draw_wood_button(-bw * 0.5f, by, bw, CS_BTN_H, hover_index == i);
+    }
+    if (!drill_label.empty()) {
+        float by = cs_drill_button_y(static_cast<int>(challenge_names.size()));
+        float bw = cs_button_width_for(drill_label);
+        draw_wood_button(-bw * 0.5f, by, bw, CS_BTN_H, hover_index == -3);
     }
 
     std::vector<float> text_verts;
@@ -118,6 +140,15 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
                           CS_NAME_CW, CS_NAME_CH, challenge_names[i]);
         name_ends.push_back(static_cast<int>(text_verts.size() / 5));
     }
+
+    int drill_text_start = static_cast<int>(text_verts.size() / 5);
+    if (!drill_label.empty()) {
+        float by = cs_drill_button_y(static_cast<int>(challenge_names.size()));
+        float nw = drill_label.size() * CS_NAME_CW * 0.7f;
+        add_screen_string(text_verts, -nw*0.5f, by - 0.025f,
+                          CS_NAME_CW, CS_NAME_CH, drill_label);
+    }
+    int drill_text_end = static_cast<int>(text_verts.size() / 5);
 
     if (text_verts.empty()) {
         glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
@@ -166,6 +197,16 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
         gold_label(hover_index == i);
         glDrawArrays(GL_TRIANGLES, prev, name_ends[i] - prev);
         prev = name_ends[i];
+    }
+
+    if (drill_text_end > drill_text_start) {
+        // Warm amber so the action button reads distinct from the
+        // gold challenge entries above it.
+        float k = hover_index == -3 ? 1.00f : 0.88f;
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    1.0f * k, 0.66f * k, 0.26f * k, 1.0f);
+        glDrawArrays(GL_TRIANGLES, drill_text_start,
+                     drill_text_end - drill_text_start);
     }
 
     glBindVertexArray(0);

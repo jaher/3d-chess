@@ -1638,12 +1638,44 @@ static void release_pregame(AppState& a, double mx, double my,
     }
 }
 
+// Maps the learner's weakest category to the Practice file index that
+// best drills it (Mates -> training.md, Forks/Pins -> forks_pins.md),
+// or -1 if no such file is loaded.
+static int challenge_file_for_category(const AppState& a, TacticCategory cat) {
+    const char* want = nullptr;
+    switch (cat) {
+        case TacticCategory::Mate: want = "training";   break;
+        case TacticCategory::Fork: want = "forks_pins"; break;
+        case TacticCategory::Pin:  want = "forks_pins"; break;
+        default: return -1;
+    }
+    for (int i = 0; i < static_cast<int>(a.challenge_files.size()); ++i)
+        if (a.challenge_files[i].find(want) != std::string::npos) return i;
+    return -1;
+}
+
+// "Drill your weakness: Forks" when the learner has a clear weakest
+// category AND a matching drill file is loaded; "" otherwise.
+static std::string practice_drill_label(const AppState& a) {
+    TacticCategory weak = learner_weakest(a.learner);
+    if (weak != TacticCategory::Count &&
+        challenge_file_for_category(a, weak) >= 0)
+        return std::string("Drill your weakness: ") + category_label(weak);
+    return std::string();
+}
+
 static void release_challenge_select(AppState& a, double mx, double my,
                                      int width, int height) {
     int idx = challenge_select_hit_test(
-        mx, my, width, height, a.challenge_names);
-    if (idx == -2)      app_enter_menu(a);
-    else if (idx >= 0)  app_enter_challenge(a, idx);
+        mx, my, width, height, a.challenge_names, practice_drill_label(a));
+    if (idx == -3) {
+        int f = challenge_file_for_category(a, learner_weakest(a.learner));
+        if (f >= 0) app_enter_challenge(a, f);
+    } else if (idx == -2) {
+        app_enter_menu(a);
+    } else if (idx >= 0) {
+        app_enter_challenge(a, idx);
+    }
 }
 
 static void release_options(AppState& a, double mx, double my,
@@ -2167,7 +2199,7 @@ static void motion_pregame(AppState& a, double mx, double my, int width, int hei
 static void motion_challenge_select(AppState& a, double mx, double my,
                                     int width, int height) {
     int h = challenge_select_hit_test(
-        mx, my, width, height, a.challenge_names);
+        mx, my, width, height, a.challenge_names, practice_drill_label(a));
     if (h != a.challenge_select_hover) {
         a.challenge_select_hover = h;
         queue_redraw(a);
@@ -3579,7 +3611,8 @@ static void render_challenge_select(AppState& a, int width, int height) {
         profile_line = buf;
     }
     renderer_draw_challenge_select(
-        a.challenge_names, profile_line, width, height, a.challenge_select_hover);
+        a.challenge_names, profile_line, practice_drill_label(a),
+        width, height, a.challenge_select_hover);
 }
 
 static void render_options(AppState& a, int width, int height) {
