@@ -166,6 +166,7 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      bool starts_white,
                                      const std::string& tactic_label,
                                      int tactic_found, int tactic_required,
+                                     int streak, int best_streak,
                                      int /*width*/, int /*height*/) {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -228,6 +229,21 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
     add_screen_string(text_verts, -w3*0.5f, -0.92f, cw3, ch3, line3);
     int line3_end = static_cast<int>(text_verts.size() / 5);
 
+    // Tactics-streak readout, just below the info bar. Only shown once
+    // the player has a run going or a personal best to beat, so the
+    // very first puzzle stays uncluttered.
+    int streak_end = line3_end;
+    if (streak > 0 || best_streak > 0) {
+        char sbuf[96];
+        std::snprintf(sbuf, sizeof(sbuf), "Streak %d    Best %d",
+                      streak, best_streak);
+        std::string sline = sbuf;
+        float cws = 0.016f, chs = 0.023f;
+        float ws = sline.size() * cws * 0.7f;
+        add_screen_string(text_verts, -ws*0.5f, 0.815f, cws, chs, sline);
+        streak_end = static_cast<int>(text_verts.size() / 5);
+    }
+
     GLuint tvao, tvbo;
     glGenVertexArrays(1, &tvao); glGenBuffers(1, &tvbo);
     glBindVertexArray(tvao); glBindBuffer(GL_ARRAY_BUFFER, tvbo);
@@ -248,6 +264,13 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
     glDrawArrays(GL_TRIANGLES, line1_end, line2_end - line1_end);
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.7f, 0.7f, 0.7f, 0.8f);
     glDrawArrays(GL_TRIANGLES, line2_end, line3_end - line2_end);
+    if (streak_end > line3_end) {
+        // Warm amber so the streak reads as a reward, distinct from
+        // the white / grey info text above it.
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    1.0f, 0.62f, 0.2f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, line3_end, streak_end - line3_end);
+    }
 
     glBindVertexArray(0);
     glDeleteBuffers(1, &tvbo); glDeleteVertexArrays(1, &tvao);

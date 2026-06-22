@@ -311,6 +311,13 @@ struct AppState {
     bool challenge_next_hover = false;
     std::vector<std::vector<std::string>> challenge_solutions;
     bool challenge_show_summary = false;
+    // Tactics-streak trainer: challenge_streak counts consecutive
+    // positions solved without a slip within the current Practice run
+    // (reset when a new challenge file is opened or on any mistake);
+    // challenge_best_streak is the personal best, persisted to the
+    // settings INI on desktop so it survives restarts.
+    int challenge_streak = 0;
+    int challenge_best_streak = 0;
 
     // Mistake feedback: set when the starter exhausts max_moves on a
     // mate_in_N puzzle without delivering checkmate. Triggers a

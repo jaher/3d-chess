@@ -29,7 +29,8 @@ TEST_SRCS := \
     voice_tts_test.cpp \
     puzzle_test.cpp \
     move_quality_test.cpp \
-    move_reason_test.cpp
+    move_reason_test.cpp \
+    training_content_test.cpp
 
 HEADERS := doctest.h helpers.h
 

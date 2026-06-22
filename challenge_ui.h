@@ -21,6 +21,7 @@ void renderer_draw_challenge_overlay(const std::string& challenge_name,
                                      bool starts_white,
                                      const std::string& tactic_label,
                                      int tactic_found, int tactic_required,
+                                     int streak, int best_streak,
                                      int width, int height);
 
 // Next-puzzle button (drawn when a challenge puzzle is solved).

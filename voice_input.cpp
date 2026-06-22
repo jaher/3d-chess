@@ -364,7 +364,7 @@ VoiceCommand parse_voice_command(const std::string& utterance,
         if (match_any(s, {"play", "start", "new game", "begin",
                           "go", "start game", "play chess"}))
             return VoiceCommand::StartGame;
-        if (match_any(s, {"challenges", "challenge",
+        if (match_any(s, {"challenges", "challenge", "practice",
                           "homework", "tactics", "exercises"}))
             return VoiceCommand::OpenChallenges;
         if (match_any(s, {"puzzles", "puzzle", "puzzle of the day",

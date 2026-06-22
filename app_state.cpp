@@ -562,6 +562,24 @@ static bool is_legal_ai_move(const AppState& a,
 static void start_ai_animation(AppState& a,
                                int fc, int fr, int tc, int tr);
 
+// Tactics-streak trainer bookkeeping. A position solved by the player
+// bumps the run streak (and, when it sets a new high-water mark, the
+// persisted personal best); any mistake resets the run to zero. These
+// are called only from the *player-driven* solve / mistake sites in
+// the challenge branch below — never from the load-time auto-solve
+// paths (degenerate puzzles, Try-Again restores), so the streak only
+// ever reflects real solves.
+static void challenge_streak_record_solve(AppState& a) {
+    a.challenge_streak++;
+    if (a.challenge_streak > a.challenge_best_streak) {
+        a.challenge_best_streak = a.challenge_streak;
+        app_settings_save(a);  // persist the new personal best
+    }
+}
+static void challenge_streak_record_mistake(AppState& a) {
+    a.challenge_streak = 0;
+}
+
 static void handle_board_click(AppState& a, double mx, double my,
                                int width, int height) {
     GameState& gs = cur_gs(a);
@@ -758,6 +776,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                                 if (tactic_target > 0 &&
                                     found.size() >= tactic_target) {
                                     a.challenge_solved = true;
+                                    challenge_streak_record_solve(a);
                                 }
                                 std::snprintf(
                                     buf, sizeof(buf),
@@ -780,6 +799,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                                     a.challenge_mistake_start_us = now_us(a);
                                     a.challenge_try_again_hover = false;
                                     audio_play(SoundEffect::Mistake);
+                                    challenge_streak_record_mistake(a);
                                 }
                                 std::snprintf(
                                     buf, sizeof(buf),
@@ -801,7 +821,10 @@ static void handle_board_click(AppState& a, double mx, double my,
                         if (!a.current_challenge.starts_white &&
                             gs.game_result.find("Black wins") != std::string::npos)
                             solved = true;
-                        if (solved) a.challenge_solved = true;
+                        if (solved) {
+                            a.challenge_solved = true;
+                            challenge_streak_record_solve(a);
+                        }
                     }
                     // Mistake: starter used up their move budget without
                     // delivering mate. Kick off the shake + sfx; the
@@ -814,6 +837,7 @@ static void handle_board_click(AppState& a, double mx, double my,
                         a.challenge_mistake_start_us = now_us(a);
                         a.challenge_try_again_hover = false;
                         audio_play(SoundEffect::Mistake);
+                        challenge_streak_record_mistake(a);
                     }
                 } else if (is_puzzle) {
                     // Solution-driven flow when we successfully
@@ -1271,6 +1295,9 @@ void app_enter_challenge(AppState& a, int index) {
     audio_music_stop();
     a.challenge_solutions.assign(a.current_challenge.fens.size(), {});
     a.challenge_show_summary = false;
+    // Fresh Practice run: the consecutive-solve streak starts over.
+    // (The persisted personal best is left untouched.)
+    a.challenge_streak = 0;
     app_load_challenge_puzzle(a, 0);
 }
 
@@ -3687,6 +3714,7 @@ static void render_challenge_overlay_and_buttons(AppState& a, int width, int hei
         a.current_challenge.max_moves,
         a.current_challenge.starts_white,
         tactic_label, tactic_found, tactic_required,
+        a.challenge_streak, a.challenge_best_streak,
         width, height);
 
     if (a.challenge_solved && !a.transition_active &&
@@ -3759,6 +3787,7 @@ static void render_challenge_transition_trigger(AppState& a, int width, int heig
             a.current_challenge.max_moves,
             a.current_challenge.starts_white,
             tactic_label, tactic_found, tactic_required,
+            a.challenge_streak, a.challenge_best_streak,
             width, height);
     }
 }
@@ -5529,6 +5558,11 @@ void app_settings_load(AppState& a) {
         std::string val = s.substr(eq + 1);
         if (key == "splats_enabled") {
             a.splats_enabled = parse_bool(val);
+        } else if (key == "best_streak") {
+            // Personal-best tactics streak. Clamp negatives from a
+            // hand-edited file to zero; anything else is trusted.
+            int v = std::atoi(val.c_str());
+            a.challenge_best_streak = v > 0 ? v : 0;
         } else if (key == "chessnut_enabled") {
             // Don't immediately turn the bridge on here — app_init
             // runs before the platform's IO is fully primed. Instead
@@ -5589,6 +5623,7 @@ void app_settings_save(const AppState& a) {
     if (!f) return;
     std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
     std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
+    std::fprintf(f, "best_streak=%d\n",       a.challenge_best_streak);
     std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
     const char* env_name = "medieval";
     if (a.environment == AppState::Environment::SagradaFamilia) {
