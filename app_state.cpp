@@ -2628,6 +2628,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             voice_tts_speak(utterance);
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
+            cur(a).pending_move_reason.clear();
             cur(a).pending_move_opening.clear();
             cur(a).pending_move_endgame.clear();
             cur(a).pending_move_tactic.clear();
@@ -2865,8 +2866,18 @@ void app_eval_ready(AppState& a, int cp, int score_index,
         // audio output is byte-for-byte what it was before.
         if (phrase) {
             cur(a).pending_move_classification = phrase;
+            // Coach: pair the spoken verdict with the board-grounded reason
+            // (same string the "why?" panel shows). Only the explained
+            // mistake-ish classes set why_reason, so positive/quiet moves
+            // stay silent on the "why" just as they do in the panel.
+            cur(a).pending_move_reason =
+                (score_index >= 0 &&
+                 score_index < (int)gs.why_reason.size())
+                    ? gs.why_reason[score_index]
+                    : std::string();
         } else {
             cur(a).pending_move_classification.clear();
+            cur(a).pending_move_reason.clear();
         }
     }
 
@@ -2956,11 +2967,17 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 !cur(a).pending_move_classification.empty()) {
                 utterance += ". ";
                 utterance += cur(a).pending_move_classification;
+                // …followed by the coach's reason, when there is one.
+                if (!cur(a).pending_move_reason.empty()) {
+                    utterance += ". ";
+                    utterance += cur(a).pending_move_reason;
+                }
             }
         }
         voice_tts_speak(utterance);
         cur(a).pending_move_speech.clear();
         cur(a).pending_move_classification.clear();
+        cur(a).pending_move_reason.clear();
         cur(a).pending_move_opening.clear();
         cur(a).pending_move_endgame.clear();
         cur(a).pending_move_tactic.clear();

@@ -299,6 +299,15 @@ isn't meaningful. Brilliant / Great / Missed-win / Book-move
 classifications aren't computed (they need sacrifice detection,
 opening-database lookup, etc.) and may show up in a follow-up.
 
+For your own mistake-ish moves the coach goes a step further and
+**speaks the reason** right after the verdict — the same
+board-grounded one-liner the "why?" panel shows ("Blunder.
+Leaves the rook on a8 hanging."). It reuses
+`generate_why_reason` (the unit-tested `move_reason.cpp`
+function) via the per-move `why_reason` cache, so the spoken
+explanation and the panel never drift. Quiet and positive moves
+carry no reason, so they stay a single short phrase.
+
 Native build: powered by [Piper](https://github.com/rhasspy/piper)
 neural-TTS. The Makefile fetches the prebuilt linux x86_64 binary
 (~26 MB tarball, ONNX runtime bundled in) and a single voice

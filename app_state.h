@@ -178,6 +178,10 @@ struct GameInstance {
     std::string pending_move_speech;
     bool        pending_move_speech_was_human = false;
     std::string pending_move_classification;
+    // Board-grounded one-liner ("Leaves the rook on a8 hanging.") for the
+    // spoken coach. Cached alongside the classification for human moves and
+    // spoken right after it, so a blunder is followed by *why* it was one.
+    std::string pending_move_reason;
     std::string pending_move_opening;
     std::string last_announced_opening;
     // Endgame label — same one-shot semantics as the opening one

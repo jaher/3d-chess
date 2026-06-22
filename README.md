@@ -26,7 +26,11 @@ realistic lighting, wood textures, and reflections.
 - **Solve puzzles** — built-in checkmate challenges, fork-and-pin tactics, and
   the daily puzzle straight from chess.com.
 - **Play hands-free** — hold the spacebar and just say your move out loud
-  ("knight d3", "castle kingside").
+  ("knight d3", "castle kingside"), and ask for a hint by voice
+  ("what should I play?").
+- **Let it coach you out loud** — with spoken moves on, the game names each
+  move's quality as you play and, when you slip, tells you *why* ("Blunder.
+  Leaves the rook on a8 hanging.") — hands-free learning while you play.
 - **Enjoy the board** — soft shadows and realistic lighting, walnut wood, glossy
   reflective squares, a working analog clock, and a playful main menu where you
   can grab and fling the pieces around.
