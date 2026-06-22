@@ -38,6 +38,10 @@ realistic lighting, wood textures, and reflections.
 - **Drill the endgames** — on the setup screen, pick a **Starting position**
   (King + Queen, King + Rook, or King + Pawn vs a lone King) and practise
   converting the win against the engine's best defence.
+- **Learn the openings** — the Practice screen lists opening drills (Italian
+  Game, Ruy Lopez, Queen's Gambit, London System…). Play your side's moves and
+  the book replies appear automatically; a wrong move rewinds so you can try
+  the line again until it sticks.
 - **Play hands-free** — hold the spacebar and just say your move out loud
   ("knight d3", "castle kingside"), and ask for a hint by voice
   ("what should I play?").

@@ -27,6 +27,7 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             text_atlas.cpp options_ui.cpp puzzle.cpp openings.cpp \
             endgame.cpp tactics.cpp pawn_structure.cpp opening_plans.cpp \
             move_quality.cpp move_reason.cpp learner_profile.cpp \
+            openings_drills.cpp \
             voice_input.cpp voice_whisper.cpp \
             voice_tts.cpp voice_tts_native.cpp \
             chessnut_bridge.cpp phantom_bridge.cpp \
@@ -39,7 +40,7 @@ HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.
             menu_input.h challenge_ui.h pregame_ui.h shatter_transition.h \
             render_internal.h text_atlas.h options_ui.h puzzle.h \
             voice_input.h chessnut_bridge.h phantom_bridge.h voice_tts.h \
-            move_quality.h move_reason.h learner_profile.h
+            move_quality.h move_reason.h learner_profile.h openings_drills.h
 
 STOCKFISH_DIR := third_party/stockfish
 STOCKFISH_BIN := $(STOCKFISH_DIR)/src/stockfish

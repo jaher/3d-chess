@@ -903,6 +903,18 @@ static void handle_board_click(AppState& a, double mx, double my,
                         queue_redraw(a);
                     } else if (gs.game_over || solution_complete) {
                         a.puzzle_solved = true;
+                        if (a.puzzle_is_opening) {
+                            // Opening drill: the whole line is done. Stay
+                            // on the board (no chess.com fetch) and tell
+                            // the player they've learned it; Escape / the
+                            // withdraw flag returns to the menu.
+                            std::string msg = "Opening learned: " +
+                                a.puzzle_title +
+                                ". Press Escape to go back.";
+                            set_status(a, msg.c_str());
+                            queue_redraw(a);
+                            return;
+                        }
                         bool user_won = a.human_plays_white
                             ? gs.game_result.find("White wins") !=
                                   std::string::npos
@@ -1232,6 +1244,7 @@ void app_enter_challenge_select(AppState& a) {
         Challenge c = load_challenge(f);
         a.challenge_names.push_back(c.name);
     }
+    a.opening_drills = load_opening_drills("openings/drills.md");
     a.challenge_select_hover = -1;
     set_status(a, "Select Challenge");
     queue_redraw(a);
@@ -1401,6 +1414,48 @@ static void apply_puzzle_to_state(AppState& a, const Puzzle& p,
     queue_redraw(a);
 }
 
+void app_enter_opening_drill(AppState& a, int index) {
+    if (index < 0 || index >= static_cast<int>(a.opening_drills.size())) return;
+    const OpeningDrill& d = a.opening_drills[index];
+
+    a.mode = MODE_PUZZLE;
+    audio_music_stop();
+    a.games.assign(1, GameInstance{});
+    a.active_game = 0;
+    a.clock_enabled = false;
+    a.withdraw_confirm_open = false;
+    a.withdraw_hover = 0;
+    a.endgame_menu_hover = false;
+    a.continue_playing_hover = false;
+    a.puzzle_loading = false;
+    a.puzzle_load_failed = false;
+
+    // Every drill starts from the initial position; the human plays the
+    // side to move (White), the book replies are canned.
+    const char* startfen =
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    ParsedFEN parsed = parse_fen(startfen);
+    apply_fen_to_state(cur_gs(a), parsed);
+    a.human_plays_white = true;
+    a.rot_x = 30.0f;
+    a.rot_y = 180.0f;
+    a.zoom  = 12.0f;
+    cur_gs(a).analysis_mode = false;
+
+    a.puzzle_title         = d.name;
+    a.puzzle_url.clear();
+    a.puzzle_starting_fen  = startfen;
+    a.puzzle_solved        = false;
+    a.puzzle_is_opening    = true;
+    a.puzzle_solution_uci   = d.moves;   // the line IS the solution
+    a.puzzle_solution_index = 0;
+
+    std::string status = "Opening: " + d.name + ". Play the main line.";
+    set_status(a, status.c_str());
+    app_chessnut_sync_board(a, /*force=*/true);
+    queue_redraw(a);
+}
+
 // "Today" in YYYY-MM-DD, local time. Used to find this date's
 // daily puzzle in the local archive before reaching for the
 // network. chess.com publishes daily on UTC midnight, so users
@@ -1424,6 +1479,7 @@ static std::string today_local_date_string() {
 void app_enter_puzzle(AppState& a) {
     a.mode = MODE_PUZZLE;
     audio_music_stop();
+    a.puzzle_is_opening = false;
     a.games.assign(1, GameInstance{});
     a.active_game = 0;
     a.puzzle_title.clear();
@@ -1657,6 +1713,17 @@ static int challenge_file_for_category(const AppState& a, TacticCategory cat) {
     return -1;
 }
 
+// The Practice screen's clickable rows: tactic challenges first, then
+// the opening drills (prefixed so they read distinctly). The index a
+// click returns maps to a challenge while < challenge_names.size(),
+// else to opening_drills[index - challenge_names.size()].
+static std::vector<std::string> practice_entry_names(const AppState& a) {
+    std::vector<std::string> names = a.challenge_names;
+    for (const auto& d : a.opening_drills)
+        names.push_back("Opening: " + d.name);
+    return names;
+}
+
 // "Drill your weakness: Forks" when the learner has a clear weakest
 // category AND a matching drill file is loaded; "" otherwise.
 static std::string practice_drill_label(const AppState& a) {
@@ -1670,14 +1737,16 @@ static std::string practice_drill_label(const AppState& a) {
 static void release_challenge_select(AppState& a, double mx, double my,
                                      int width, int height) {
     int idx = challenge_select_hit_test(
-        mx, my, width, height, a.challenge_names, practice_drill_label(a));
+        mx, my, width, height, practice_entry_names(a), practice_drill_label(a));
     if (idx == -3) {
         int f = challenge_file_for_category(a, learner_weakest(a.learner));
         if (f >= 0) app_enter_challenge(a, f);
     } else if (idx == -2) {
         app_enter_menu(a);
     } else if (idx >= 0) {
-        app_enter_challenge(a, idx);
+        int nch = static_cast<int>(a.challenge_names.size());
+        if (idx < nch) app_enter_challenge(a, idx);
+        else           app_enter_opening_drill(a, idx - nch);
     }
 }
 
@@ -2202,7 +2271,7 @@ static void motion_pregame(AppState& a, double mx, double my, int width, int hei
 static void motion_challenge_select(AppState& a, double mx, double my,
                                     int width, int height) {
     int h = challenge_select_hit_test(
-        mx, my, width, height, a.challenge_names, practice_drill_label(a));
+        mx, my, width, height, practice_entry_names(a), practice_drill_label(a));
     if (h != a.challenge_select_hover) {
         a.challenge_select_hover = h;
         queue_redraw(a);
@@ -3642,7 +3711,7 @@ static void render_challenge_select(AppState& a, int width, int height) {
         profile_line = buf;
     }
     renderer_draw_challenge_select(
-        a.challenge_names, profile_line, practice_drill_label(a),
+        practice_entry_names(a), profile_line, practice_drill_label(a),
         width, height, a.challenge_select_hover);
 }
 

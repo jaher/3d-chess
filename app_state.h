@@ -3,6 +3,7 @@
 #include "board_renderer.h"  // PhysicsPiece, SummaryEntry
 #include "challenge.h"       // Challenge
 #include "learner_profile.h" // LearnerProfile
+#include "openings_drills.h" // OpeningDrill
 #include "cloth_flag.h"      // ClothFlag
 #include "time_control.h"    // TimeControl, TIME_CONTROLS
 #include "chess_types.h"     // GameState, GameMode
@@ -390,6 +391,15 @@ struct AppState {
     std::vector<std::string> puzzle_solution_uci;
     size_t puzzle_solution_index = 0;
 
+    // Opening trainer — reuses the puzzle solution-follower above to
+    // drill a named opening line (you play your side; book replies are
+    // canned). When puzzle_is_opening, completing the line shows
+    // "learned" and stays put instead of fetching a chess.com puzzle.
+    // opening_drills is loaded from openings/drills.md when the Practice
+    // screen opens.
+    std::vector<OpeningDrill> opening_drills;
+    bool puzzle_is_opening = false;
+
     // AI animation — start time stored in microseconds, mirrors what the
     // renderer reads from gs.ai_anim_start. Separate from gs.ai_anim_start
     // because platforms measure in different units internally.
@@ -693,6 +703,9 @@ void app_reset_challenge_puzzle(AppState& a);
 // indefinite session; ESC / "Back" from the screen returns to the
 // menu.
 void app_enter_puzzle(AppState& a);
+// Start an opening-line drill (index into a.opening_drills) as a
+// puzzle-style line follower.
+void app_enter_opening_drill(AppState& a, int index);
 
 // Re-emit the current title/status to the platform. Idempotent.
 void app_refresh_status(AppState& a);

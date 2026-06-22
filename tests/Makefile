@@ -18,7 +18,8 @@ SHARED_SRCS := \
     ../puzzle.cpp \
     ../move_quality.cpp \
     ../move_reason.cpp \
-    ../learner_profile.cpp
+    ../learner_profile.cpp \
+    ../openings_drills.cpp
 
 TEST_SRCS := \
     doctest_main.cpp \
@@ -33,7 +34,8 @@ TEST_SRCS := \
     move_reason_test.cpp \
     training_content_test.cpp \
     endgame_trainer_test.cpp \
-    learner_profile_test.cpp
+    learner_profile_test.cpp \
+    openings_drills_test.cpp
 
 HEADERS := doctest.h helpers.h
 
