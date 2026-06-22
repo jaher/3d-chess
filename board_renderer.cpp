@@ -4480,17 +4480,23 @@ void renderer_draw(GameState& gs,
                 glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
                 glDepthMask(GL_TRUE); glDisable(GL_BLEND);
 
-                // Thick bright-cyan arrow from the piece's square to the ghost.
+                // Board-space arrow drawer — reused for the best move
+                // (bright cyan) and the engine's expected reply (amber).
                 glUseProgram(g_highlight_program);
                 glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glDepthMask(GL_FALSE);
+                glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, vp.m);
+                glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+                glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
                 float ay = BOARD_Y + 0.02f;
-                float fx, fz, txc, tzc;
-                square_center(fc, fr, fx, fz);
-                square_center(tc, tr, txc, tzc);
-                float dx = txc-fx, dz = tzc-fz;
-                float len = std::sqrt(dx*dx+dz*dz);
-                if (len > 1e-3f) {
+                auto draw_board_arrow = [&](int afc, int afr, int atc, int atr,
+                                            float cr, float cg, float cb, float ca) {
+                    float fx, fz, txc, tzc;
+                    square_center(afc, afr, fx, fz);
+                    square_center(atc, atr, txc, tzc);
+                    float dx = txc-fx, dz = tzc-fz;
+                    float len = std::sqrt(dx*dx+dz*dz);
+                    if (len <= 1e-3f) return;
                     float nx = -dz/len*0.075f, nz = dx/len*0.075f;
                     float hl = 0.20f, hw = 0.17f;
                     float hx = txc - dx/len*hl, hz = tzc - dz/len*hl;
@@ -4506,12 +4512,27 @@ void renderer_draw(GameState& gs,
                     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(av.size()*sizeof(float)), av.data(), GL_STREAM_DRAW);
                     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
                     glEnableVertexAttribArray(0);
-                    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, vp.m);
-                    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
-                    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
-                    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.30f,0.92f,1.0f,0.95f);
+                    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), cr,cg,cb,ca);
                     glDrawArrays(GL_TRIANGLES, 0, 9);
                     glBindVertexArray(0); glDeleteBuffers(1, &avbo); glDeleteVertexArrays(1, &avao);
+                };
+                // Your best move (cyan).
+                draw_board_arrow(fc, fr, tc, tr, 0.30f, 0.92f, 1.0f, 0.95f);
+                // The engine's expected reply — second move of the PV.
+                // Drawn from the opponent piece's current square (it sits
+                // there in this rewound position), amber + a touch dimmer
+                // so it reads as "…and they answer".
+                if (gs.why_ply < static_cast<int>(gs.best_pv.size())) {
+                    const std::string& pv = gs.best_pv[gs.why_ply];
+                    size_t sp = pv.find(' ');
+                    if (sp != std::string::npos && pv.size() >= sp + 5) {
+                        const char* r = pv.c_str() + sp + 1;
+                        int rfc = 7 - (r[0]-'a'), rfr = r[1]-'1';
+                        int rtc = 7 - (r[2]-'a'), rtr = r[3]-'1';
+                        if (in_bounds(rfc, rfr) && in_bounds(rtc, rtr))
+                            draw_board_arrow(rfc, rfr, rtc, rtr,
+                                             1.0f, 0.58f, 0.16f, 0.78f);
+                    }
                 }
                 glDepthMask(GL_TRUE); glDisable(GL_BLEND);
                 glUseProgram(g_program);
