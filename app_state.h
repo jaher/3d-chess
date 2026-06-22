@@ -188,6 +188,10 @@ struct GameInstance {
     // spoken coach. Cached alongside the classification for human moves and
     // spoken right after it, so a blunder is followed by *why* it was one.
     std::string pending_move_reason;
+    // Spoken form of the engine's better move ("Knight to f3") for the same
+    // coach, spoken right after the reason so a mistake is followed by what
+    // to play instead.
+    std::string pending_move_better;
     std::string pending_move_opening;
     std::string last_announced_opening;
     // Endgame label — same one-shot semantics as the opening one

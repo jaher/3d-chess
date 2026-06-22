@@ -42,8 +42,9 @@ realistic lighting, wood textures, and reflections.
   ("knight d3", "castle kingside"), and ask for a hint by voice
   ("what should I play?").
 - **Let it coach you out loud** — with spoken moves on, the game names each
-  move's quality as you play and, when you slip, tells you *why* ("Blunder.
-  Leaves the rook on a8 hanging.") — hands-free learning while you play.
+  move's quality as you play and, when you slip, tells you *why* and what to
+  play instead ("Blunder. Leaves the rook on a8 hanging. Better was knight to
+  f3.") — hands-free learning while you play.
 - **Enjoy the board** — soft shadows and realistic lighting, walnut wood, glossy
   reflective squares, a working analog clock, and a playful main menu where you
   can grab and fling the pieces around.

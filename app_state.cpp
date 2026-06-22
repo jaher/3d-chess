@@ -2738,6 +2738,7 @@ void app_eval_ready(AppState& a, int cp, int score_index,
             cur(a).pending_move_speech.clear();
             cur(a).pending_move_classification.clear();
             cur(a).pending_move_reason.clear();
+            cur(a).pending_move_better.clear();
             cur(a).pending_move_opening.clear();
             cur(a).pending_move_endgame.clear();
             cur(a).pending_move_tactic.clear();
@@ -2990,9 +2991,23 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                  score_index < (int)gs.why_reason.size())
                     ? gs.why_reason[score_index]
                     : std::string();
+            // …and the engine's better move, spoken as "Better was
+            // Knight to f3". Uses the same per-ply best move + snapshot
+            // the "why?" panel renders, so the spoken hint and the panel
+            // agree. Only set when there's a reason (mistake-ish class).
+            cur(a).pending_move_better.clear();
+            if (!cur(a).pending_move_reason.empty() &&
+                score_index >= 1 &&
+                score_index < (int)gs.best_move.size() &&
+                !gs.best_move[score_index].empty() &&
+                score_index - 1 < (int)gs.snapshots.size()) {
+                cur(a).pending_move_better = uci_to_speech(
+                    gs.snapshots[score_index - 1], gs.best_move[score_index]);
+            }
         } else {
             cur(a).pending_move_classification.clear();
             cur(a).pending_move_reason.clear();
+            cur(a).pending_move_better.clear();
         }
     }
 
@@ -3087,12 +3102,18 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                     utterance += ". ";
                     utterance += cur(a).pending_move_reason;
                 }
+                // …and what to play instead ("Better was Knight to f3").
+                if (!cur(a).pending_move_better.empty()) {
+                    utterance += ". Better was ";
+                    utterance += cur(a).pending_move_better;
+                }
             }
         }
         voice_tts_speak(utterance);
         cur(a).pending_move_speech.clear();
         cur(a).pending_move_classification.clear();
         cur(a).pending_move_reason.clear();
+        cur(a).pending_move_better.clear();
         cur(a).pending_move_opening.clear();
         cur(a).pending_move_endgame.clear();
         cur(a).pending_move_tactic.clear();
