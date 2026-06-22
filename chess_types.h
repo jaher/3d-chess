@@ -126,6 +126,11 @@ struct GameState {
     bool analysis_mode = false;
     int analysis_index = 0;
 
+    // Square-control heatmap overlay (toggled with the C key): tints
+    // each square by which side attacks it more. A pure board-function
+    // teaching aid — no engine call.
+    bool show_control = false;
+
     std::vector<std::string> move_history;
     std::vector<float> score_history;
     std::vector<BoardSnapshot> snapshots;

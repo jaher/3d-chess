@@ -2267,6 +2267,20 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
+    // C toggles the square-control heatmap overlay during a live game
+    // or analysis review — tints each square by which side attacks it
+    // more (a teaching aid; no engine call).
+    if (key == KEY_C &&
+        (a.mode == MODE_PLAYING || a.mode == MODE_CHALLENGE ||
+         a.mode == MODE_PUZZLE)) {
+        GameState& g = cur_gs(a);
+        g.show_control = !g.show_control;
+        set_status(a, g.show_control ? "Control heatmap ON (C)"
+                                     : "Control heatmap OFF");
+        queue_redraw(a);
+        return;
+    }
+
     // D toggles the debug light-positioning mode. When on, mouse
     // drag aims the scene light instead of orbiting the camera and
     // the splat backdrop receives the table's shadow.

@@ -101,6 +101,7 @@ enum AppKey {
     KEY_S,   // toggles cartoon outline in a live game / challenge
     KEY_D,   // debug: toggles interactive light positioning
     KEY_L,   // debug: while D-mode is on, locks the light at the camera angle
+    KEY_C,   // toggles the square-control heatmap overlay
 };
 
 // ===========================================================================

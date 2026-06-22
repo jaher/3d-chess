@@ -4622,6 +4622,46 @@ void renderer_draw(GameState& gs,
     float pulse = 1.0f - phase;
     pulse = pulse * pulse * (3.0f - 2.0f * pulse);
 
+    // Square-control heatmap (C key): flat per-square tints — blue =
+    // only white attacks it, red = only black, purple = contested.
+    // Drawn under the pieces (depth-tested) so it reads as board paint.
+    if (gs.show_control) {
+        std::vector<float> vw, vb, vc;   // white-control / black / contested
+        for (int r = 0; r < 8; r++) {
+            for (int c = 0; c < 8; c++) {
+                bool wa = is_square_attacked(gs, c, r, true);
+                bool ba = is_square_attacked(gs, c, r, false);
+                if (!wa && !ba) continue;
+                std::vector<float>& dst = (wa && ba) ? vc : (wa ? vw : vb);
+                float sx, sz; square_center(c, r, sx, sz);
+                const float e = 0.46f;
+                const float q[18] = {
+                    sx-e,hy,sz-e, sx+e,hy,sz-e, sx+e,hy,sz+e,
+                    sx-e,hy,sz-e, sx+e,hy,sz+e, sx-e,hy,sz+e
+                };
+                dst.insert(dst.end(), q, q + 18);
+            }
+        }
+        glUniformMatrix4fv(lmvp, 1, GL_FALSE, vp.m);
+        glUniform1f(lin, 0.0f); glUniform1f(lout, 0.0f);   // flat-fill mode
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+        glUniform1i(glGetUniformLocation(g_highlight_program, "uUseVertexColor"), 0);
+        auto draw_tint = [&](std::vector<float>& v, float cr, float cg, float cb) {
+            if (v.empty()) return;
+            GLuint vao, vbo; glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
+            glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size()*sizeof(float)), v.data(), GL_STREAM_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glUniform4f(lcol_loc, cr, cg, cb, 0.36f);
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size()/3));
+            glBindVertexArray(0); glDeleteBuffers(1, &vbo); glDeleteVertexArrays(1, &vao);
+        };
+        draw_tint(vw, 0.20f, 0.48f, 0.95f);   // white controls — blue
+        draw_tint(vb, 0.95f, 0.30f, 0.25f);   // black controls — red
+        draw_tint(vc, 0.72f, 0.36f, 0.82f);   // contested — purple
+    }
+
     if (gs.selected_col >= 0) {
         float sx, sz; square_center(gs.selected_col, gs.selected_row, sx, sz);
         Mat4 mvp = mat4_multiply(vp, mat4_translate(sx, hy, sz));
