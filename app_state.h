@@ -422,15 +422,6 @@ struct AppState {
     // only — the actual selection lives in pregame_game_count.
     int  pregame_game_count_hover = 0;
 
-    // Endgame trainer: which starting position the pregame "Starting
-    // position" row has selected. 0 = standard game; 1.. index into
-    // ENDGAME_STARTS[] (endgame_positions.h) for a king-and-X-vs-king
-    // drill the human plays as the winning side. pregame_start_pos_hover
-    // is visual-only (0 = none, 1.. = button hovered), like the
-    // games-count hover above.
-    int  pregame_start_pos = 0;
-    int  pregame_start_pos_hover = 0;
-
     // Two-player (hot-seat) mode. Set by clicking the menu's
     // "Multiplayer" button (only visible when chessnut_connected),
     // cleared by the regular "Start Game" path. The pregame UI

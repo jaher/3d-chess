@@ -34,9 +34,6 @@ realistic lighting, wood textures, and reflections.
   **weakest area** (mates, forks, or pins) so you know what to drill. A
   one-click **"Drill your weakness"** button jumps straight into the matching
   set. It's all remembered between sessions.
-- **Drill the endgames** — on the setup screen, pick a **Starting position**
-  (King + Queen, King + Rook, or King + Pawn vs a lone King) and practise
-  converting the win against the engine's best defence.
 - **Learn the openings** — the Practice screen lists opening drills (Italian
   Game, Ruy Lopez, Queen's Gambit, London System…). Play your side's moves and
   the book replies appear automatically; a wrong move rewinds so you can try
