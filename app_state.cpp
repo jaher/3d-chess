@@ -50,6 +50,7 @@
 #include "openings.h"
 #include "opening_plans.h"
 #include "endgame.h"
+#include "endgame_positions.h"
 #include "tactics.h"
 #include "pawn_structure.h"
 #include "move_quality.h"
@@ -1071,6 +1072,10 @@ void app_enter_pregame(AppState& a) {
     a.pregame_hover = 0;
     a.pregame_tc_open = false;
     a.pregame_tc_hover = -1;
+    // Default each setup to the standard game — the endgame trainer is
+    // an explicit opt-in, never a surprise on a normal "Start Game".
+    a.pregame_start_pos = 0;
+    a.pregame_start_pos_hover = 0;
     set_status(a, "3D Chess — Game Setup");
     queue_redraw(a);
 }
@@ -1108,6 +1113,16 @@ void app_enter_game(AppState& a) {
     if (N < 1) N = 1;
     if (N > 4) N = 4;
     if (a.two_player_mode || a.chessnut_connected) N = 1;
+    // Endgame trainer is always a single board, and the human takes the
+    // winning side (White, to move) against the defending engine.
+    const bool endgame_trainer =
+        a.pregame_start_pos > 0 && a.pregame_start_pos < ENDGAME_START_COUNT &&
+        !a.two_player_mode && !a.chessnut_connected;
+    if (endgame_trainer) {
+        N = 1;
+        a.human_plays_white = true;
+        a.two_player_mode = false;
+    }
     std::fprintf(stderr,
         "[app] enter_game: two_player=%d human_plays_white=%d "
         "chessnut_connected=%d games=%d\n",
@@ -1120,6 +1135,15 @@ void app_enter_game(AppState& a) {
     a.active_game = 0;
     audio_music_stop();
     for (auto& gi : a.games) game_reset(gi.game);
+    // Endgame trainer: replace the standard array with the selected
+    // king-and-X-vs-king position. Reuses the same FEN setup the puzzle
+    // / challenge screens use, so the rest of MODE_PLAYING (engine
+    // defence, checkmate / draw detection, eval, why-panel) is unchanged.
+    if (endgame_trainer) {
+        ParsedFEN p = parse_fen(ENDGAME_STARTS[a.pregame_start_pos].fen);
+        if (p.valid)
+            for (auto& gi : a.games) apply_fen_to_state(gi.game, p);
+    }
     a.rot_x = 30.0f;
     // Camera points at whichever side the human is playing so their
     // pieces are at the bottom of the screen.
@@ -1153,6 +1177,12 @@ void app_enter_game(AppState& a) {
         }
     }
     app_refresh_status(a);
+    if (endgame_trainer) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%s — checkmate the lone king",
+                      ENDGAME_STARTS[a.pregame_start_pos].name);
+        set_status(a, buf);
+    }
     queue_redraw(a);
     // Drop the sensor-frame baseline so the next stable frame after
     // motors settle gets re-checked against the starting position.
@@ -1592,6 +1622,13 @@ static void release_pregame(AppState& a, double mx, double my,
     } else if (btn >= 7 && btn <= 10) {
         // Games-count [1..4] selector.
         a.pregame_game_count = btn - 6;
+        queue_redraw(a);
+    } else if (btn >= 11 && btn < 11 + ENDGAME_START_COUNT) {
+        // Starting-position selector (endgame trainer). Picking a
+        // non-standard position forces the human onto the winning
+        // (White) side — they can still flip it back with the toggle.
+        a.pregame_start_pos = btn - 11;
+        if (a.pregame_start_pos != 0) a.human_plays_white = true;
         queue_redraw(a);
     }
 }
@@ -2096,6 +2133,13 @@ static void motion_pregame(AppState& a, double mx, double my, int width, int hei
     int new_gc_hover = (h >= 7 && h <= 10) ? (h - 6) : 0;
     if (new_gc_hover != a.pregame_game_count_hover) {
         a.pregame_game_count_hover = new_gc_hover;
+        queue_redraw(a);
+    }
+    // Starting-position row hover (1.. for buttons 11.., else 0).
+    int new_sp_hover =
+        (h >= 11 && h < 11 + ENDGAME_START_COUNT) ? (h - 10) : 0;
+    if (new_sp_hover != a.pregame_start_pos_hover) {
+        a.pregame_start_pos_hover = new_sp_hover;
         queue_redraw(a);
     }
     // Mouse button held AND press was inside the slider → slider
@@ -3506,6 +3550,8 @@ static void render_pregame(AppState& a, int width, int height) {
                           a.pregame_game_count,
                           a.pregame_game_count_hover,
                           hide_game_count,
+                          a.pregame_start_pos,
+                          a.pregame_start_pos_hover,
                           width, height, a.pregame_hover);
 }
 

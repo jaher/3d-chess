@@ -22,13 +22,17 @@ void renderer_draw_pregame(bool human_plays_white,
                            int game_count,
                            int game_count_hover,
                            bool hide_game_count,
+                           int start_pos,
+                           int start_pos_hover,
                            int width, int height,
                            int hover);
 
 // Returns 0=none, 1=Start, 2=Back, 3=Toggle button, 4=Slider area,
-// 5=Dropdown head, 6=Dropdown row, 7..10=Games-count button (N = code-6).
+// 5=Dropdown head, 6=Dropdown row, 7..10=Games-count button (N = code-6),
+// 11..=Starting-position button (endgame trainer; index = code-11).
 // Hit-tests on the ELO slider region only when hide_elo_slider is
-// false; on the games-count row only when hide_game_count is false.
+// false; on the games-count + starting-position rows only when
+// hide_game_count is false.
 int pregame_hit_test(double mx, double my, int width, int height,
                      bool dropdown_open,
                      bool hide_elo_slider,

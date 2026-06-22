@@ -28,6 +28,9 @@ realistic lighting, wood textures, and reflections.
 - **Build a streak** — open **Practice** from the menu and solve tactics back to
   back; a streak counter tracks how many you get in a row and remembers your
   personal best. Start with the built-in "Mate in One" warm-up ladder.
+- **Drill the endgames** — on the setup screen, pick a **Starting position**
+  (King + Queen, King + Rook, or King + Pawn vs a lone King) and practise
+  converting the win against the engine's best defence.
 - **Play hands-free** — hold the spacebar and just say your move out loud
   ("knight d3", "castle kingside"), and ask for a hint by voice
   ("what should I play?").

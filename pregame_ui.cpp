@@ -1,5 +1,6 @@
 #include "pregame_ui.h"
 
+#include "endgame_positions.h"
 #include "mat.h"
 #include "render_internal.h"
 #include "time_control.h"
@@ -45,6 +46,19 @@ constexpr float PG_GC_GAP      = 0.025f;
 constexpr float PG_GC_ROW_W    = 4 * PG_GC_BTN_SIZE + 3 * PG_GC_GAP;
 constexpr float PG_GC_X0       = -PG_GC_ROW_W * 0.5f;
 constexpr float PG_GC_Y        =  0.14f;     // top edge of the button row
+
+// "Starting position" row of ENDGAME_START_COUNT buttons (Std / KQ /
+// KR / KP) for the endgame trainer. Sits in the gap between the ELO
+// slider and the Start button. Wider cells than the games-count digits
+// because the labels are 2-3 characters. Hidden alongside the
+// games-count row (2-player / chessnut paths force a standard board).
+constexpr float PG_SP_BTN_W = 0.115f;
+constexpr float PG_SP_BTN_H = 0.085f;
+constexpr float PG_SP_GAP   = 0.022f;
+constexpr float PG_SP_ROW_W = ENDGAME_START_COUNT * PG_SP_BTN_W +
+                              (ENDGAME_START_COUNT - 1) * PG_SP_GAP;
+constexpr float PG_SP_X0    = -PG_SP_ROW_W * 0.5f;
+constexpr float PG_SP_Y     = -0.44f;        // top edge of the button row
 
 // Time-control dropdown. Sits between the games-count row and the
 // ELO label. When collapsed, only the head is visible; when open, a
@@ -125,6 +139,15 @@ int pregame_hit_test(double mx, double my, int width, int height,
                 return 7 + i;          // 7..10 → 1..4 games
             }
         }
+        // Starting-position row (endgame trainer). 11.. → start_pos index.
+        for (int i = 0; i < ENDGAME_START_COUNT; ++i) {
+            float bx = PG_SP_X0 + static_cast<float>(i) *
+                       (PG_SP_BTN_W + PG_SP_GAP);
+            if (ndc_x >= bx && ndc_x <= bx + PG_SP_BTN_W &&
+                ndc_y >= PG_SP_Y - PG_SP_BTN_H && ndc_y <= PG_SP_Y) {
+                return 11 + i;         // 11.. → ENDGAME_STARTS index
+            }
+        }
     }
 
     if (ndc_x >= PG_TC_HEAD_X && ndc_x <= PG_TC_HEAD_X + PG_TC_HEAD_W &&
@@ -155,6 +178,8 @@ void renderer_draw_pregame(bool human_plays_white,
                            int game_count,
                            int game_count_hover,
                            bool hide_game_count,
+                           int start_pos,
+                           int start_pos_hover,
                            int width, int height, int hover) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -209,6 +234,23 @@ void renderer_draw_pregame(bool human_plays_white,
             }
             add_quad(bx, PG_GC_Y, PG_GC_BTN_SIZE, PG_GC_BTN_SIZE,
                      r, g, b, alpha);
+        }
+
+        // Starting-position row (endgame trainer), same tinting rules.
+        for (int i = 0; i < ENDGAME_START_COUNT; ++i) {
+            float bx = PG_SP_X0 + static_cast<float>(i) *
+                       (PG_SP_BTN_W + PG_SP_GAP);
+            const bool selected = (start_pos == i);
+            const bool hovered  = (start_pos_hover == i + 1);
+            float r, g, b, alpha;
+            if (selected) {
+                r = 0.55f; g = 0.45f; b = 0.20f;   // gold-ish
+                alpha = hovered ? 1.0f : 0.92f;
+            } else {
+                r = 0.18f; g = 0.22f; b = 0.30f;   // slate
+                alpha = hovered ? 0.85f : 0.65f;
+            }
+            add_quad(bx, PG_SP_Y, PG_SP_BTN_W, PG_SP_BTN_H, r, g, b, alpha);
         }
     }
 
@@ -496,6 +538,33 @@ void renderer_draw_pregame(bool human_plays_white,
     add_screen_string(ui_verts, -0.92f, 0.91f, bkw, bkh, back_text);
     int back_end = static_cast<int>(ui_verts.size() / 5);
 
+    // Starting-position row: a "Starting position" header above the
+    // Std / KQ / KR / KP buttons, then each button's short label
+    // centred on its cell (mirrors the games-count digits).
+    int sp_header_end = back_end;
+    int sp_labels_end = back_end;
+    if (!hide_game_count) {
+        float spcw = 0.020f, spch = 0.030f;
+        std::string sp_header = "Starting position";
+        float sphw = sp_header.size() * spcw * 0.7f;
+        add_screen_string(ui_verts, -sphw * 0.5f, PG_SP_Y + 0.050f,
+                          spcw, spch, sp_header);
+        sp_header_end = static_cast<int>(ui_verts.size() / 5);
+
+        float lcw = 0.030f, lch = 0.044f;
+        for (int i = 0; i < ENDGAME_START_COUNT; ++i) {
+            float bx = PG_SP_X0 + static_cast<float>(i) *
+                       (PG_SP_BTN_W + PG_SP_GAP);
+            std::string lbl = ENDGAME_STARTS[i].short_label;
+            float lw = lbl.size() * lcw * 0.7f;
+            add_screen_string(ui_verts,
+                              bx + (PG_SP_BTN_W - lw) * 0.5f,
+                              PG_SP_Y - (PG_SP_BTN_H - lch) * 0.5f,
+                              lcw, lch, lbl);
+        }
+        sp_labels_end = static_cast<int>(ui_verts.size() / 5);
+    }
+
     GLuint uvao, uvbo;
     glGenVertexArrays(1, &uvao); glGenBuffers(1, &uvbo);
     glBindVertexArray(uvao);
@@ -586,6 +655,18 @@ void renderer_draw_pregame(bool human_plays_white,
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     0.95f * k, 0.84f * k, 0.55f * k, 1.0f);
         glDrawArrays(GL_TRIANGLES, start_end, back_end - start_end);
+    }
+
+    if (sp_header_end > back_end) {
+        // Header in muted slate, labels in the same warm tint as the
+        // games-count digits.
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.72f, 0.72f, 0.78f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, back_end, sp_header_end - back_end);
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.96f, 0.92f, 0.78f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, sp_header_end,
+                     sp_labels_end - sp_header_end);
     }
 
     glBindVertexArray(0);
