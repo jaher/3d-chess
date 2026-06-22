@@ -28,6 +28,10 @@ realistic lighting, wood textures, and reflections.
 - **Build a streak** — open **Practice** from the menu and solve tactics back to
   back; a streak counter tracks how many you get in a row and remembers your
   personal best. Start with the built-in "Mate in One" warm-up ladder.
+- **Track your progress** — the Practice screen shows a personal **tactics
+  rating** that rises and falls as you solve and miss, and points out your
+  **weakest area** (mates, forks, or pins) so you know what to drill. It's
+  remembered between sessions.
 - **Drill the endgames** — on the setup screen, pick a **Starting position**
   (King + Queen, King + Rook, or King + Pawn vs a lone King) and practise
   converting the win against the engine's best defence.

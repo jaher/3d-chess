@@ -59,6 +59,7 @@ int challenge_select_hit_test(double mx, double my, int width, int height,
 }
 
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
+                                    const std::string& profile_line,
                                     int width, int height, int hover_index) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glViewport(0, 0, width, height);
@@ -97,6 +98,15 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     std::string back_text = "< Back";
     add_screen_string(text_verts, CS_BACK_X + 0.04f, CS_BACK_Y - 0.020f, bw_cw, bw_ch, back_text);
     int back_end = static_cast<int>(text_verts.size() / 5);
+
+    // Learner summary under the title (rating + weakest area), centred.
+    int profile_end = back_end;
+    if (!profile_line.empty()) {
+        float pcw = 0.020f, pch = 0.030f;
+        float pw = profile_line.size() * pcw * 0.7f;
+        add_screen_string(text_verts, -pw * 0.5f, 0.50f, pcw, pch, profile_line);
+        profile_end = static_cast<int>(text_verts.size() / 5);
+    }
 
     // Challenge names — cell size matches CS_NAME_CW/CH so the button
     // sizing helper above produces labels that fit inside their button.
@@ -144,7 +154,14 @@ void renderer_draw_challenge_select(const std::vector<std::string>& challenge_na
     gold_label(hover_index == -2);
     glDrawArrays(GL_TRIANGLES, title_count, back_end - title_count);
 
-    int prev = back_end;
+    if (profile_end > back_end) {
+        // Soft sage so it reads as a quiet stat line, not a button.
+        glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                    0.74f, 0.80f, 0.72f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, back_end, profile_end - back_end);
+    }
+
+    int prev = profile_end;
     for (int i = 0; i < static_cast<int>(name_ends.size()); i++) {
         gold_label(hover_index == i);
         glDrawArrays(GL_TRIANGLES, prev, name_ends[i] - prev);

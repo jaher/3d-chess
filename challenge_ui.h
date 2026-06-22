@@ -4,7 +4,10 @@
 #include <vector>
 
 // Challenge select screen.
+// profile_line: optional one-line learner summary ("Tactics rating N …")
+// drawn under the title; pass "" to omit it.
 void renderer_draw_challenge_select(const std::vector<std::string>& challenge_names,
+                                    const std::string& profile_line,
                                     int width, int height, int hover_index);
 // Returns -2=back, -1=none, 0..N-1=challenge index.
 int challenge_select_hit_test(double mx, double my, int width, int height,

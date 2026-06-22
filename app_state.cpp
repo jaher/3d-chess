@@ -55,6 +55,7 @@
 #include "pawn_structure.h"
 #include "move_quality.h"
 #include "move_reason.h"
+#include "learner_profile.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -572,13 +573,17 @@ static void start_ai_animation(AppState& a,
 // ever reflects real solves.
 static void challenge_streak_record_solve(AppState& a) {
     a.challenge_streak++;
-    if (a.challenge_streak > a.challenge_best_streak) {
+    if (a.challenge_streak > a.challenge_best_streak)
         a.challenge_best_streak = a.challenge_streak;
-        app_settings_save(a);  // persist the new personal best
-    }
+    learner_record(a.learner,
+                   category_for_type(a.current_challenge.type), /*solved=*/true);
+    app_settings_save(a);  // persist best streak + learner profile
 }
 static void challenge_streak_record_mistake(AppState& a) {
     a.challenge_streak = 0;
+    learner_record(a.learner,
+                   category_for_type(a.current_challenge.type), /*solved=*/false);
+    app_settings_save(a);
 }
 
 static void handle_board_click(AppState& a, double mx, double my,
@@ -3556,8 +3561,25 @@ static void render_pregame(AppState& a, int width, int height) {
 }
 
 static void render_challenge_select(AppState& a, int width, int height) {
+    // Learner summary: shown once the player has solved/missed anything.
+    // Names the personal tactics rating and, when a category has enough
+    // attempts, the weakest area to nudge practice toward it.
+    std::string profile_line;
+    if (learner_total_attempts(a.learner) > 0) {
+        char buf[160];
+        TacticCategory w = learner_weakest(a.learner);
+        if (w != TacticCategory::Count) {
+            int pct = static_cast<int>(learner_accuracy(a.learner, w) * 100.0 + 0.5);
+            std::snprintf(buf, sizeof(buf),
+                          "Tactics rating %d     Weakest: %s %d%%",
+                          a.learner.rating, category_label(w), pct);
+        } else {
+            std::snprintf(buf, sizeof(buf), "Tactics rating %d", a.learner.rating);
+        }
+        profile_line = buf;
+    }
     renderer_draw_challenge_select(
-        a.challenge_names, width, height, a.challenge_select_hover);
+        a.challenge_names, profile_line, width, height, a.challenge_select_hover);
 }
 
 static void render_options(AppState& a, int width, int height) {
@@ -5609,6 +5631,25 @@ void app_settings_load(AppState& a) {
             // hand-edited file to zero; anything else is trusted.
             int v = std::atoi(val.c_str());
             a.challenge_best_streak = v > 0 ? v : 0;
+        } else if (key == "learner_rating") {
+            int v = std::atoi(val.c_str());
+            a.learner.rating = v > 0 ? v : LEARNER_START_RATING;
+        } else if (key.rfind("learner_", 0) == 0) {
+            // learner_<cat>_<solved|missed> counters. Parse the suffix
+            // and fold into the matching category stat; unknown keys are
+            // ignored so a newer build's file degrades gracefully.
+            int v = std::atoi(val.c_str());
+            if (v < 0) v = 0;
+            auto bump = [&](TacticCategory cat, bool solved) {
+                CategoryStat& s = a.learner.stats[static_cast<int>(cat)];
+                (solved ? s.solved : s.missed) = v;
+            };
+            if      (key == "learner_mate_solved") bump(TacticCategory::Mate, true);
+            else if (key == "learner_mate_missed") bump(TacticCategory::Mate, false);
+            else if (key == "learner_fork_solved") bump(TacticCategory::Fork, true);
+            else if (key == "learner_fork_missed") bump(TacticCategory::Fork, false);
+            else if (key == "learner_pin_solved")  bump(TacticCategory::Pin,  true);
+            else if (key == "learner_pin_missed")  bump(TacticCategory::Pin,  false);
         } else if (key == "chessnut_enabled") {
             // Don't immediately turn the bridge on here — app_init
             // runs before the platform's IO is fully primed. Instead
@@ -5670,6 +5711,18 @@ void app_settings_save(const AppState& a) {
     std::fprintf(f, "# 3d_chess user settings — auto-generated\n");
     std::fprintf(f, "splats_enabled=%d\n",   a.splats_enabled  ? 1 : 0);
     std::fprintf(f, "best_streak=%d\n",       a.challenge_best_streak);
+    std::fprintf(f, "learner_rating=%d\n",    a.learner.rating);
+    {
+        const CategoryStat& m = a.learner.stats[static_cast<int>(TacticCategory::Mate)];
+        const CategoryStat& fk = a.learner.stats[static_cast<int>(TacticCategory::Fork)];
+        const CategoryStat& pn = a.learner.stats[static_cast<int>(TacticCategory::Pin)];
+        std::fprintf(f, "learner_mate_solved=%d\n", m.solved);
+        std::fprintf(f, "learner_mate_missed=%d\n", m.missed);
+        std::fprintf(f, "learner_fork_solved=%d\n", fk.solved);
+        std::fprintf(f, "learner_fork_missed=%d\n", fk.missed);
+        std::fprintf(f, "learner_pin_solved=%d\n",  pn.solved);
+        std::fprintf(f, "learner_pin_missed=%d\n",  pn.missed);
+    }
     std::fprintf(f, "chessnut_enabled=%d\n", a.chessnut_enabled ? 1 : 0);
     const char* env_name = "medieval";
     if (a.environment == AppState::Environment::SagradaFamilia) {

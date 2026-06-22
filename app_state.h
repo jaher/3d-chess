@@ -2,6 +2,7 @@
 
 #include "board_renderer.h"  // PhysicsPiece, SummaryEntry
 #include "challenge.h"       // Challenge
+#include "learner_profile.h" // LearnerProfile
 #include "cloth_flag.h"      // ClothFlag
 #include "time_control.h"    // TimeControl, TIME_CONTROLS
 #include "chess_types.h"     // GameState, GameMode
@@ -318,6 +319,12 @@ struct AppState {
     // settings INI on desktop so it survives restarts.
     int challenge_streak = 0;
     int challenge_best_streak = 0;
+
+    // Learner model — per-category (mate / fork / pin) solved-vs-missed
+    // tallies and a personal tactics rating, fed from the same solve /
+    // mistake sites as the streak and surfaced on the Practice screen.
+    // Persisted to the settings INI alongside best_streak.
+    LearnerProfile learner;
 
     // Mistake feedback: set when the starter exhausts max_moves on a
     // mate_in_N puzzle without delivering checkmate. Triggers a

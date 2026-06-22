@@ -85,6 +85,7 @@ SHARED_SRCS := \
     ../opening_plans.cpp \
     ../move_quality.cpp \
     ../move_reason.cpp \
+    ../learner_profile.cpp \
     ../splat.cpp \
     ../packed_splats.cpp
 
