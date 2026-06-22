@@ -83,6 +83,7 @@ SHARED_SRCS := \
     ../tactics.cpp \
     ../pawn_structure.cpp \
     ../opening_plans.cpp \
+    ../move_quality.cpp \
     ../splat.cpp \
     ../packed_splats.cpp
 

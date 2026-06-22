@@ -21,6 +21,28 @@ enum GameMode {
     MODE_PUZZLE,           // chess.com puzzle of the day / random puzzle
 };
 
+// Per-move quality classification, assigned in app_eval_ready when the
+// post-move Stockfish eval lands. Stored in GameState::move_class,
+// indexed like score_history / snapshots (index s = the move that
+// produced snapshot s; index 0 is the start position → None). These
+// are the same buckets the voice coach speaks, now persisted so the
+// move list can badge them (NAG glyphs) and other surfaces can read
+// them. Ordering is not significant; values are stored as bytes.
+enum class MoveClass : uint8_t {
+    None = 0,    // not yet classified / not applicable
+    Book,        // known opening line (first 16 plies, small loss)
+    Brilliant,   // sound sacrifice the engine still rates #1   (!!)
+    Great,       // only good move found, or swung the category (!)
+    Best,        // matched the engine's first choice
+    Excellent,   // <=2% win-probability lost
+    Good,        // <=5% win-probability lost
+    Inaccuracy,  // 5-10% win-probability lost                  (?!)
+    Miss,        // had a clearly better only-move, didn't take (?!)
+    MissedWin,   // threw away a winning advantage              (?!)
+    Mistake,     // 10-20% win-probability lost                 (?)
+    Blunder,     // >20% win-probability lost                   (??)
+};
+
 extern const char* piece_filenames[PIECE_COUNT];
 extern const float piece_scale[PIECE_COUNT];
 
@@ -107,6 +129,13 @@ struct GameState {
     std::vector<std::string> move_history;
     std::vector<float> score_history;
     std::vector<BoardSnapshot> snapshots;
+    // Per-ply move-quality labels, parallel to score_history (and
+    // snapshots): move_class[s] classifies the move that produced
+    // snapshot s. Grown to match in app_eval_ready as each post-move
+    // eval lands; cleared with score_history on new-game / challenge
+    // reset. Defaults to MoveClass::None for unscored plies. See
+    // MoveClass.
+    std::vector<MoveClass> move_class;
 
     int64_t anim_start_time = 0;
     unsigned int tick_id = 0;

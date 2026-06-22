@@ -22,6 +22,7 @@ void game_reset(GameState& gs) {
     gs.analysis_index = 0;
     gs.move_history.clear();
     gs.score_history.clear();
+    gs.move_class.clear();
     gs.snapshots.clear();
     gs.rebuild_grid();
     gs.score_history.push_back(evaluate_position(gs));

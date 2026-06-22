@@ -2005,9 +2005,46 @@ static void draw_score_graph(const GameState& gs, bool human_plays_white) {
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
 
+// NAG-style suffix glyph for a move-quality class — empty for the
+// quiet classes (Book / Best / Excellent / Good / None) which are too
+// common to annotate. Matches GameState::move_class (filled in
+// app_eval_ready).
+static const char* move_class_nag(MoveClass c) {
+    switch (c) {
+        case MoveClass::Brilliant:  return "!!";
+        case MoveClass::Great:      return "!";
+        case MoveClass::Inaccuracy: return "?!";
+        case MoveClass::Miss:       return "?!";
+        case MoveClass::MissedWin:  return "?!";
+        case MoveClass::Mistake:    return "?";
+        case MoveClass::Blunder:    return "??";
+        default:                    return "";
+    }
+}
+
+// Text tint for a move-quality class. The quiet classes fall through
+// to the caller-supplied neutral grey, so good moves don't turn the
+// list into a rainbow — only the notable ones get colour.
+static void move_class_color(MoveClass c,
+                             float nr, float ng, float nb,
+                             float& r, float& g, float& b) {
+    switch (c) {
+        case MoveClass::Brilliant:  r = 0.10f; g = 0.85f; b = 0.78f; return; // teal
+        case MoveClass::Great:      r = 0.32f; g = 0.66f; b = 1.00f; return; // blue
+        case MoveClass::Inaccuracy: r = 0.96f; g = 0.83f; b = 0.28f; return; // yellow
+        case MoveClass::Miss:       r = 0.98f; g = 0.70f; b = 0.20f; return; // amber
+        case MoveClass::MissedWin:  r = 0.98f; g = 0.62f; b = 0.16f; return; // orange
+        case MoveClass::Mistake:    r = 0.98f; g = 0.52f; b = 0.14f; return; // orange
+        case MoveClass::Blunder:    r = 0.95f; g = 0.28f; b = 0.22f; return; // red
+        default:                    r = nr;   g = ng;   b = nb;   return; // neutral
+    }
+}
+
 // Algebraic move list below the score graph. Two columns (white /
-// black) per full move number; the currently-selected move during
-// analysis mode is tinted yellow.
+// black) per full move number. Each move's text is tinted and
+// suffixed with a NAG glyph (!!, !, ?!, ?, ??) by its quality class
+// (GameState::move_class); the currently-selected move during
+// analysis mode overrides everything in yellow.
 static void draw_move_list(const GameState& gs) {
     if (gs.snapshots.size() <= 1) return;
     glDisable(GL_DEPTH_TEST);
@@ -2035,14 +2072,39 @@ static void draw_move_list(const GameState& gs) {
     float row_w = num_w + half_row_w * 2 + col_gap;
     float ml_x0 = ml_center - row_w * 0.5f;
 
-    // Normal and highlighted entries separated so analysis-mode
-    // selection renders in a second draw call with a different colour.
-    struct MoveEntry {
-        std::vector<float> verts;
-        int snapshot_idx;
+    // Group entries by colour so the whole list still draws in a
+    // handful of batches rather than one call per move. Move numbers
+    // and unbadged moves share the neutral-grey bucket; each notable
+    // class gets its own colour; the analysis-selected move is held
+    // out and drawn last in yellow.
+    const float neutral_r = 0.80f, neutral_g = 0.80f, neutral_b = 0.80f;
+    struct ColorBucket { float r, g, b; std::vector<float> verts; };
+    std::vector<ColorBucket> buckets;
+    std::vector<float> hl_verts;  // analysis-selected move, drawn last
+
+    auto bucket_for = [&](float r, float g, float b) -> std::vector<float>& {
+        for (auto& bk : buckets)
+            if (bk.r == r && bk.g == g && bk.b == b) return bk.verts;
+        buckets.push_back({r, g, b, {}});
+        return buckets.back().verts;
     };
-    std::vector<MoveEntry> normal_entries;
-    std::vector<MoveEntry> highlight_entries;
+
+    // Append one classified move to the right colour bucket (or the
+    // highlight buffer when it's the analysis selection).
+    auto emit_move = [&](int snap, float x, float y) {
+        std::string alg = uci_to_algebraic(gs.snapshots[snap - 1],
+                                            gs.snapshots[snap].last_move);
+        MoveClass cls = (snap < static_cast<int>(gs.move_class.size()))
+                            ? gs.move_class[snap] : MoveClass::None;
+        alg += move_class_nag(cls);
+        if (gs.analysis_mode && gs.analysis_index == snap) {
+            add_screen_string(hl_verts, x, y, ch_w, ch_h, alg);
+        } else {
+            float r, g, b;
+            move_class_color(cls, neutral_r, neutral_g, neutral_b, r, g, b);
+            add_screen_string(bucket_for(r, g, b), x, y, ch_w, ch_h, alg);
+        }
+    };
 
     float y = ml_top;
     for (int move_num = first_move; move_num < first_move + visible_lines; move_num++) {
@@ -2050,49 +2112,38 @@ static void draw_move_list(const GameState& gs) {
         int black_snap = move_num * 2 + 2;
 
         std::string num_str = std::to_string(move_num + 1) + ".";
-        MoveEntry num_entry; num_entry.snapshot_idx = -1;
-        add_screen_string(num_entry.verts, ml_x0, y, ch_w, ch_h, num_str);
-        normal_entries.push_back(num_entry);
+        add_screen_string(bucket_for(neutral_r, neutral_g, neutral_b),
+                          ml_x0, y, ch_w, ch_h, num_str);
 
-        if (white_snap <= total_moves && white_snap < static_cast<int>(gs.snapshots.size())) {
-            std::string alg = uci_to_algebraic(gs.snapshots[white_snap - 1],
-                                                gs.snapshots[white_snap].last_move);
-            MoveEntry entry; entry.snapshot_idx = white_snap;
-            add_screen_string(entry.verts, ml_x0 + num_w, y, ch_w, ch_h, alg);
-            if (gs.analysis_mode && gs.analysis_index == white_snap)
-                highlight_entries.push_back(entry);
-            else
-                normal_entries.push_back(entry);
-        }
+        if (white_snap <= total_moves && white_snap < static_cast<int>(gs.snapshots.size()))
+            emit_move(white_snap, ml_x0 + num_w, y);
 
-        if (black_snap <= total_moves && black_snap < static_cast<int>(gs.snapshots.size())) {
-            std::string alg = uci_to_algebraic(gs.snapshots[black_snap - 1],
-                                                gs.snapshots[black_snap].last_move);
-            MoveEntry entry; entry.snapshot_idx = black_snap;
-            add_screen_string(entry.verts, ml_x0 + num_w + half_row_w + col_gap, y, ch_w, ch_h, alg);
-            if (gs.analysis_mode && gs.analysis_index == black_snap)
-                highlight_entries.push_back(entry);
-            else
-                normal_entries.push_back(entry);
-        }
+        if (black_snap <= total_moves && black_snap < static_cast<int>(gs.snapshots.size()))
+            emit_move(black_snap, ml_x0 + num_w + half_row_w + col_gap, y);
 
         y -= line_h;
     }
 
-    std::vector<float> normal_verts, hl_verts;
-    for (auto& e : normal_entries)
-        normal_verts.insert(normal_verts.end(), e.verts.begin(), e.verts.end());
-    for (auto& e : highlight_entries)
-        hl_verts.insert(hl_verts.end(), e.verts.begin(), e.verts.end());
-
+    // Pack every colour bucket + the highlight buffer into one VBO and
+    // draw each colour as its own range.
     std::vector<float> all_verts;
-    all_verts.insert(all_verts.end(), normal_verts.begin(), normal_verts.end());
-    int normal_count = static_cast<int>(normal_verts.size() / 5);
-    all_verts.insert(all_verts.end(), hl_verts.begin(), hl_verts.end());
-    int hl_count = static_cast<int>(hl_verts.size() / 5);
-    int total_count = normal_count + hl_count;
+    struct DrawRange { float r, g, b; int first, count; };
+    std::vector<DrawRange> ranges;
+    for (auto& bk : buckets) {
+        if (bk.verts.empty()) continue;
+        int first = static_cast<int>(all_verts.size() / 5);
+        all_verts.insert(all_verts.end(), bk.verts.begin(), bk.verts.end());
+        ranges.push_back({bk.r, bk.g, bk.b, first,
+                          static_cast<int>(bk.verts.size() / 5)});
+    }
+    if (!hl_verts.empty()) {
+        int first = static_cast<int>(all_verts.size() / 5);
+        all_verts.insert(all_verts.end(), hl_verts.begin(), hl_verts.end());
+        ranges.push_back({1.0f, 0.9f, 0.2f, first,
+                          static_cast<int>(hl_verts.size() / 5)});
+    }
 
-    if (total_count > 0) {
+    if (!all_verts.empty()) {
         GLuint mvao, mvbo;
         glGenVertexArrays(1, &mvao); glGenBuffers(1, &mvbo);
         glBindVertexArray(mvao);
@@ -2111,13 +2162,10 @@ static void draw_move_list(const GameState& gs) {
         glBindTexture(GL_TEXTURE_2D, g_font_tex);
         glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
 
-        if (normal_count > 0) {
-            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 0.80f, 0.80f, 0.80f, 0.9f);
-            glDrawArrays(GL_TRIANGLES, 0, normal_count);
-        }
-        if (hl_count > 0) {
-            glUniform4f(glGetUniformLocation(g_text_program, "uColor"), 1.0f, 0.9f, 0.2f, 1.0f);
-            glDrawArrays(GL_TRIANGLES, normal_count, hl_count);
+        GLint cloc = glGetUniformLocation(g_text_program, "uColor");
+        for (auto& rg : ranges) {
+            glUniform4f(cloc, rg.r, rg.g, rg.b, 0.95f);
+            glDrawArrays(GL_TRIANGLES, rg.first, rg.count);
         }
 
         glBindVertexArray(0);

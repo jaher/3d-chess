@@ -52,6 +52,7 @@
 #include "endgame.h"
 #include "tactics.h"
 #include "pawn_structure.h"
+#include "move_quality.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -2378,6 +2379,30 @@ void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
     }
 }
 
+// Spoken phrase for a move-quality class, or nullptr for the classes
+// the voice coach intentionally stays quiet on (None and Inaccuracy —
+// per user preference we don't speak small concessions). The visual
+// move-list badge still shows Inaccuracy; only the audio is gated.
+// Wording is preserved verbatim from the prior inline classifier so
+// the spoken output is byte-for-byte unchanged.
+static const char* move_class_speech(MoveClass c) {
+    switch (c) {
+        case MoveClass::Book:       return "Book move";
+        case MoveClass::Brilliant:  return "Brilliant move";
+        case MoveClass::Great:      return "Great move";
+        case MoveClass::MissedWin:  return "Missed win";
+        case MoveClass::Miss:       return "Miss";
+        case MoveClass::Best:       return "Best move";
+        case MoveClass::Excellent:  return "Excellent move";
+        case MoveClass::Good:       return "Good move";
+        case MoveClass::Mistake:    return "Mistake";
+        case MoveClass::Blunder:    return "Blunder";
+        case MoveClass::Inaccuracy: return nullptr;   // silent by preference
+        case MoveClass::None:       return nullptr;
+    }
+    return nullptr;
+}
+
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci, int game_id,
                     const std::string& second_uci, int second_cp) {
@@ -2584,178 +2609,89 @@ void app_eval_ready(AppState& a, int cp, int score_index,
     // perspective by score_history; flip the sign for whichever
     // side just moved. Skipped on the very first eval (no move
     // played yet) and when speak-moves is off.
-    if (a.voice_tts_enabled &&
-        a.mode == MODE_PLAYING && !gs.game_over &&
+    if (a.mode == MODE_PLAYING && !gs.game_over &&
         !gs.move_history.empty() && score_index >= 1) {
+        // Classify every move now (not just when voice is on) so the
+        // result can be persisted for the move-list badge; the spoken
+        // announcement is gated separately at the bottom of this block.
         // After execute_move, gs.white_turn flipped — so the
         // player who just moved is the opposite colour.
         bool white_just_moved = !gs.white_turn;
         float eval_before = gs.score_history[score_index - 1];
         float eval_after  = gs.score_history[score_index];
-        // Convert pawn units → centipawns and flip for player.
-        int cp_before = static_cast<int>(eval_before * 100.0f);
-        int cp_after  = static_cast<int>(eval_after  * 100.0f);
-        int cp_loss = white_just_moved
-            ? (cp_before - cp_after)
-            : (cp_after - cp_before);
-        if (cp_loss < 0) cp_loss = 0;  // can't help yourself by moving
 
-        // Centipawn → win-percentage logistic (chess.com / lichess
-        // style). The same 100 cp swing matters very differently at
-        // +800 (already winning) vs at +50 (still uncertain), so
-        // bucket on win-percentage swing rather than raw cp_loss.
-        // Coefficient 0.00368 matches lichess's published model.
-        auto cp_to_wp = [](int cp) -> float {
-            float k = -0.00368f * static_cast<float>(cp);
-            float w = 50.0f + 50.0f * (2.0f / (1.0f + std::exp(k)) - 1.0f);
-            if (w < 0.0f) return 0.0f;
-            if (w > 100.0f) return 100.0f;
-            return w;
-        };
-        // Player-relative cp at each endpoint (positive = good for
-        // the side that just moved).
-        int cp_pl_before = white_just_moved ? cp_before : -cp_before;
-        int cp_pl_after  = white_just_moved ? cp_after  : -cp_after;
-        float wp_loss = cp_to_wp(cp_pl_before) - cp_to_wp(cp_pl_after);
-        if (wp_loss < 0.0f) wp_loss = 0.0f;
+        // The numeric reasoning lives in the pure classify_move_quality()
+        // unit (move_quality.cpp, unit-tested). Here we only resolve the
+        // two board-aware inputs it can't derive on its own.
 
-        bool was_best = !cur(a).prev_eval_best_uci.empty() &&
-                        gs.move_history.back() == cur(a).prev_eval_best_uci;
+        // played_best: the move matches the engine's pre-move #1.
+        bool played_best = !cur(a).prev_eval_best_uci.empty() &&
+                           gs.move_history.back() == cur(a).prev_eval_best_uci;
 
-        // Bucket the player's evaluation into losing / equal /
-        // winning so we can detect category swings — that's what
-        // Brilliant / Great / Missed-Win classifications hinge on.
-        // Boundaries follow the standard ±1 pawn convention.
-        auto categorize = [](float pawn_units) -> int {
-            if (pawn_units >  1.0f) return  1;  // winning
-            if (pawn_units < -1.0f) return -1;  // losing
-            return 0;                            // equal
-        };
-        float pe_before = white_just_moved ? eval_before : -eval_before;
-        float pe_after  = white_just_moved ? eval_after  : -eval_after;
-        int cat_before = categorize(pe_before);
-        int cat_after  = categorize(pe_after);
-        int cat_delta  = cat_after - cat_before;
-
-        // Book move heuristic — first 8 full moves (16 plies) +
-        // a small evaluation loss is the casual definition. Real
-        // book detection needs a Polyglot opening database; this
-        // heuristic catches "you played a known opening line" for
-        // the cases that matter and stays out of the way after the
-        // opening transitions to middlegame territory.
-        bool in_opening = gs.move_history.size() <= 16;
-
-        // Missed Win: the position WAS winning before the move,
-        // and it's now equal or losing — i.e. the player threw
-        // away a winning advantage. Distinct from Mistake/Blunder
-        // because the framing matters: missing a win feels
-        // different from making a position worse from neutral.
-        bool missed_win = (cat_before ==  1) && (cat_after <  1) &&
-                          (cp_loss > 80);
-
-        // Mate-search noise suppression — when both endpoints are
-        // in mate territory on the SAME side, the cp delta is
-        // dominated by mate-distance shifts (e.g. +99 → +50 means
-        // mate-in-1 became mate-in-50, not "you blew it"). Sign
-        // flips in mate territory still classify (going from
-        // mating to being mated IS a blunder).
-        bool both_mate_same_side =
-            (eval_before * eval_after > 0.0f) &&
-            (std::abs(eval_before) >= 50.0f) &&
-            (std::abs(eval_after)  >= 50.0f);
-        (void)both_mate_same_side;
-
-        // --- chess.com-style "only-move" / Great-move detection.
-        // The pre-move position's MultiPV=2 split tells us how
-        // much better the engine's #1 was vs its #2. A large gap
-        // means the player either had to find the precise move
-        // (Great if they did) or had a clearly better option they
-        // didn't take (Miss).
-        const bool have_second_pv =
-            !cur(a).prev_eval_second_uci.empty();
-        float pv_gap_wp = 0.0f;
-        if (have_second_pv) {
-            int best_pl   = white_just_moved ? cur(a).prev_eval_best_cp
-                                              : -cur(a).prev_eval_best_cp;
-            int second_pl = white_just_moved ? cur(a).prev_eval_second_cp
-                                              : -cur(a).prev_eval_second_cp;
-            pv_gap_wp = cp_to_wp(best_pl) - cp_to_wp(second_pl);
-            if (pv_gap_wp < 0.0f) pv_gap_wp = 0.0f;
-        }
-        const bool only_move = have_second_pv && pv_gap_wp >= 8.0f;
-
-        // --- Brilliant: chess.com-style "you put real material on
-        // the line and the engine still picked the move." Detect
-        // by checking the just-moved piece's destination square
-        // for opponent attacks. If our minor-or-better piece sits
-        // on a square the opponent can capture from, AND the
-        // engine still rates the move #1, AND we're past the
-        // opening book, AND the position is still at least equal
-        // afterwards, that's the working definition of a sacrifice
-        // brilliant. Cheap proxy — doesn't model defenders, but
-        // most false positives end up filtered by the was_best gate
-        // anyway (the engine wouldn't pick a real hang).
-        bool brilliant = false;
-        if (was_best && cat_after >= 0 && !in_opening &&
-            !both_mate_same_side &&
-            !gs.move_history.empty()) {
-            int from_c, from_r, to_c, to_r;
-            if (parse_uci_move(gs.move_history.back(),
-                               from_c, from_r, to_c, to_r)) {
+        // moved_piece_en_prise: the just-moved minor-or-better piece
+        // landed on a square the opponent attacks — the cheap sacrifice
+        // proxy that (with played_best) gates a Brilliant. Doesn't model
+        // defenders; the played_best gate filters most false positives.
+        bool moved_piece_en_prise = false;
+        {
+            int fc, fr, tc, tr;
+            if (parse_uci_move(gs.move_history.back(), fc, fr, tc, tr)) {
                 static const float values[PIECE_COUNT] = {
                     0.0f, 9.0f, 3.25f, 3.0f, 5.0f, 1.0f
                 };
-                int dst_idx = gs.grid[to_r][to_c];
+                int dst_idx = gs.grid[tr][tc];
                 if (dst_idx >= 0 &&
                     static_cast<size_t>(dst_idx) < gs.pieces.size()) {
                     const BoardPiece& moved = gs.pieces[dst_idx];
-                    bool attacked = is_square_attacked(gs, to_c, to_r,
-                                                       !moved.is_white);
-                    if (attacked && values[moved.type] >= 3.0f) {
-                        brilliant = true;
-                    }
+                    if (values[moved.type] >= 3.0f &&
+                        is_square_attacked(gs, tc, tr, !moved.is_white))
+                        moved_piece_en_prise = true;
                 }
             }
         }
 
-        // --- Pick the most-distinctive applicable label. Order
-        // matters: Book first so opening moves don't get branded
-        // "Best"; Brilliant / Great / Missed-Win next because they
-        // describe *what changed*; ΔWP buckets last as routine
-        // commentary.
-        const char* phrase = nullptr;
-        if (in_opening && cp_loss <= 20)        phrase = "Book move";
-        else if (brilliant)                     phrase = "Brilliant move";
-        else if (was_best && only_move)         phrase = "Great move";
-        else if (was_best && cat_delta >= 1)    phrase = "Great move";
-        else if (missed_win)                    phrase = "Missed win";
-        else if (!was_best && only_move &&
-                 wp_loss >= 5.0f)               phrase = "Miss";
-        else if (was_best && wp_loss <= 1.0f)   phrase = "Best move";
-        else if (wp_loss <= 2.0f)               phrase = "Excellent move";
-        else if (wp_loss <= 5.0f)               phrase = "Good move";
-        // Inaccuracy band (5% < ΔWP ≤ 10%): intentionally silent.
-        // Per user preference, we don't call out small concessions
-        // — only Good and the louder Mistake/Blunder labels speak.
-        else if (wp_loss <= 10.0f)              phrase = nullptr;
-        else if (wp_loss <= 20.0f)              phrase = "Mistake";
-        else                                    phrase = "Blunder";
+        MoveQualityInput mqi;
+        mqi.eval_before          = eval_before;
+        mqi.eval_after           = eval_after;
+        mqi.white_just_moved     = white_just_moved;
+        mqi.played_best          = played_best;
+        mqi.moved_piece_en_prise = moved_piece_en_prise;
+        mqi.in_opening           = gs.move_history.size() <= 16;
+        mqi.have_second_pv       = !cur(a).prev_eval_second_uci.empty();
+        mqi.prev_best_cp         = cur(a).prev_eval_best_cp;
+        mqi.prev_second_cp       = cur(a).prev_eval_second_cp;
+        MoveQualityResult res = classify_move_quality(mqi);
+        MoveClass cls = res.cls;
+
+        const char* phrase = move_class_speech(cls);
 
         std::fprintf(stderr,
             "[classify] %s (cp_loss=%d wp_loss=%.1f%% pv_gap=%.1f%% "
             "brilliant=%d was_best=%d only_move=%d "
             "before=%.2f after=%.2f cat=%d→%d ply=%zu "
             "white_moved=%d)\n",
-            phrase ? phrase : "<none>", cp_loss, wp_loss, pv_gap_wp,
-            brilliant ? 1 : 0, was_best ? 1 : 0, only_move ? 1 : 0,
+            phrase ? phrase : "<none>", res.cp_loss, res.wp_loss, res.pv_gap_wp,
+            res.brilliant ? 1 : 0, played_best ? 1 : 0, res.only_move ? 1 : 0,
             eval_before, eval_after,
-            cat_before, cat_after,
+            res.cat_before, res.cat_after,
             gs.move_history.size(),
             white_just_moved ? 1 : 0);
-        // The classification is announced only when we have a
-        // pending move to combine it with — see the unified
-        // speak block below. Cache the phrase for now.
-        if (phrase && !both_mate_same_side) {
+
+        // Persist the badge parallel to score_history so the move list
+        // (and any future eval-graph dots) can render it whether or not
+        // voice is enabled. move_class[score_index] labels the move
+        // that produced snapshot score_index. Grow lazily to match.
+        if (cls != MoveClass::None) {
+            if (gs.move_class.size() != gs.score_history.size())
+                gs.move_class.resize(gs.score_history.size(),
+                                     MoveClass::None);
+            gs.move_class[score_index] = cls;
+        }
+
+        // Cache the spoken phrase for the unified speak block below
+        // (human moves only). Inaccuracy / None yield nullptr, so the
+        // audio output is byte-for-byte what it was before.
+        if (phrase) {
             cur(a).pending_move_classification = phrase;
         } else {
             cur(a).pending_move_classification.clear();
