@@ -207,6 +207,24 @@ bool endgame_menu_button_hit_test(double mx, double my,
 bool analysis_continue_button_hit_test(double mx, double my,
                                        int width, int height);
 
+// Hit-test for the algebraic move list (top-right HUD). Returns the
+// ply index (snapshot index) of a clicked move that has a "why?"
+// explanation available (gs.why_reason non-empty) — i.e. a flagged
+// mistake worth opening the panel on — or -1 for any other click.
+// Mirrors draw_move_list's layout; (mx,my) are in the same coordinate
+// space the other HUD hit-tests use (active sub-viewport, top-down
+// pixels with width/height the sub-viewport dims).
+int move_list_hit_test(double mx, double my, int width, int height,
+                       const GameState& gs);
+
+// Hit-test for the open "why?" panel's chrome. Returns 1 if the
+// minimize button was clicked (panel expanded), 2 if the collapsed
+// restore tab was clicked (panel minimized), or 0 otherwise. Coords use
+// the same space as move_list_hit_test. Only meaningful when
+// gs.why_ply >= 0.
+int why_panel_hit_test(double mx, double my, int width, int height,
+                       const GameState& gs);
+
 // Hit-test for the withdraw flag in the bottom-right corner. Uses
 // the deformed cloth's bounding box + a small NDC padding for
 // ergonomics, so the click region tracks the rippling cloth.

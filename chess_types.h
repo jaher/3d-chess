@@ -136,6 +136,21 @@ struct GameState {
     // reset. Defaults to MoveClass::None for unscored plies. See
     // MoveClass.
     std::vector<MoveClass> move_class;
+    // "Why?" panel data, parallel to move_class. best_move[s] is the
+    // engine's recommended move (UCI) for the position BEFORE the move
+    // that produced snapshot s — i.e. what the player could have played
+    // instead; why_reason[s] is a generated one-line explanation. Both
+    // are filled in app_eval_ready alongside move_class and cleared on
+    // reset. why_ply is the ply whose explanation panel is currently
+    // open (clicked in the move list), or -1 when closed.
+    std::vector<std::string> best_move;
+    std::vector<std::string> why_reason;
+    // why_ply is the ply whose explanation panel is open, or -1 when
+    // closed. why_last_ply remembers the most recently opened move so
+    // that, after the panel is closed, the top-right "i" info icon can
+    // bring it back. Both reset on new game / challenge.
+    int why_ply = -1;
+    int why_last_ply = -1;
 
     int64_t anim_start_time = 0;
     unsigned int tick_id = 0;

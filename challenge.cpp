@@ -293,6 +293,10 @@ void apply_fen_to_state(GameState& gs, const ParsedFEN& parsed) {
     gs.move_history.clear();
     gs.score_history.clear();
     gs.move_class.clear();
+    gs.best_move.clear();
+    gs.why_reason.clear();
+    gs.why_ply = -1;
+    gs.why_last_ply = -1;
     gs.snapshots.clear();
     gs.analysis_mode = false;
     gs.analysis_index = 0;

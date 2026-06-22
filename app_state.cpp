@@ -1808,6 +1808,50 @@ static void release_playing(AppState& a, double mx, double my,
         return;
     }
 
+    // "Why?" panel: clicking a flagged move in the move list (top-right
+    // HUD) opens / toggles its explanation. Single-game only — the
+    // hit-test and panel mirror draw_move_list's full-HUD layout. Works
+    // in both live play and analysis review; a click that misses a
+    // flagged move closes an open panel and falls through to normal
+    // handling.
+    if (N == 1) {
+        double dx_w = mx - a.press_x, dy_w = my - a.press_y;
+        if (dx_w*dx_w + dy_w*dy_w < 25.0) {
+            GameState& gw = cur_gs(a);
+            // Panel chrome: the "x" close button (panel open) or the
+            // top-right "i" info button (panel closed).
+            int act = why_panel_hit_test(active_mx, active_my,
+                                         sub_w, sub_h, gw);
+            if (act == 1) {              // close -> remove panel (keep last)
+                gw.why_ply = -1;
+                queue_redraw(a);
+                return;
+            }
+            if (act == 2) {              // info -> bring the panel back
+                gw.why_ply = gw.why_last_ply;
+                queue_redraw(a);
+                return;
+            }
+            int ply = move_list_hit_test(active_mx, active_my,
+                                         sub_w, sub_h, gw);
+            if (ply >= 0) {
+                if (gw.why_ply == ply) {
+                    gw.why_ply = -1;            // same move -> close
+                } else {
+                    gw.why_ply = ply;           // new move -> open
+                    gw.why_last_ply = ply;      // remember for the "i" icon
+                }
+                queue_redraw(a);
+                return;
+            }
+            if (gw.why_ply >= 0) {              // click elsewhere closes
+                gw.why_ply = -1;
+                queue_redraw(a);
+                // fall through to normal click handling
+            }
+        }
+    }
+
     // "Back to Menu" button is live during both game-over and
     // analysis mode (entered via the withdraw flag). Analysis mode
     // additionally gets a "Continue Playing" button that exits
@@ -2180,6 +2224,14 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
+    // ESC closes an open "Why?" explanation panel before any other
+    // playing-mode key handling (analysis nav, enter-analysis, etc.).
+    if (a.mode == MODE_PLAYING && gs.why_ply >= 0 && key == KEY_ESCAPE) {
+        gs.why_ply = -1;
+        queue_redraw(a);
+        return;
+    }
+
     // Dropdown-open is also modal — ESC collapses it.
     if (a.mode == MODE_PREGAME && a.pregame_tc_open) {
         if (key == KEY_ESCAPE) {
@@ -2401,6 +2453,64 @@ static const char* move_class_speech(MoveClass c) {
         case MoveClass::None:       return nullptr;
     }
     return nullptr;
+}
+
+// Lowercase piece name for the "why?" reason text.
+static const char* why_piece_name(PieceType t) {
+    switch (t) {
+        case QUEEN:  return "queen";
+        case ROOK:   return "rook";
+        case BISHOP: return "bishop";
+        case KNIGHT: return "knight";
+        case PAWN:   return "pawn";
+        default:     return "king";
+    }
+}
+
+// Algebraic square name (e.g. "f6") from internal col/row. UCI files
+// run a-h with col, ranks 1-8 with row (row 0 == rank 1), matching
+// parse_uci_move.
+static std::string why_square_name(int c, int r) {
+    std::string s;
+    s += static_cast<char>('a' + c);
+    s += static_cast<char>('1' + r);
+    return s;
+}
+
+// One-line, board-grounded explanation of why a flagged move was a
+// concession. gs is the position AFTER the move (white_turn has already
+// flipped, so the side that just moved is !gs.white_turn). The concrete
+// case we can detect cheaply is a hung piece — a friendly piece the
+// opponent now attacks that nothing defends; that's the most common
+// reason and reads well. Otherwise we fall back to a class-based line.
+// Not a deep engine analysis (no opponent-PV lookahead) — honest and
+// useful for v1; the 3D ghost line is the planned follow-up.
+static std::string generate_why_reason(const GameState& gs, MoveClass cls) {
+    const bool mover_white = !gs.white_turn;
+    static const float val[PIECE_COUNT] = {
+        0.0f, 9.0f, 3.25f, 3.0f, 5.0f, 1.0f
+    };
+    int hang_c = -1, hang_r = -1; PieceType hang_t = PAWN; float hang_v = 0.0f;
+    for (const auto& p : gs.pieces) {
+        if (!p.alive || p.is_white != mover_white || p.type == KING) continue;
+        bool attacked = is_square_attacked(gs, p.col, p.row, !mover_white);
+        bool defended = is_square_attacked(gs, p.col, p.row,  mover_white);
+        if (attacked && !defended && val[p.type] > hang_v) {
+            hang_v = val[p.type]; hang_c = p.col; hang_r = p.row; hang_t = p.type;
+        }
+    }
+    if (hang_c >= 0) {
+        return std::string("Leaves the ") + why_piece_name(hang_t) +
+               " on " + why_square_name(hang_c, hang_r) + " hanging.";
+    }
+    switch (cls) {
+        case MoveClass::Blunder:    return "A losing move - a much stronger option was available.";
+        case MoveClass::MissedWin:  return "Lets a winning advantage slip away.";
+        case MoveClass::Mistake:    return "Inaccurate - concedes a clear edge.";
+        case MoveClass::Miss:       return "Misses a clearly stronger move.";
+        case MoveClass::Inaccuracy: return "A small concession; a more precise move held more.";
+        default:                    return "";
+    }
 }
 
 void app_eval_ready(AppState& a, int cp, int score_index,
@@ -2686,6 +2796,25 @@ void app_eval_ready(AppState& a, int cp, int score_index,
                 gs.move_class.resize(gs.score_history.size(),
                                      MoveClass::None);
             gs.move_class[score_index] = cls;
+            // Stash the "why?" panel data for the mistake-ish classes
+            // (the ones worth explaining). best_move is the engine's
+            // recommendation for the position the player faced
+            // (prev_eval_best_uci); why_reason is a board-grounded
+            // one-liner. Positive / quiet moves get no explanation, so
+            // the move list only opens a panel where there's something
+            // to say.
+            const bool explain =
+                cls == MoveClass::Inaccuracy || cls == MoveClass::Miss ||
+                cls == MoveClass::MissedWin  || cls == MoveClass::Mistake ||
+                cls == MoveClass::Blunder;
+            if (gs.best_move.size() != gs.score_history.size())
+                gs.best_move.resize(gs.score_history.size(), std::string());
+            if (gs.why_reason.size() != gs.score_history.size())
+                gs.why_reason.resize(gs.score_history.size(), std::string());
+            gs.best_move[score_index]  =
+                explain ? cur(a).prev_eval_best_uci : std::string();
+            gs.why_reason[score_index] =
+                explain ? generate_why_reason(gs, cls) : std::string();
         }
 
         // Cache the spoken phrase for the unified speak block below

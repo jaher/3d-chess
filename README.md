@@ -19,7 +19,8 @@ realistic lighting, wood textures, and reflections.
   Rapid, Blitz, or Bullet clocks, or no clock at all.
 - **Follow the game as it unfolds** — a live evaluation graph shows who's ahead,
   and the move list flags each move's quality with colour-coded marks
-  (brilliant, mistake, blunder…) so you can see where the game turned.
+  (brilliant, mistake, blunder…) so you can see where the game turned. Tap a
+  flagged move to see *why* it was a mistake and what to play instead.
 - **Replay and review** — step back through the whole game move by move at any
   time to see where it turned.
 - **Solve puzzles** — built-in checkmate challenges, fork-and-pin tactics, and
