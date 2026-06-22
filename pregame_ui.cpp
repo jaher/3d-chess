@@ -438,10 +438,12 @@ void renderer_draw_pregame(bool human_plays_white,
             float bx = PG_GC_X0 + static_cast<float>(i) *
                        (PG_GC_BTN_SIZE + PG_GC_GAP);
             std::string digit = std::string(1, static_cast<char>('1' + i));
-            float dw = digit.size() * dcw * 0.7f;
+            // Centre the glyph cell on the button box (use the full cell
+            // width/height, not the tighter advance width — otherwise the
+            // digit drifts toward the bottom-right of the square).
             add_screen_string(ui_verts,
-                              bx + (PG_GC_BTN_SIZE - dw) * 0.5f,
-                              PG_GC_Y - (PG_GC_BTN_SIZE - dch) * 0.5f - 0.005f,
+                              bx + (PG_GC_BTN_SIZE - dcw) * 0.5f,
+                              PG_GC_Y - (PG_GC_BTN_SIZE - dch) * 0.5f,
                               dcw, dch, digit);
         }
         gc_digits_end = static_cast<int>(ui_verts.size() / 5);
