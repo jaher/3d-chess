@@ -1750,6 +1750,32 @@ static void release_puzzle(AppState& a, double mx, double my,
     if (is_click) handle_board_click(a, mx, my, width, height);
 }
 
+// "Why?" panel board preview: rewind the board to the position the
+// player faced (snapshot P-1) so the engine's recommended move can be
+// ghosted on it. Reuses analysis mode for the state save/restore and
+// input freeze; remembers whether WE entered analysis so closing the
+// panel only returns to the live game in that case.
+static void why_open_preview(AppState& a, int P) {
+    GameState& gs = cur_gs(a);
+    if (!gs.analysis_mode && !gs.ai_thinking && !gs.ai_animating) {
+        game_enter_analysis(gs);
+        gs.why_entered_analysis = true;
+    }
+    if (gs.analysis_mode && P >= 1 &&
+        P - 1 < static_cast<int>(gs.snapshots.size())) {
+        gs.analysis_index = P - 1;
+        gs.restore_snapshot(P - 1);
+    }
+}
+
+static void why_close_preview(AppState& a) {
+    GameState& gs = cur_gs(a);
+    if (gs.why_entered_analysis) {
+        game_exit_analysis(gs);
+        gs.why_entered_analysis = false;
+    }
+}
+
 static void release_playing(AppState& a, double mx, double my,
                             int width, int height) {
     // Pieces-missing modal eats every click while open. Drawn over
@@ -1820,15 +1846,11 @@ static void release_playing(AppState& a, double mx, double my,
             GameState& gw = cur_gs(a);
             // Panel chrome: the "x" close button (panel open) or the
             // top-right "i" info button (panel closed).
-            int act = why_panel_hit_test(active_mx, active_my,
-                                         sub_w, sub_h, gw);
-            if (act == 1) {              // close -> remove panel (keep last)
+            // "x" close button (only when the panel is open).
+            if (why_panel_hit_test(active_mx, active_my,
+                                   sub_w, sub_h, gw) == 1) {
+                why_close_preview(a);
                 gw.why_ply = -1;
-                queue_redraw(a);
-                return;
-            }
-            if (act == 2) {              // info -> bring the panel back
-                gw.why_ply = gw.why_last_ply;
                 queue_redraw(a);
                 return;
             }
@@ -1836,18 +1858,20 @@ static void release_playing(AppState& a, double mx, double my,
                                          sub_w, sub_h, gw);
             if (ply >= 0) {
                 if (gw.why_ply == ply) {
+                    why_close_preview(a);
                     gw.why_ply = -1;            // same move -> close
                 } else {
                     gw.why_ply = ply;           // new move -> open
-                    gw.why_last_ply = ply;      // remember for the "i" icon
+                    why_open_preview(a, ply);   // rewind board + show ghost
                 }
                 queue_redraw(a);
                 return;
             }
             if (gw.why_ply >= 0) {              // click elsewhere closes
+                why_close_preview(a);
                 gw.why_ply = -1;
                 queue_redraw(a);
-                // fall through to normal click handling
+                return;                         // consume — don't also act on the board
             }
         }
     }
@@ -2227,6 +2251,7 @@ void app_key(AppState& a, AppKey key) {
     // ESC closes an open "Why?" explanation panel before any other
     // playing-mode key handling (analysis nav, enter-analysis, etc.).
     if (a.mode == MODE_PLAYING && gs.why_ply >= 0 && key == KEY_ESCAPE) {
+        why_close_preview(a);
         gs.why_ply = -1;
         queue_redraw(a);
         return;

@@ -145,12 +145,14 @@ struct GameState {
     // open (clicked in the move list), or -1 when closed.
     std::vector<std::string> best_move;
     std::vector<std::string> why_reason;
-    // why_ply is the ply whose explanation panel is open, or -1 when
-    // closed. why_last_ply remembers the most recently opened move so
-    // that, after the panel is closed, the top-right "i" info icon can
-    // bring it back. Both reset on new game / challenge.
+    // why_ply is the ply whose explanation panel is open (clicked in the
+    // move list), or -1 when closed. Reset on new game / challenge.
     int why_ply = -1;
-    int why_last_ply = -1;
+    // True when opening a "why?" panel put the game into analysis mode
+    // to rewind the board to the pre-move position (so the engine's
+    // recommended move can be ghosted on it). Closing the panel exits
+    // analysis only when we were the ones who entered it.
+    bool why_entered_analysis = false;
 
     int64_t anim_start_time = 0;
     unsigned int tick_id = 0;

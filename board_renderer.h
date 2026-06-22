@@ -217,11 +217,9 @@ bool analysis_continue_button_hit_test(double mx, double my,
 int move_list_hit_test(double mx, double my, int width, int height,
                        const GameState& gs);
 
-// Hit-test for the open "why?" panel's chrome. Returns 1 if the
-// minimize button was clicked (panel expanded), 2 if the collapsed
-// restore tab was clicked (panel minimized), or 0 otherwise. Coords use
-// the same space as move_list_hit_test. Only meaningful when
-// gs.why_ply >= 0.
+// Hit-test for the open "why?" panel's "x" close button. Returns 1 if
+// it was clicked, or 0 otherwise. Coords use the same space as
+// move_list_hit_test. Only meaningful when gs.why_ply >= 0.
 int why_panel_hit_test(double mx, double my, int width, int height,
                        const GameState& gs);
 

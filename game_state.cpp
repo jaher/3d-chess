@@ -26,7 +26,7 @@ void game_reset(GameState& gs) {
     gs.best_move.clear();
     gs.why_reason.clear();
     gs.why_ply = -1;
-    gs.why_last_ply = -1;
+    gs.why_entered_analysis = false;
     gs.snapshots.clear();
     gs.rebuild_grid();
     gs.score_history.push_back(evaluate_position(gs));

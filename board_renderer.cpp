@@ -2254,24 +2254,19 @@ namespace why_ui {
     // Close button ("x") hit area: the panel's top-right corner.
     constexpr float close_x0 = 0.466f, close_x1 = 0.518f;
     constexpr float close_y0 = -0.810f, close_y1 = -0.758f;
-    // Info button ("i"): small square in the screen's top-right corner,
-    // shown while the panel is closed so the user can bring it back.
-    constexpr float info_x0 = 0.948f, info_x1 = 0.996f;
-    constexpr float info_y0 = 0.948f, info_y1 = 0.996f;
 }
 
-// "Why?" explanation panel. When gs.why_ply >= 0 it draws a bottom-
-// centre card (move + quality label, the engine's preferred move, a
-// one-line reason) with an "x" close button. When the panel is closed
-// but a move was previously explained (gs.why_last_ply set), it instead
-// draws a small "i" info button in the top-right corner that reopens it.
+// "Why?" explanation panel — a bottom-centre card shown when a flagged
+// move's panel is open (gs.why_ply >= 0): the move + quality label, the
+// engine's preferred move, a one-line reason, and an "x" close button.
+// Closed by "x" / Escape / clicking off; reopen by clicking the move in
+// the list again.
 static void draw_why_panel(const GameState& gs, int width, int height) {
     const int P = gs.why_ply;
     const bool show_panel =
         P >= 1 && P < static_cast<int>(gs.snapshots.size()) &&
         P < static_cast<int>(gs.move_class.size());
-    const bool show_info = (P < 0) && (gs.why_last_ply >= 1);
-    if (!show_panel && !show_info) return;
+    if (!show_panel) return;
 
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2296,32 +2291,11 @@ static void draw_why_panel(const GameState& gs, int width, int height) {
         glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size()/3));
         glBindVertexArray(0); glDeleteBuffers(1, &vbo); glDeleteVertexArrays(1, &vao);
     };
-    // Aspect-corrected filled circle (x radius shrunk so it reads round,
-    // not stretched, in NDC).
+    // Aspect ratio for the corner-anchored close "x" (NDC x gap shrunk
+    // so its pixel margin matches the vertical one).
     const float aspect = (height > 0) ? static_cast<float>(width) / height : 1.0f;
-    auto draw_circle = [&](float cx, float cy, float r, int segs,
-                           float cr, float cg, float cb, float ca) {
-        std::vector<float> v;
-        float rx = r / aspect, ry = r;
-        float step = 2.0f * static_cast<float>(M_PI) / segs;
-        for (int i = 0; i < segs; i++) {
-            float a0 = step*i, a1 = step*(i+1);
-            v.insert(v.end(), {cx, cy, 0,
-                cx+std::cos(a0)*rx, cy+std::sin(a0)*ry, 0,
-                cx+std::cos(a1)*rx, cy+std::sin(a1)*ry, 0});
-        }
-        GLuint vao, vbo; glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
-        glBindVertexArray(vao); glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size()*sizeof(float)), v.data(), GL_STREAM_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), cr, cg, cb, ca);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size()/3));
-        glBindVertexArray(0); glDeleteBuffers(1, &vbo); glDeleteVertexArrays(1, &vao);
-    };
 
-    // Text accumulator (one pass for both states), colour range per
-    // string.
+    // Text accumulator, colour range per string.
     std::vector<float> tv;
     struct TR { int first, count; float r, g, b; };
     std::vector<TR> trs;
@@ -2332,19 +2306,7 @@ static void draw_why_panel(const GameState& gs, int width, int height) {
         trs.push_back({f, static_cast<int>(tv.size()/5) - f, r, g, b});
     };
 
-    if (show_info) {
-        // Round info badge, matching the panel's translucent-dark +
-        // accent style: a soft-blue rim around a dark disc, with a
-        // lower-case "i" sitting inside.
-        float icx = (why_ui::info_x0 + why_ui::info_x1) * 0.5f;
-        float icy = (why_ui::info_y0 + why_ui::info_y1) * 0.5f;
-        float rO  = (why_ui::info_y1 - why_ui::info_y0) * 0.5f;
-        draw_circle(icx, icy, rO,          30, 0.34f, 0.60f, 0.92f, 0.92f); // soft-blue rim
-        draw_circle(icx, icy, rO - 0.007f, 30, 0.09f, 0.12f, 0.17f, 0.80f); // translucent dark fill
-        // Centre the glyph cell on the badge centre (cw/2, ch/2 offsets).
-        const float iw = 0.026f, ih = 0.034f;
-        add_text(icx - iw * 0.5f, icy + ih * 0.5f, iw, ih, "i", 0.82f, 0.90f, 1.0f);
-    } else {
+    {
         MoveClass cls = gs.move_class[P];
         std::string played = uci_to_algebraic(gs.snapshots[P - 1],
                                               gs.snapshots[P].last_move);
@@ -2409,23 +2371,17 @@ static void draw_why_panel(const GameState& gs, int width, int height) {
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
 
-// Hit-test for the "why?" chrome — see board_renderer.h. Returns 1 (the
-// panel's "x" close button, when open), 2 (the top-right "i" info
-// button, when closed with a remembered move), or 0.
+// Hit-test for the "why?" panel's "x" close button — see
+// board_renderer.h. Returns 1 if the close button was clicked (panel
+// open), or 0.
 int why_panel_hit_test(double mx, double my, int width, int height,
                        const GameState& gs) {
+    if (gs.why_ply < 0) return 0;
     float cx = 2.0f * static_cast<float>(mx) / width - 1.0f;
     float cy = 1.0f - 2.0f * static_cast<float>(my) / height;
     const float pad = 0.012f;   // forgiving hit area
-    if (gs.why_ply >= 0) {
-        if (cx >= why_ui::close_x0 - pad && cx <= why_ui::close_x1 + pad &&
-            cy >= why_ui::close_y0 - pad && cy <= why_ui::close_y1 + pad) return 1;
-        return 0;
-    }
-    if (gs.why_last_ply >= 1) {
-        if (cx >= why_ui::info_x0 - pad && cx <= why_ui::info_x1 + pad &&
-            cy >= why_ui::info_y0 - pad && cy <= why_ui::info_y1 + pad) return 2;
-    }
+    if (cx >= why_ui::close_x0 - pad && cx <= why_ui::close_x1 + pad &&
+        cy >= why_ui::close_y0 - pad && cy <= why_ui::close_y1 + pad) return 1;
     return 0;
 }
 
@@ -3056,7 +3012,11 @@ void renderer_draw_chessnut_missing_modal(const std::string& squares_msg,
 static void draw_game_over_overlay(const GameState& gs,
                                    bool endgame_menu_hover,
                                    bool continue_playing_hover) {
-    const bool visible = (gs.game_over && !gs.game_result.empty()) || gs.analysis_mode;
+    // While a "why?" panel is open the board is rewound into analysis
+    // mode just to show the ghost move — suppress the analysis overlay
+    // (dim + Continue/Back buttons) so only the panel is in view.
+    const bool visible = ((gs.game_over && !gs.game_result.empty()) ||
+                          gs.analysis_mode) && gs.why_ply < 0;
     const bool is_analysis = gs.analysis_mode && !gs.game_over;
     if (!visible) return;
 
@@ -4476,6 +4436,79 @@ void renderer_draw(GameState& gs,
         if (bp.is_white) set_material(g_program, 0.97f,0.95f,0.90f, 0,0.28f,1, 0);
         else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
         draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
+    }
+
+    // "Why?" ghost move — when a flagged-move panel is open and the
+    // board is rewound to that move's pre-move position, draw a
+    // translucent cyan ghost of the engine's recommended piece at its
+    // destination, plus an arrow from where the piece sits now. Shows
+    // "this is the move you should have played" on the right board.
+    if (gs.why_ply >= 1 && gs.analysis_mode &&
+        gs.analysis_index == gs.why_ply - 1 &&
+        gs.why_ply < static_cast<int>(gs.best_move.size()) &&
+        gs.best_move[gs.why_ply].size() >= 4) {
+        // Internal col mirrors the file (file_to_internal_col = 7-file);
+        // the row is rank-1. Matches parse_uci_move + the grid.
+        const std::string& uci = gs.best_move[gs.why_ply];
+        int fc = 7 - (uci[0] - 'a'), fr = uci[1] - '1';
+        int tc = 7 - (uci[2] - 'a'), tr = uci[3] - '1';
+        if (in_bounds(fc, fr) && in_bounds(tc, tr)) {
+            int idx = gs.grid[fr][fc];
+            if (idx >= 0 && idx < static_cast<int>(gs.pieces.size())) {
+                const BoardPiece& mp = gs.pieces[idx];
+                float wx, wz; square_center(tc, tr, wx, wz);
+                float s = BASE_PIECE_SCALE * piece_scale[mp.type];
+                Mat4 pm = piece_model_matrix(wx, wz, s, mp.is_white, rot_z_to_y);
+
+                // Translucent bright-cyan ghost of the moving piece at the
+                // destination (g_program is still bound from the piece
+                // loop above). High opacity so it clearly reads.
+                glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 0.78f);
+                set_material(g_program, 0.45f, 0.92f, 1.0f, 0, 0.22f, 1, 0);
+                draw_with_model(g_program, pm, g_pieces[mp.type].vao,
+                                g_pieces[mp.type].num_vertices);
+                glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+                glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+
+                // Thick bright-cyan arrow from the piece's square to the ghost.
+                glUseProgram(g_highlight_program);
+                glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                float ay = BOARD_Y + 0.02f;
+                float fx, fz, txc, tzc;
+                square_center(fc, fr, fx, fz);
+                square_center(tc, tr, txc, tzc);
+                float dx = txc-fx, dz = tzc-fz;
+                float len = std::sqrt(dx*dx+dz*dz);
+                if (len > 1e-3f) {
+                    float nx = -dz/len*0.075f, nz = dx/len*0.075f;
+                    float hl = 0.20f, hw = 0.17f;
+                    float hx = txc - dx/len*hl, hz = tzc - dz/len*hl;
+                    float hnx = -dz/len*hw, hnz = dx/len*hw;
+                    std::vector<float> av = {
+                        fx+nx,ay,fz+nz, fx-nx,ay,fz-nz, hx+nx,ay,hz+nz,
+                        fx-nx,ay,fz-nz, hx-nx,ay,hz-nz, hx+nx,ay,hz+nz,
+                        hx+hnx,ay,hz+hnz, hx-hnx,ay,hz-hnz, txc,ay,tzc
+                    };
+                    GLuint avao, avbo;
+                    glGenVertexArrays(1, &avao); glGenBuffers(1, &avbo);
+                    glBindVertexArray(avao); glBindBuffer(GL_ARRAY_BUFFER, avbo);
+                    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(av.size()*sizeof(float)), av.data(), GL_STREAM_DRAW);
+                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(float), (void*)0);
+                    glEnableVertexAttribArray(0);
+                    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"), 1, GL_FALSE, vp.m);
+                    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+                    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+                    glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"), 0.30f,0.92f,1.0f,0.95f);
+                    glDrawArrays(GL_TRIANGLES, 0, 9);
+                    glBindVertexArray(0); glDeleteBuffers(1, &avbo); glDeleteVertexArrays(1, &avao);
+                }
+                glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+                glUseProgram(g_program);
+            }
+        }
     }
 
     // Captured pieces. piece_model_matrix puts the piece's bottom on
