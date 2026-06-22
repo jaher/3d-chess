@@ -4622,10 +4622,12 @@ void renderer_draw(GameState& gs,
     float pulse = 1.0f - phase;
     pulse = pulse * pulse * (3.0f - 2.0f * pulse);
 
-    // Square-control heatmap (C key): flat per-square tints — blue =
-    // only white attacks it, red = only black, purple = contested.
-    // Drawn under the pieces (depth-tested) so it reads as board paint.
-    if (gs.show_control) {
+    // Square-control heatmap (C key, analysis/review only): flat per-
+    // square tints — blue = only white attacks it, red = only black,
+    // purple = contested. Drawn under the pieces (depth-tested) so it
+    // reads as board paint. Gated on analysis_mode so it can't appear
+    // during a normal live game.
+    if (gs.show_control && gs.analysis_mode) {
         std::vector<float> vw, vb, vc;   // white-control / black / contested
         for (int r = 0; r < 8; r++) {
             for (int c = 0; c < 8; c++) {

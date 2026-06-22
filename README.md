@@ -96,7 +96,7 @@ instant.
 | **Hold SPACE** (your turn) | Speak your move, then release to play it |
 | **A** or **←/→** | Enter analysis mode to replay the game |
 | **←/→** (in analysis) | Step back / forward one move |
-| **C** | Toggle the square-control heatmap (who controls each square) |
+| **C** (in analysis) | Toggle the square-control heatmap (who controls each square) |
 | **Escape** | Exit analysis, or close a dialog |
 
 ## How to Play

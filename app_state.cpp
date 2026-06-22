@@ -2267,12 +2267,11 @@ void app_key(AppState& a, AppKey key) {
         return;
     }
 
-    // C toggles the square-control heatmap overlay during a live game
-    // or analysis review — tints each square by which side attacks it
-    // more (a teaching aid; no engine call).
-    if (key == KEY_C &&
-        (a.mode == MODE_PLAYING || a.mode == MODE_CHALLENGE ||
-         a.mode == MODE_PUZZLE)) {
+    // C toggles the square-control heatmap overlay — a teaching aid
+    // that tints each square by which side attacks it more. Restricted
+    // to analysis / review mode (enter with A) so it never appears
+    // during a normal live game.
+    if (key == KEY_C && a.mode == MODE_PLAYING && cur_gs(a).analysis_mode) {
         GameState& g = cur_gs(a);
         g.show_control = !g.show_control;
         set_status(a, g.show_control ? "Control heatmap ON (C)"
