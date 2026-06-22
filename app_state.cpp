@@ -53,6 +53,7 @@
 #include "tactics.h"
 #include "pawn_structure.h"
 #include "move_quality.h"
+#include "move_reason.h"
 #include "cloth_flag.h"
 #include "mat.h"
 #include "voice_input.h"
@@ -2493,63 +2494,6 @@ static const char* move_class_speech(MoveClass c) {
     return nullptr;
 }
 
-// Lowercase piece name for the "why?" reason text.
-static const char* why_piece_name(PieceType t) {
-    switch (t) {
-        case QUEEN:  return "queen";
-        case ROOK:   return "rook";
-        case BISHOP: return "bishop";
-        case KNIGHT: return "knight";
-        case PAWN:   return "pawn";
-        default:     return "king";
-    }
-}
-
-// Algebraic square name (e.g. "f6") from internal col/row. UCI files
-// run a-h with col, ranks 1-8 with row (row 0 == rank 1), matching
-// parse_uci_move.
-static std::string why_square_name(int c, int r) {
-    std::string s;
-    s += static_cast<char>('a' + c);
-    s += static_cast<char>('1' + r);
-    return s;
-}
-
-// One-line, board-grounded explanation of why a flagged move was a
-// concession. gs is the position AFTER the move (white_turn has already
-// flipped, so the side that just moved is !gs.white_turn). The concrete
-// case we can detect cheaply is a hung piece — a friendly piece the
-// opponent now attacks that nothing defends; that's the most common
-// reason and reads well. Otherwise we fall back to a class-based line.
-// Not a deep engine analysis (no opponent-PV lookahead) — honest and
-// useful for v1; the 3D ghost line is the planned follow-up.
-static std::string generate_why_reason(const GameState& gs, MoveClass cls) {
-    const bool mover_white = !gs.white_turn;
-    static const float val[PIECE_COUNT] = {
-        0.0f, 9.0f, 3.25f, 3.0f, 5.0f, 1.0f
-    };
-    int hang_c = -1, hang_r = -1; PieceType hang_t = PAWN; float hang_v = 0.0f;
-    for (const auto& p : gs.pieces) {
-        if (!p.alive || p.is_white != mover_white || p.type == KING) continue;
-        bool attacked = is_square_attacked(gs, p.col, p.row, !mover_white);
-        bool defended = is_square_attacked(gs, p.col, p.row,  mover_white);
-        if (attacked && !defended && val[p.type] > hang_v) {
-            hang_v = val[p.type]; hang_c = p.col; hang_r = p.row; hang_t = p.type;
-        }
-    }
-    if (hang_c >= 0) {
-        return std::string("Leaves the ") + why_piece_name(hang_t) +
-               " on " + why_square_name(hang_c, hang_r) + " hanging.";
-    }
-    switch (cls) {
-        case MoveClass::Blunder:    return "A losing move - a much stronger option was available.";
-        case MoveClass::MissedWin:  return "Lets a winning advantage slip away.";
-        case MoveClass::Mistake:    return "Inaccurate - concedes a clear edge.";
-        case MoveClass::Miss:       return "Misses a clearly stronger move.";
-        case MoveClass::Inaccuracy: return "A small concession; a more precise move held more.";
-        default:                    return "";
-    }
-}
 
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci, int game_id,

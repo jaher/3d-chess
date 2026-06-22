@@ -16,7 +16,8 @@ SHARED_SRCS := \
     ../voice_input.cpp \
     ../voice_tts.cpp \
     ../puzzle.cpp \
-    ../move_quality.cpp
+    ../move_quality.cpp \
+    ../move_reason.cpp
 
 TEST_SRCS := \
     doctest_main.cpp \
@@ -27,7 +28,8 @@ TEST_SRCS := \
     voice_input_test.cpp \
     voice_tts_test.cpp \
     puzzle_test.cpp \
-    move_quality_test.cpp
+    move_quality_test.cpp \
+    move_reason_test.cpp
 
 HEADERS := doctest.h helpers.h
 
