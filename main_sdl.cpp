@@ -539,6 +539,7 @@ int main(int argc, char* argv[]) {
     app_voice_shutdown(g_app);
     voice_tts_shutdown();
     app_chessnut_shutdown(g_app);
+    audio_shutdown();          // close the audio device before SDL_Quit
 
     SDL_GL_DeleteContext(g_gl_ctx);
     SDL_DestroyWindow(g_window);

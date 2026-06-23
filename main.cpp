@@ -482,7 +482,8 @@ int main(int argc, char* argv[]) {
     app_enter_menu(g_app);
     gtk_main();
     app_voice_shutdown(g_app);
-    voice_tts_shutdown();
+    voice_tts_shutdown();      // stops TTS playback before the device closes
     app_chessnut_shutdown(g_app);
+    audio_shutdown();          // close the audio device + free clip buffers
     return 0;
 }

@@ -254,6 +254,26 @@ bool audio_init() {
     return true;
 }
 
+void audio_shutdown() {
+    audio_music_stop();
+    if (g_device) {
+        SDL_CloseAudioDevice(g_device);
+        g_device = 0;
+    }
+    // Clips are read by the audio callback; the device must be
+    // closed before we free their buffers.
+    for (auto& c : g_clips) {
+        if (c.buf) {
+            if (c.owned_by_free) SDL_free(c.buf);
+            else                 SDL_FreeWAV(c.buf);
+            c.buf = nullptr;
+        }
+        c.loaded = false;
+        c.owned_by_free = false;
+    }
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+}
+
 float audio_clip_duration_seconds(SoundEffect effect) {
     size_t i = static_cast<size_t>(effect);
     if (i >= g_clips.size()) return 0.0f;
