@@ -160,6 +160,13 @@ inline std::string make_move_cmd(int src_col, int src_row,
     return s;  // 7 bytes — firmware accepts 7..25
 }
 
+inline std::string make_move_cmd_uci(const std::string& uci, bool capture) {
+    if (uci.size() < 4) return std::string{};
+    int sc = uci[0] - 'a', sr = uci[1] - '1';
+    int dc = uci[2] - 'a', dr = uci[3] - '1';
+    return make_move_cmd(sc, sr, dc, dr, capture);
+}
+
 // Convenience: same but as a byte vector for the SimpleBLE
 // write_request path which takes ByteArray (== std::string for
 // SimpleBLE).
