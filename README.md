@@ -28,7 +28,7 @@ realistic lighting, wood textures, and reflections.
   the daily puzzle straight from chess.com.
 - **Build a streak** — open **Practice** from the menu and solve tactics back to
   back; a streak counter tracks how many you get in a row and remembers your
-  personal best. Start with the built-in "Mate in One" warm-up ladder.
+  personal best.
 - **Track your progress** — the Practice screen shows a personal **tactics
   rating** that rises and falls as you solve and miss, and points out your
   **weakest area** (mates, forks, or pins) so you know what to drill. A

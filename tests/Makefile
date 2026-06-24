@@ -32,7 +32,6 @@ TEST_SRCS := \
     puzzle_test.cpp \
     move_quality_test.cpp \
     move_reason_test.cpp \
-    training_content_test.cpp \
     learner_profile_test.cpp \
     openings_drills_test.cpp
 
