@@ -86,6 +86,14 @@ struct AppPlatform {
     // May be nullptr on platforms that don't support outbound HTTP
     // (e.g. tests) — callers must null-check before invoking.
     void (*trigger_puzzle_fetch)(bool daily);
+
+    // Online (WebRTC) multiplayer: relay the local player's just-played
+    // move (UCI, NUL-terminated, valid only for the call) to the remote
+    // opponent. Only the web driver wires this up (to OnlineChess.sendMove
+    // in peer-bridge.js); it is nullptr everywhere else, so callers must
+    // null-check. The opponent's reply comes back via
+    // app_remote_move_ready(), invoked from on_remote_move_from_js.
+    void (*trigger_send_move)(const char* uci);
 };
 
 // ===========================================================================
@@ -404,6 +412,16 @@ struct AppState {
     // renderer reads from gs.ai_anim_start. Separate from gs.ai_anim_start
     // because platforms measure in different units internally.
     int64_t ai_anim_start_us = 0;
+
+    // Online (WebRTC) multiplayer. When network_mode is on, the local
+    // player controls only network_local_white's side; the opponent's
+    // moves arrive over the data channel (app_remote_move_ready) instead
+    // of from Stockfish, and the local move is relayed via the platform's
+    // trigger_send_move hook. Reusing the single-player flow: clicks are
+    // already gated to human_plays_white (= network_local_white) and the
+    // opponent's move animates through the AI-move path.
+    bool network_mode = false;
+    bool network_local_white = true;
 
     // Pre-game setup screen state. Persists across menu <-> pregame
     // navigation so the user's last choices are remembered for the
@@ -728,6 +746,16 @@ void app_render(AppState& a, int width, int height);
 // uci may be empty to indicate "no move produced" — in that case
 // app_state picks a random legal black move as a fallback.
 void app_ai_move_ready(AppState& a, const char* uci, int game_id);
+
+// Online multiplayer. app_start_network_game sets up a fresh MODE_PLAYING
+// game where the local player controls local_is_white's side and the
+// opponent is remote. app_remote_move_ready applies the opponent's move
+// (UCI) — it animates through the same path as an AI move. Both are
+// invoked from the web driver's JS callbacks (chess_start_network_game /
+// on_remote_move_from_js).
+void app_start_network_game(AppState& a, bool local_is_white);
+void app_remote_move_ready(AppState& a, const char* uci);
+
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci = std::string(),
                     int game_id = 0,

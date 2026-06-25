@@ -970,13 +970,22 @@ static void handle_board_click(AppState& a, double mx, double my,
                     app_refresh_status(a);
                     trigger_eval(
                         a, static_cast<int>(gs.score_history.size()) - 1);
-                    // Two-player mode: no AI replies — both sides
-                    // are humans (one on the physical board, one on
-                    // screen, or both via clicks).
-                    if (!a.two_player_mode &&
-                        gs.white_turn != a.human_plays_white &&
-                        !gs.game_over)
+                    if (a.network_mode) {
+                        // Online game: relay this move to the remote
+                        // opponent. Their reply arrives via
+                        // app_remote_move_ready, never Stockfish.
+                        if (a.platform && a.platform->trigger_send_move &&
+                            !gs.move_history.empty())
+                            a.platform->trigger_send_move(
+                                gs.move_history.back().c_str());
+                    } else if (!a.two_player_mode &&
+                               gs.white_turn != a.human_plays_white &&
+                               !gs.game_over) {
+                        // Two-player mode: no AI replies — both sides
+                        // are humans (one on the physical board, one on
+                        // screen, or both via clicks).
                         trigger_ai(a);
+                    }
                 }
                 return;
             }
@@ -1022,6 +1031,7 @@ void app_enter_menu(AppState& a) {
     if (cur_gs(a).analysis_mode) game_exit_analysis(cur_gs(a));
 
     a.mode = MODE_MENU;
+    a.network_mode = false;   // leaving any online game
     menu_init_physics(a.menu_pieces);
     a.menu_start_time_us  = now_us(a);
     a.menu_last_update_us = a.menu_start_time_us;
@@ -1083,6 +1093,7 @@ static void resign_active_game(AppState& a) {
 
 void app_enter_pregame(AppState& a) {
     a.mode = MODE_PREGAME;
+    a.network_mode = false;   // the local-setup path is never an online game
     // Preserve a.human_plays_white, a.stockfish_elo, a.time_control
     // across reopens. Volatile state (drags, hovers, open dropdowns)
     // must be reset so re-entering the screen doesn't land in a
@@ -1189,7 +1200,10 @@ void app_enter_game(AppState& a) {
     // The modal auto-closes from the apply_sensor_frame baseline
     // path once a stable sensor frame confirms the layout matches
     // (or transitions to Missing / WrongLayout if it doesn't).
-    bool ai_will_open_first = !a.two_player_mode && !a.human_plays_white;
+    // In an online game the side the local player isn't on is the REMOTE
+    // opponent, never Stockfish — so never auto-open with the engine.
+    bool ai_will_open_first =
+        !a.two_player_mode && !a.human_plays_white && !a.network_mode;
     if (a.chessnut_connected) {
         a.chessnut_missing_modal_open = true;
         a.chessnut_missing_modal_type = AppState::ChessnutModalType::Positioning;
@@ -2663,6 +2677,44 @@ void app_ai_move_ready(AppState& a, const char* uci_c, int game_id) {
             std::fprintf(stderr, "AI move %s rejected; falling back\n",
                          uci.c_str());
         ai_random_fallback(a);
+    }
+}
+
+void app_start_network_game(AppState& a, bool local_is_white) {
+    // Online play: a normal single-board game, but the side the local
+    // player isn't on is the remote opponent. Clocks are off — there's
+    // no synced timer across the peer connection, so an independent
+    // clock per client would just drift. network_mode is set BEFORE
+    // app_enter_game so its "AI opens first" check stays suppressed.
+    a.network_mode        = true;
+    a.network_local_white = local_is_white;
+    a.two_player_mode     = false;
+    a.human_plays_white   = local_is_white;
+    a.pregame_game_count  = 1;
+    a.time_control        = TC_UNLIMITED;
+    app_enter_game(a);
+    set_status(a, local_is_white
+        ? "Online game — you are White. Make your move."
+        : "Online game — you are Black. Waiting for White…");
+}
+
+void app_remote_move_ready(AppState& a, const char* uci_c) {
+    if (!a.network_mode) return;
+    GameState& gs = cur_gs(a);
+    // Ignore if a move is mid-animation or the game's over — a
+    // well-behaved opponent only sends on their turn anyway.
+    if (gs.ai_animating || gs.game_over) return;
+    std::string uci = (uci_c && *uci_c) ? uci_c : "";
+    int fc, fr, tc, tr;
+    if (!uci.empty() && parse_uci_move(uci, fc, fr, tc, tr) &&
+        is_legal_ai_move(a, fc, fr, tc, tr)) {
+        // Animate + execute through the same path an AI reply uses —
+        // tick_ai_animation runs the move and the eval, and (because
+        // ai_anim_trigger_ai_after is unset) never calls Stockfish.
+        start_ai_animation(a, fc, fr, tc, tr);
+    } else {
+        std::fprintf(stderr, "[net] dropping illegal/garbled remote move '%s'\n",
+                     uci.c_str());
     }
 }
 

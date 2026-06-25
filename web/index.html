@@ -63,6 +63,45 @@
          can set it to fit the actual viewport. -->
     <canvas id="canvas" width="1" height="1"
             oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+    <!-- Online multiplayer overlay (WebRTC via peer-bridge.js). The
+         opponent's webcam sits in the upper-left corner (the in-canvas
+         HUD lives top-right); your own self-view is bottom-left. -->
+    <video id="remote-cam" autoplay playsinline
+           style="position:absolute; top:10px; left:10px; width:200px; max-width:32%;
+                  aspect-ratio:4/3; object-fit:cover; border-radius:8px; border:2px solid #555;
+                  background:#000; z-index:15; display:none;"></video>
+    <video id="local-cam" autoplay playsinline muted
+           style="position:absolute; bottom:10px; left:10px; width:120px; max-width:22%;
+                  aspect-ratio:4/3; object-fit:cover; border-radius:6px; border:1px solid #555;
+                  background:#000; z-index:15; display:none;"></video>
+
+    <div id="online-ui" style="position:absolute; top:10px; right:10px; z-index:20;
+                               font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; text-align:right;">
+      <button id="online-btn"
+              onclick="var p=document.getElementById('online-panel'); p.style.display = (p.style.display==='block'?'none':'block');"
+              style="padding:6px 12px; border:0; border-radius:6px; cursor:pointer;
+                     background:#3a6ea5; color:#fff;">Play online</button>
+      <div id="online-panel" style="display:none; margin-top:6px; padding:12px;
+                                    background:rgba(20,20,24,0.94); border:1px solid #333;
+                                    border-radius:8px; width:230px; text-align:left;">
+        <button onclick="window.OnlineChess && OnlineChess.host()"
+                style="width:100%; padding:8px; margin-bottom:8px; border:0; border-radius:6px;
+                       cursor:pointer; background:#2e7d46; color:#fff;">Host a game (you play White)</button>
+        <div style="display:flex; gap:6px;">
+          <input id="join-code" placeholder="paste host code"
+                 style="flex:1; min-width:0; padding:6px; border-radius:6px; border:1px solid #444;
+                        background:#111; color:#eee;">
+          <button onclick="window.OnlineChess && OnlineChess.join(document.getElementById('join-code').value)"
+                  style="padding:6px 10px; border:0; border-radius:6px; cursor:pointer;
+                         background:#3a6ea5; color:#fff;">Join</button>
+        </div>
+        <div id="online-code" style="display:none; margin-top:8px; padding:6px; user-select:all;
+                                     word-break:break-all; background:#000; border-radius:6px;
+                                     color:#7fd9c0; font:12px monospace;"></div>
+        <div id="online-status" style="margin-top:8px; color:#bbb; min-height:1.2em;"></div>
+      </div>
+    </div>
   </div>
   <div class="footer">
     Powered by <a href="https://stockfishchess.org/">Stockfish</a>
@@ -89,6 +128,11 @@
     that's vendored and only changes when we bump the submodule, which
     is rare enough that the Pages default 10 min HTML TTL handles it.
   -->
+  <!-- PeerJS (WebRTC signalling helper) for online multiplayer. Loaded
+       from a CDN; peer-bridge.js only references the global `Peer` when
+       the user hosts/joins, so load order vs. peer-bridge.js is flexible. -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
   <script>
     // Replaced by web/Makefile at link time (see BUILD_HASH).
     window.__BUILD_HASH = '__BUILD_HASH__';
@@ -279,7 +323,9 @@
         document.body.appendChild(s);
       }
       loadScript('stockfish-bridge.js' + v, function () {
-        loadScript('chess.js' + v);
+        loadScript('peer-bridge.js' + v, function () {
+          loadScript('chess.js' + v);
+        });
       });
     })();
   </script>

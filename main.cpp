@@ -192,6 +192,7 @@ static const AppPlatform g_platform = {
     plat_set_ai_elo,
     plat_request_quit,
     plat_trigger_puzzle_fetch,
+    nullptr,   // trigger_send_move: online multiplayer is web-only
 };
 
 // ---------------------------------------------------------------------------

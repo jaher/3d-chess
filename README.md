@@ -38,6 +38,9 @@ realistic lighting, wood textures, and reflections.
   Game, Ruy Lopez, Queen's Gambit, London System…). Play your side's moves and
   the book replies appear automatically; a wrong move rewinds so you can try
   the line again until it sticks.
+- **Play a friend online** *(browser)* — click **Play online**, host a game and
+  share the code (or paste a friend's), and play head-to-head over a direct
+  peer-to-peer connection — with your opponent's **webcam in the corner**.
 - **Play hands-free** — hold the spacebar and just say your move out loud
   ("knight d3", "castle kingside"), and ask for a hint by voice
   ("what should I play?").

@@ -172,10 +172,32 @@ static void plat_trigger_puzzle_fetch(bool daily) {
     js_request_puzzle(daily ? 1 : 0);
 }
 
+// --- Online multiplayer (WebRTC, driven by peer-bridge.js) ---
+// Relay the local player's move to the opponent over the data channel.
+EM_JS(void, js_send_move, (const char* uci), {
+    if (typeof OnlineChess !== 'undefined' && OnlineChess.sendMove)
+        OnlineChess.sendMove(UTF8ToString(uci));
+});
+static void plat_send_move(const char* uci) { js_send_move(uci); }
+
 extern "C" {
 EMSCRIPTEN_KEEPALIVE
 void on_puzzle_from_js(const char* body, int daily) {
     app_puzzle_ready(g_app, body ? body : "", daily != 0);
+}
+
+// peer-bridge.js calls this once the WebRTC connection is up:
+// local_is_white = 1 if this client is the host (White), 0 for the
+// joiner (Black).
+EMSCRIPTEN_KEEPALIVE
+void chess_start_network_game(int local_is_white) {
+    app_start_network_game(g_app, local_is_white != 0);
+}
+
+// peer-bridge.js calls this with the opponent's move (UCI) as it arrives.
+EMSCRIPTEN_KEEPALIVE
+void on_remote_move_from_js(const char* uci) {
+    app_remote_move_ready(g_app, uci ? uci : "");
 }
 }  // extern "C"
 
@@ -188,6 +210,7 @@ static const AppPlatform g_platform = {
     plat_set_ai_elo,
     plat_request_quit,
     plat_trigger_puzzle_fetch,
+    plat_send_move,   // trigger_send_move (online multiplayer)
 };
 
 // ---------------------------------------------------------------------------
