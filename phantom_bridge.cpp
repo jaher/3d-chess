@@ -1,17 +1,19 @@
-// Phantom Chessboard BLE bridge — SimpleBLE-backed. Siblings the
-// Chessnut Move bridge in chessnut_bridge.cpp. Different protocol
-// (single ASCII move-string write to a single characteristic) but
-// the threading model is identical: a worker thread drains a
-// command queue, all SimpleBLE calls happen there, status is
-// surfaced through a callback registered by app_state.cpp.
+// Phantom Chessboard BLE bridge — SimpleBLE-backed (firmware v0.3.0). Siblings
+// the Chessnut Move bridge in chessnut_bridge.cpp. Different protocol (an
+// opcode-framed game characteristic, see phantom_encode.h) but the threading
+// model is identical: a worker thread drains a command queue, all SimpleBLE
+// calls happen there, status is surfaced through a callback registered by
+// app_state.cpp.
 //
-// The Phantom protocol is partially verified — the motor-drive
-// channel and write framing are confirmed from the firmware
-// reverse-engineering documented in docs/PHANTOM.md. The notify-frame
-// formats are NOT confirmed; this driver subscribes to all
-// notify-capable characteristics and logs frames raw to stderr so
-// they can be captured the first time someone with a real Phantom
-// runs the app.
+// Protocol (decompiled from the official app, cross-checked on a real board):
+//   * On connect, after GATT discovery, we write the play-mode digit "2" to
+//     the mode characteristic so the board starts reporting sensor moves.
+//   * We subscribe to every notify-capable characteristic and forward frames
+//     raw as "NOTIFY <uuid> <hex>"; app_state.cpp parses the GAME-characteristic
+//     0x06 "detected move" frames into digital moves.
+//   * A move is pushed to the board as two writes to the GAME characteristic:
+//     a side frame ([0x0a]+"2") then a movement frame ([0x02]+"M e2-e4 P").
+// See docs/PHANTOM.md and phantom_encode.h for the wire format.
 
 #ifndef __EMSCRIPTEN__
 
@@ -30,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 // SimpleBLE's Config.h defines `static void reset_all()` inline,
 // which trips -Wunused-function when this TU doesn't reference it.
@@ -45,18 +48,19 @@
 
 namespace {
 
-SimpleBLE::ByteArray to_byte_array(const std::string& s) {
+SimpleBLE::ByteArray to_byte_array(const std::vector<uint8_t>& v) {
     SimpleBLE::ByteArray out;
-    out.reserve(s.size());
-    for (unsigned char b : s) out.push_back(static_cast<uint8_t>(b));
+    out.reserve(v.size());
+    for (uint8_t b : v) out.push_back(static_cast<uint8_t>(b));
     return out;
 }
 
 struct Command {
-    enum Kind { CONNECT_TO, MOVE, QUIT };
+    enum Kind { CONNECT_TO, WRITE, QUIT };
     Kind kind;
-    std::string addr;
-    std::string move_payload;
+    std::string addr;                 // CONNECT_TO
+    std::string char_uuid;            // WRITE: target characteristic
+    std::vector<uint8_t> payload;     // WRITE: bytes to write
 };
 
 }  // namespace
@@ -75,20 +79,30 @@ struct PhantomBridge::Impl {
 
     void stop() {
         if (!running_.exchange(false)) return;
-        enqueue({Command::QUIT, "", ""});
+        enqueue({Command::QUIT, "", "", {}});
         if (worker_.joinable()) worker_.join();
         on_status_ = nullptr;
     }
 
     void connect_to_address(const std::string& addr) {
-        enqueue({Command::CONNECT_TO, addr, ""});
+        enqueue({Command::CONNECT_TO, addr, "", {}});
     }
 
-    void send_move(int src_col, int src_row, int dst_col, int dst_row,
-                   bool capture) {
-        std::string payload = phantom::make_move_cmd(
-            src_col, src_row, dst_col, dst_row, capture);
-        enqueue({Command::MOVE, "", payload});
+    // Drive a move on the robot: side frame then movement frame, both to the
+    // GAME characteristic. Coordinates are file/rank indices (0 = a-file).
+    void send_move(int src_file, int src_row, int dst_file, int dst_row,
+                   bool capture, char piece) {
+        auto frames = phantom::make_move_frames(src_file, src_row,
+                                                dst_file, dst_row,
+                                                capture, piece);
+        enqueue({Command::WRITE, "", phantom::GAME_UUID, frames[0]});
+        enqueue({Command::WRITE, "", phantom::GAME_UUID, frames[1]});
+    }
+
+    void enter_play_mode() {
+        std::vector<uint8_t> payload(phantom::MODE_PLAY,
+                                     phantom::MODE_PLAY + 1);  // "2"
+        enqueue({Command::WRITE, "", phantom::MODE_UUID, payload});
     }
 
     bool running() const { return running_.load(); }
@@ -128,8 +142,8 @@ private:
                 case Command::CONNECT_TO:
                     do_connect(c.addr);
                     break;
-                case Command::MOVE:
-                    do_send_move(c.move_payload);
+                case Command::WRITE:
+                    do_write(c.char_uuid, c.payload);
                     break;
                 }
             } catch (const std::exception& e) {
@@ -234,19 +248,25 @@ private:
                 "[phantom/native]   service %s (%zu chars)\n",
                 s.uuid().c_str(), s.characteristics().size());
         }
-        if (char_to_service_.find(phantom::MOVE_CMD_UUID)
+        // The v0.3.0 protocol runs over the GAME characteristic. If it isn't
+        // present this is almost certainly an older-firmware board (whose
+        // motor-cmd lived on 7b204548-30c3…) that we no longer drive.
+        if (char_to_service_.find(phantom::GAME_UUID)
             == char_to_service_.end()) {
-            emit(std::string("ERROR move-cmd characteristic ")
-                 + phantom::MOVE_CMD_UUID
-                 + " not exposed by this peripheral");
+            std::string msg = std::string("ERROR game characteristic ")
+                 + phantom::GAME_UUID + " not exposed by this peripheral";
+            if (char_to_service_.find(phantom::LEGACY_MOVE_CMD_UUID)
+                != char_to_service_.end()) {
+                msg += " (looks like pre-0.3.0 firmware — unsupported)";
+            }
+            emit(msg);
             teardown_peripheral();
             return;
         }
 
-        // Subscribe to every notify-capable characteristic. Without
-        // a verified frame format we just log payloads raw — the
-        // first user with a real Phantom can paste the trace into a
-        // follow-up to lock in the parser.
+        // Subscribe to every notify-capable characteristic. The GAME
+        // characteristic's 0x06 frames carry detected moves; the rest are
+        // logged raw for diagnostics. app_state.cpp does the parsing.
         for (const auto& [svc_uuid, char_uuid] : notify_chars) {
             try {
                 peripheral_.notify(svc_uuid, char_uuid,
@@ -272,30 +292,42 @@ private:
                 static_cast<unsigned>(mtu));
         } catch (...) { /* MTU getter is best-effort */ }
 
+        // Enter play mode so the board begins pushing detected moves.
+        do_write(phantom::MODE_UUID,
+                 std::vector<uint8_t>(phantom::MODE_PLAY,
+                                      phantom::MODE_PLAY + 1));
+
         emit("CONNECTED " + connected_name_);
     }
 
-    void do_send_move(const std::string& payload) {
+    void do_write(const std::string& char_uuid,
+                  const std::vector<uint8_t>& payload) {
         if (!peripheral_initialised_ || !peripheral_.is_connected()) {
             emit("ERROR not connected");
             return;
         }
-        auto it = char_to_service_.find(phantom::MOVE_CMD_UUID);
+        auto it = char_to_service_.find(char_uuid);
         if (it == char_to_service_.end()) {
-            emit("ERROR move-cmd characteristic not discovered");
+            emit("ERROR characteristic " + char_uuid + " not discovered");
             return;
         }
+        std::ostringstream hex;
+        for (uint8_t b : payload) {
+            char buf[3];
+            std::snprintf(buf, sizeof(buf), "%02x", b);
+            hex << buf;
+        }
         std::fprintf(stderr,
-            "[phantom/native] write MOVE_CMD len=%zu payload='%s'\n",
-            payload.size(), payload.c_str());
+            "[phantom/native] write %s len=%zu bytes=%s\n",
+            char_uuid.c_str(), payload.size(), hex.str().c_str());
         try {
-            peripheral_.write_request(it->second, phantom::MOVE_CMD_UUID,
+            peripheral_.write_request(it->second, char_uuid,
                                       to_byte_array(payload));
         } catch (const std::exception& e) {
             emit(std::string("ERROR write failed: ") + e.what());
             return;
         }
-        emit("ACK MOVE");
+        emit("ACK WRITE");
     }
 
     StatusCallback              on_status_;
@@ -320,30 +352,41 @@ void PhantomBridge::stop() { impl_->stop(); }
 void PhantomBridge::connect_to_address(const std::string& addr) {
     impl_->connect_to_address(addr);
 }
-void PhantomBridge::send_move(int src_col, int src_row,
-                              int dst_col, int dst_row, bool capture) {
-    impl_->send_move(src_col, src_row, dst_col, dst_row, capture);
+void PhantomBridge::send_move(int src_file, int src_row,
+                              int dst_file, int dst_row, bool capture,
+                              char piece) {
+    impl_->send_move(src_file, src_row, dst_file, dst_row, capture, piece);
 }
+void PhantomBridge::enter_play_mode() { impl_->enter_play_mode(); }
 bool PhantomBridge::running() const { return impl_->running(); }
 
 // ---------------------------------------------------------------------------
 // IBoardBridge polymorphic overrides.
 // ---------------------------------------------------------------------------
 void PhantomBridge::on_full_position_set(const std::string& /*fen*/) {
-    // Phantom has no setMoveBoard primitive — moves only land one
-    // at a time. A full reset would require us to choreograph each
-    // piece's path individually, which we don't yet do. The user
-    // resets the physical board manually.
+    // v0.3.0 full-position sync would mean sending the gameStart 10×10 board
+    // matrix; the board's orientation transform isn't byte-verified yet, so we
+    // skip it for now (per-move drive below keeps a game-from-start in sync).
+    // The user positions the physical board manually before a reset/undo.
     std::fprintf(stderr,
         "[phantom/native] on_full_position_set ignored "
-        "(Phantom drives moves one at a time)\n");
+        "(v1 drives moves one at a time)\n");
 }
 
-void PhantomBridge::on_move_played(const std::string& /*fen*/,
+void PhantomBridge::on_move_played(const std::string& fen,
                                    int src_col, int src_row,
                                    int dst_col, int dst_row,
                                    bool capture) {
-    impl_->send_move(src_col, src_row, dst_col, dst_row, capture);
+    // app_state hands us the app's INTERNAL columns (col 7 = a-file). The
+    // Phantom wire format is algebraic, so convert col → file (file = 7 - col).
+    int src_file = 7 - src_col;
+    int dst_file = 7 - dst_col;
+    // Advisory piece letter: the moved piece sits on the destination square in
+    // the post-move FEN. Firmware tracks pieces itself, so 'E' (unknown) is a
+    // safe fallback.
+    char piece = phantom::fen_piece_at(fen, dst_file, dst_row);
+    impl_->send_move(src_file, src_row, dst_file, dst_row,
+                     capture, piece ? piece : 'E');
 }
 
 #endif  // !__EMSCRIPTEN__

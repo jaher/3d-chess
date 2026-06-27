@@ -1,8 +1,58 @@
 # Phantom Chessboard — protocol notes
 
+> ## ⚑ CURRENT PROTOCOL — firmware v0.3.0 (what the driver implements)
+>
+> **This is the authoritative section.** Everything below the `---` is the
+> earlier reverse-engineering of the *bundled/older* ESP32 firmware; production
+> boards OTA-update past it and the old UUIDs/format do **not** match a live
+> board. The current protocol was recovered by `blutter`-decompiling the
+> current app's Dart code and **verified on real hardware** (board `Phantom
+> 3579` reports version `"0.3.0"`; we drove its motors with the frames below).
+> Full derivation:
+> `~/claude_workspace/scratchpad/phantom_chessboard/PHANTOM_V030_PROTOCOL.md`.
+> Encoder: `phantom_encode.h`. Desktop driver: `phantom_bridge.cpp`.
+>
+> **GATT (service `fd31a840-22e7-11eb-adc1-0242ac120002`):**
+>
+> | Role | UUID | App ops |
+> | --- | --- | --- |
+> | GAME (`UUID_GAME`) | `cc68a66e-3bfa-4614-a77f-f46954a4c103` | write opcode frames, subscribe, read |
+> | MODE | `c08d3691-e60f-4467-b2d0-4a4b7c72777e` | write ASCII digit |
+> | MATRIX-RESULT | `1b034927-77e8-433e-ac4c-27302e5e853f` | notify (validation status) |
+> | WARNING | `1b034928-77e8-433e-ac4c-27302e5e853f` | notify (dialog text) |
+>
+> **Framing:** every GAME write is `[opcode_byte] + ASCII`. `GameOPCode`:
+> gameStart=0x00, gameEnd=0x01, movement=0x02, movementVerify=0x03,
+> side=0x0a, resetDetection=0x0e, errorMsg(inbound)=0x10.
+>
+> **Start a game (drive motors):** the official `startGame` enables
+> notifications on GAME, then writes ONE frame — `[0x00] + "<100-char 10×10
+> board matrix>,W|B"`. The matrix is the FEN board with a 1-cell `.` border,
+> cells = FEN letters / `.`. The board only actuates motors once this position
+> is established. **VERIFIED on hardware:** the firmware drives the steppers in
+> response to this sequence. (The board moves the side the human is *not*
+> playing — send the opponent's colour's moves.) The exact matrix *orientation*
+> is the one piece still being calibrated — a mis-oriented matrix makes the
+> robot shove pieces to reconcile, so the v1 driver leaves
+> `on_full_position_set` a no-op until it's pinned down.
+>
+> **Send a move (app→board):** two frames — `[0x0a] + "2"` (side) then
+> `[0x02] + "M <from><sep><to> <piece>"` (e.g. `"M e2-e4 P"`); `sep` is `-`/`x`.
+>
+> **Detected move (board→app):** a notify on GAME, byte 0 == `0x06`, payload
+> ASCII `"<from><sep><to> …"` (plain algebraic). `0x0c` = board-state,
+> `0x10` = matrix-validation error string.
+>
+> ---
+
 Reverse-engineered from the official Android app
 (`com.phantomapp.flutter_ble_plus` v4.0.8, package "Phantom" by
 Phantom Chess) and the embedded ESP32 firmware shipped inside it.
+
+> **NOTE (firmware generation):** the section below documents the **older**
+> firmware bundled in the APK. It is kept for historical reference and for
+> boards that haven't OTA-updated. For any current board, use the v0.3.0
+> protocol summarised above.
 
 > **Earlier draft of this file claimed Phantom was sensor-only —
 > that was wrong.** Re-examining firmware strings turned up

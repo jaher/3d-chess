@@ -57,20 +57,21 @@ EM_JS(void, chessnut_web_start_js, (), {
                   "1b7e8262" + SUFFIX,
                   "1b7e8271" + SUFFIX,
                   "1b7e8273" + SUFFIX];
-    // Phantom Chessboard — sibling robotic family. Different
-    // service/characteristic UUIDs and a different wire format
-    // (ASCII move strings, not 32-byte FEN frames). We let the
-    // browser show both kinds in the picker; protocol selection
-    // happens after connect based on which service the device
-    // actually exposes. See docs/PHANTOM.md for the full RE notes.
+    // Phantom Chessboard — sibling robotic family (firmware v0.3.0).
+    // Different service/characteristic UUIDs and a different wire format
+    // (an opcode-framed game channel, not 32-byte FEN frames). We let the
+    // browser show both kinds in the picker; protocol selection happens
+    // after connect based on which write characteristic the device exposes.
+    // See docs/PHANTOM.md / phantom_encode.h for the full wire format.
     var PHANTOM_SVC   = "fd31a840-22e7-11eb-adc1-0242ac120002";
-    var PHANTOM_WRITE = "7b204548-30c3-11eb-adc1-0242ac120002";
+    var PHANTOM_WRITE = "cc68a66e-3bfa-4614-a77f-f46954a4c103";  // GAME (opcodes)
+    var PHANTOM_MODE  = "c08d3691-e60f-4467-b2d0-4a4b7c72777e";  // play-mode digit
+    // GAME is notify-capable and gets auto-subscribed by the all-notify sweep
+    // below; this list is documentation only (the sweep covers everything).
     var PHANTOM_NOTIFY = [
-        "acb646cc-92ca-11ee-b9d1-0242ac120002",  // R+W+N main push
-        "7b204d4a-30c3-11eb-adc1-0242ac120002",  // R+N legacy status
-        "c08d3691-e60f-4467-b2d0-4a4b7c72777e",  // R+N secondary
-        "acb65af4-92ca-11ee-b9d1-0242ac120002",  // R+N version
-        "93601602-bbc2-4e53-95bd-a3ba326bc04b"   // W+N OTA progress
+        "cc68a66e-3bfa-4614-a77f-f46954a4c103",  // GAME: 0x06 detected moves
+        "1b034927-77e8-433e-ac4c-27302e5e853f",  // matrix-validation status
+        "1b034928-77e8-433e-ac4c-27302e5e853f"   // warning text
     ];
     // The parent service UUID isn't fixed across firmware revisions
     // — desktop discovers it dynamically via SimpleBLE. Web
@@ -201,12 +202,23 @@ EM_JS(void, chessnut_web_start_js, (), {
                     };
                     return Promise.all(subs).then(function() {
                         if (isPhantom) {
-                            // Phantom firmware doesn't expect any
-                            // handshake — its Play-Mode loop polls
-                            // sensors continuously. Just announce the
-                            // connection. Wire format: see docs/PHANTOM.md.
-                            emit("CONNECTED " + window.__chessnutBoard.name);
-                            return;
+                            // v0.3.0: the board only reports sensor moves once
+                            // it's in play mode. Write the play-mode digit "2"
+                            // to the mode characteristic (same primary service),
+                            // then announce the connection. Best-effort — if the
+                            // mode write fails we still connect.
+                            var board = window.__chessnutBoard;
+                            return board.service.getCharacteristic(PHANTOM_MODE)
+                                .then(function(mc) {
+                                    return mc.writeValueWithoutResponse(
+                                        new Uint8Array([0x32]));  // "2"
+                                })
+                                .then(function() {
+                                    emit("CONNECTED " + board.name);
+                                })
+                                .catch(function() {
+                                    emit("CONNECTED " + board.name);
+                                });
                         }
                         return write.writeValueWithoutResponse(CMD_STREAM_ENABLE)
                             .then(function() { return sleep(200); })
@@ -305,13 +317,30 @@ void app_chessnut_set_enabled(
     chessnut_web_start_js();
 }
 
+// Drive a Phantom move (v0.3.0): two frames — side then movement — on the GAME
+// characteristic. Coordinates in are the app's internal columns (col 7 =
+// a-file); convert to file indices for the algebraic wire format. `fen` is the
+// post-move position, used for the advisory piece letter.
+static void phantom_web_send_move(int fc, int fr, int tc, int tr,
+                                  bool capture, const std::string& fen) {
+    int sfile = 7 - fc, dfile = 7 - tc;
+    char piece = phantom::fen_piece_at(fen, dfile, tr);
+    auto frames = phantom::make_move_frames(sfile, fr, dfile, tr,
+                                            capture, piece ? piece : 'E');
+    chessnut_web_write_frame_js(frames[0].data(),
+                                static_cast<int>(frames[0].size()));
+    chessnut_web_write_frame_js(frames[1].data(),
+                                static_cast<int>(frames[1].size()));
+}
+
 void app_chessnut_sync_board(AppState& a, bool force) {
     if (!a.chessnut_enabled || !a.chessnut_connected) return;
     std::vector<uint8_t> frame;
 
     if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
-        // Phantom: per-move ASCII MOVE_CMD; no full-position-set
-        // primitive. Force-syncs (game start / reset) are no-ops.
+        // Phantom v0.3.0: per-move two-frame drive on the GAME characteristic;
+        // no full-position-set primitive, so force-syncs (start / reset) are
+        // no-ops (the user positions the physical board manually).
         if (force) return;
         if (cur_gs(a).move_history.empty()) return;
         const std::string& uci = cur_gs(a).move_history.back();
@@ -327,7 +356,8 @@ void app_chessnut_sync_board(AppState& a, bool force) {
                 if (p.alive) n_after++;
             capture = (n_after < n_before);
         }
-        frame = phantom::make_move_cmd_bytes(fc, fr, tc, tr, capture);
+        phantom_web_send_move(fc, fr, tc, tr, capture, app_current_fen(a));
+        return;
     } else {
         std::string fen = app_current_fen(a);
         try {
@@ -355,14 +385,16 @@ bool app_chessnut_send_ai_move_preview(AppState& a,
     execute_move(preview, fc, fr, tc, tr);
     std::vector<uint8_t> frame;
     if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
-        // Phantom takes a per-move ASCII command (not a FEN), so the
-        // copy is only needed for the alive-piece-delta capture
-        // check (covers en passant).
+        // Phantom takes a per-move two-frame drive (not a FEN), so the
+        // copy is only needed for the alive-piece-delta capture check
+        // (covers en passant).
         int n_before = 0, n_after = 0;
         for (const auto& p : live.pieces)    if (p.alive) n_before++;
         for (const auto& p : preview.pieces) if (p.alive) n_after++;
         bool capture = (n_after < n_before);
-        frame = phantom::make_move_cmd_bytes(fc, fr, tc, tr, capture);
+        phantom_web_send_move(fc, fr, tc, tr, capture,
+                              app_fen_from_state(preview, preview.white_turn));
+        return true;
     } else {
         std::string fen = app_fen_from_state(preview, preview.white_turn);
         try {

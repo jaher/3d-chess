@@ -33,7 +33,8 @@ TEST_SRCS := \
     move_quality_test.cpp \
     move_reason_test.cpp \
     learner_profile_test.cpp \
-    openings_drills_test.cpp
+    openings_drills_test.cpp \
+    phantom_encode_test.cpp
 
 HEADERS := doctest.h helpers.h
 

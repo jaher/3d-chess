@@ -1,16 +1,25 @@
 #pragma once
 
-// Pure-logic Phantom Chessboard wire-format encoder. Header-only so
-// the desktop SimpleBLE impl (phantom_bridge.cpp) and the web
-// Web-Bluetooth impl (web/phantom_web.cpp) share one source of truth.
+// Pure-logic Phantom Chessboard wire-format encoder (firmware v0.3.0).
+// Header-only so the desktop SimpleBLE impl (phantom_bridge.cpp) and the web
+// Web-Bluetooth impl (web/chessnut_web.cpp) share one source of truth.
 //
-// See docs/PHANTOM.md for the reverse-engineering notes.
-// In short: Phantom is an ESP32 robotic chessboard. The app drives
-// motors by writing a short ASCII move string to characteristic
-// 7b204548-… (`MOVE_CMD_UUID` below); the firmware's Play-Mode loop
-// pulls it, parses bytes 2..6 (`[file][rank][-/x][file][rank]`),
-// looks up the piece on the source square in its own piece tracker,
-// and dispatches to moveChessPiece → stepper drive.
+// See docs/PHANTOM.md for the protocol write-up and
+// ~/claude_workspace/scratchpad/phantom_chessboard/PHANTOM_V030_PROTOCOL.md for
+// the authoritative decompile-derived spec it was lifted from.
+//
+// ── Protocol in one paragraph ───────────────────────────────────────────────
+// The current Phantom firmware (the board reports version "0.3.0" on its
+// version characteristic) speaks an *opcode-framed* protocol over a single
+// "game" characteristic (`GAME_UUID`). Every frame is `[opcode_byte] + ASCII`.
+// A move is pushed app→board as two frames — a `side` frame (`"2"`) then a
+// `movement` frame (`"M e2-e4 P"`). The board reports a detected physical move
+// board→app as a single `movement` (opcode 0x06) notification carrying
+// `"e2-e4 …"` in plain algebraic. The board only starts reporting once the app
+// writes the play-mode digit `"2"` to the separate mode characteristic
+// (`MODE_UUID`). This entirely replaces the older single-write `"M 1 e2-e4"`
+// ASCII scheme (still documented below as the LEGACY_* constants), which lived
+// on a different GATT layout that production boards OTA past.
 
 #include <array>
 #include <cstdint>
@@ -20,166 +29,213 @@
 namespace phantom {
 
 // ===========================================================================
-// GATT — single primary service, 19 characteristics. The driver
-// only needs a handful; the rest are passive containers / NVS
-// configuration / OTA.
+// GATT — firmware v0.3.0. One primary service; the move protocol uses just the
+// GAME + MODE characteristics. UUIDs verified against a live board
+// (`Phantom 3579`) AND the decompiled app (`BLEManager` in utils/uuid.dart).
 // ===========================================================================
 constexpr const char* SERVICE_UUID =
     "fd31a840-22e7-11eb-adc1-0242ac120002";
 
-// Motor-drive write target. App writes a 7..25 byte string here;
-// firmware's Play-Mode loop consumes it. Property byte 0x0a (R+W).
-constexpr const char* MOVE_CMD_UUID =
+// The game channel ("UUID_GAME"). The app writes every opcode frame here and
+// subscribes here for inbound move / board-state notifications. Flags R+W+N.
+constexpr const char* GAME_UUID =
+    "cc68a66e-3bfa-4614-a77f-f46954a4c103";
+
+// Mode / control. A plain ASCII digit is written here (no opcode byte):
+// "2" = enter play mode (board begins reporting sensor moves), "3" = end/idle.
+constexpr const char* MODE_UUID =
+    "c08d3691-e60f-4467-b2d0-4a4b7c72777e";
+
+// Matrix-validation result push ("UUID_SEND_MATRIX" in the app — a misnomer;
+// the matrix bytes go out on GAME_UUID, this only carries the board's
+// validation *status* string, e.g. "ERROR1(43)" / "CLEAN"). Notify only.
+constexpr const char* MATRIX_RESULT_UUID =
+    "1b034927-77e8-433e-ac4c-27302e5e853f";
+
+// User-warning text push (notify only) — surfaced as a dialog in the app, not
+// chess data. We subscribe so the raw text reaches the verbose log.
+constexpr const char* WARNING_UUID =
+    "1b034928-77e8-433e-ac4c-27302e5e853f";
+
+// Read-only informational characteristics (handy for diagnostics).
+constexpr const char* VERSION_UUID =
+    "392d9e66-937a-11ee-b9d1-0242ac120002";  // "0.3.0"
+constexpr const char* BATTERY_UUID =
+    "7b204548-40c4-11eb-adc1-0242ac120002";  // "<counter>,0,1,1"
+
+// Firmware OTA — NEVER write this characteristic from the driver.
+constexpr const char* OTA_UUID =
+    "93601602-bbc2-4e53-95bd-a3ba326bc04b";
+
+// ── Legacy (pre-0.3.0 firmware) — kept only so the bridge can recognise an old
+// board and so docs/tooling have one reference. The driver targets v0.3.0. ──
+constexpr const char* LEGACY_MOVE_CMD_UUID =
     "7b204548-30c3-11eb-adc1-0242ac120002";
-
-// Detected-move push channel — VERIFIED from firmware. Decompiling
-// FUN_400d2c3c (the move pusher) showed it writes the 9-byte
-// `"M 1 e2-e4"` frame onto chr-pointer DAT_400d00dc, which
-// FUN_400d2594 (GATT setup) initialises with this UUID and props
-// 0x12 (R+N). FUN_400d5acc builds the buffer with a literal
-// `"M 1 "` prefix via `builtin_strncpy(buf, "M 1 ", 4)` followed
-// by file/rank/sep/file/rank.
-constexpr const char* NOTIFY_DETECTED_MOVE_UUID =
-    "06034924-77e8-433e-ac4c-27302e5e853f";  // R+N — detected-move push
-
-// Other notify-capable chars. The driver subscribes to all of them
-// and logs anything that lands; only NOTIFY_DETECTED_MOVE_UUID
-// frames currently feed the digital game.
-constexpr const char* NOTIFY_LEGACY_STATUS_UUID =
-    "7b204d4a-30c3-11eb-adc1-0242ac120002";  // R+N (legacy "status")
-constexpr const char* NOTIFY_RWN_UUID =
-    "c08d3691-e60f-4467-b2d0-4a4b7c72777e";  // R+W+N main bidi
-constexpr const char* NOTIFY_VERSION_UUID =
-    "acb65af4-92ca-11ee-b9d1-0242ac120002";  // R+N (version)
-constexpr const char* NOTIFY_OTA_UUID =
-    "93601602-bbc2-4e53-95bd-a3ba326bc04b";  // W+N (OTA progress)
-
-// All five, in the order we subscribe — the desktop and web
-// drivers iterate this list to keep parity.
-constexpr std::array<const char*, 5> NOTIFY_UUIDS = {
-    NOTIFY_DETECTED_MOVE_UUID,
-    NOTIFY_LEGACY_STATUS_UUID,
-    NOTIFY_RWN_UUID,
-    NOTIFY_VERSION_UUID,
-    NOTIFY_OTA_UUID,
-};
-
-// Detected-move notify-frame format (board → app). Verified.
-constexpr size_t      DETECTED_MOVE_FRAME_LEN = 9;
-constexpr const char* DETECTED_MOVE_PREFIX    = "M 1 ";
-constexpr size_t      DETECTED_MOVE_PREFIX_LEN = 4;
-// Byte indices within the 9-byte frame:
-constexpr size_t DETECTED_MOVE_OFF_SRC_FILE = 4;
-constexpr size_t DETECTED_MOVE_OFF_SRC_RANK = 5;
-constexpr size_t DETECTED_MOVE_OFF_SEP      = 6;  // '-' or 'x'
-constexpr size_t DETECTED_MOVE_OFF_DST_FILE = 7;
-constexpr size_t DETECTED_MOVE_OFF_DST_RANK = 8;
-
-// Parse a 9-byte board→app detected-move frame into UCI-ish
-// components. Returns true on a well-formed frame ('a'..'h' for
-// files, '1'..'8' for ranks, '-' or 'x' separator). Out-params
-// receive the squares in the project's internal coords (col 0 =
-// a-file, row 0 = rank 1).
-inline bool parse_detected_move(const uint8_t* frame, size_t len,
-                                int& src_col, int& src_row,
-                                int& dst_col, int& dst_row,
-                                bool& is_capture) {
-    if (len != DETECTED_MOVE_FRAME_LEN) return false;
-    if (frame[0] != 'M' || frame[1] != ' ' || frame[3] != ' ') return false;
-    char sf = static_cast<char>(frame[DETECTED_MOVE_OFF_SRC_FILE]);
-    char sr = static_cast<char>(frame[DETECTED_MOVE_OFF_SRC_RANK]);
-    char sp = static_cast<char>(frame[DETECTED_MOVE_OFF_SEP]);
-    char df = static_cast<char>(frame[DETECTED_MOVE_OFF_DST_FILE]);
-    char dr = static_cast<char>(frame[DETECTED_MOVE_OFF_DST_RANK]);
-    if (sf < 'a' || sf > 'h' || df < 'a' || df > 'h') return false;
-    if (sr < '1' || sr > '8' || dr < '1' || dr > '8') return false;
-    if (sp != '-' && sp != 'x') return false;
-    src_col = sf - 'a'; src_row = sr - '1';
-    dst_col = df - 'a'; dst_row = dr - '1';
-    is_capture = (sp == 'x');
-    return true;
-}
-
-// Move-validation echo. The Play-Mode loop polls this for "1" (ok)
-// or "2" (reject) after pushing a sensor-detected move out to the
-// app. The driver doesn't write here yet (we don't have a verified
-// format) but exposes the UUID so the integration layer can.
-constexpr const char* CHECK_MOVE_UUID =
+constexpr const char* LEGACY_DETECTED_MOVE_UUID =
     "06034924-77e8-433e-ac4c-27302e5e853f";
 
-// Mode select. Persisted to NVS under `myApp/`. The official app
-// writes a mode token (Lichess / Chess.com / offline-AI / 2P) when
-// the user picks a mode. Not used by this driver.
-constexpr const char* MODE_SELECT_UUID =
-    "c60c786b-bf3f-49d8-bd9e-c268e0519a7b";
+// ===========================================================================
+// GameOPCode — the frame-leading opcode byte. Integer values read directly
+// from the app's enum dump (objs.txt). Only a handful are used by this driver;
+// the rest are listed for completeness / future use.
+// ===========================================================================
+enum class GameOp : uint8_t {
+    GameStart      = 0x00,  // + "<100-char matrix>,W|B" : full-position sync
+    GameEnd        = 0x01,
+    Movement       = 0x02,  // + "M e2-e4 P" : drive a move (also inbound 0x06)
+    MovementVerify = 0x03,  // + "1"/"2" : accept/reject a detected move
+    VoiceCommand   = 0x04,
+    Takeback       = 0x05,
+    Calibration    = 0x07,
+    CheckSound     = 0x09,
+    Side           = 0x0a,  // + "2" : sent right before each Movement frame
+    GameAssistance = 0x0b,
+    SnapToCenter   = 0x0d,
+    ResetDetection = 0x0e,
+    ErrorMsg       = 0x10,  // inbound only: payload = matrix-validation string
+};
+
+// Inbound notifications on GAME_UUID dispatch on byte 0:
+constexpr uint8_t INBOUND_MOVE_OPCODE        = 0x06;  // detected physical move
+constexpr uint8_t INBOUND_BOARDSTATE_OPCODE  = 0x0c;  // board-state update
+constexpr uint8_t INBOUND_ERRORMSG_OPCODE    = 0x10;  // matrix-validation text
+
+// Mode-characteristic digit tokens (plain ASCII, written to MODE_UUID).
+constexpr const char* MODE_PLAY = "2";  // enter play mode
+constexpr const char* MODE_END  = "3";  // end / idle
+
+// Move-string punctuation.
+constexpr char SEP_NORMAL  = '-';
+constexpr char SEP_CAPTURE = 'x';
 
 // ===========================================================================
-// MOVE_CMD wire format
+// Framing — every GAME_UUID write is `[opcode] + ASCII payload`.
 // ===========================================================================
-// Total length: 7..25 bytes (firmware rejects ≥26 with "error -1").
-// The Play-Mode loop's parser indexes byte offsets 2..6 of the
-// stored string and does not validate bytes 0..1. We send a
-// 2-byte `"M "` prefix matching the leading two bytes of the
-// outbound detected-move frame (`"M 1 e2-e4"`) — the firmware-side
-// design is plausibly "M means move, the rest is the move text",
-// with the "1" on outbound being a counter/identifier the inbound
-// path doesn't use. Either way the firmware ignores bytes 0..1, so
-// the worst case is harmless.
-//
-// Byte 0..1: prefix `"M "` (2 bytes — see comment above).
-// Byte 2:    src file 'a'..'h'
-// Byte 3:    src rank '1'..'8'
-// Byte 4:    '-' (normal move) or 'x' (capture)
-// Byte 5:    dst file
-// Byte 6:    dst rank
-// Byte 7+:   ignored / padding
-constexpr const char* MOVE_CMD_PREFIX = "M ";
-constexpr size_t      MOVE_CMD_PREFIX_LEN = 2;
-constexpr char        MOVE_CMD_NORMAL_SEP = '-';
-constexpr char        MOVE_CMD_CAPTURE_SEP = 'x';
+inline std::vector<uint8_t> make_frame(GameOp op, const std::string& ascii) {
+    std::vector<uint8_t> out;
+    out.reserve(ascii.size() + 1);
+    out.push_back(static_cast<uint8_t>(op));
+    for (unsigned char c : ascii) out.push_back(c);
+    return out;
+}
 
-// Build a Phantom MOVE_CMD payload from a UCI-style move.
-// `capture` selects between '-' and 'x' for byte 4. Promotion
-// suffix in UCI ("e7e8q") is dropped — the firmware resolves
-// promotion internally based on its piece tracker.
-inline std::string make_move_cmd(int src_col, int src_row,
-                                 int dst_col, int dst_row,
-                                 bool capture) {
+// ===========================================================================
+// Outbound move (app → board). A move is two frames written back-to-back to
+// GAME_UUID, exactly as the official app's sendBleMoveComm does:
+//   1) Side    : [0x0a] + "2"
+//   2) Movement: [0x02] + "M <from><sep><to> <piece>"
+// `piece` is the FEN letter of the moved piece (white "PNBRQK", black
+// "pnbrqk"); pass 'E' if unknown — the firmware tracks pieces itself, so the
+// letter is advisory. `capture` selects '-' vs 'x' for the separator.
+// ===========================================================================
+inline std::string move_text(int src_col, int src_row,
+                             int dst_col, int dst_row,
+                             bool capture, char piece) {
     auto file_char = [](int col) -> char {
         return (col >= 0 && col < 8) ? static_cast<char>('a' + col) : '?';
     };
     auto rank_char = [](int row) -> char {
         return (row >= 0 && row < 8) ? static_cast<char>('1' + row) : '?';
     };
-    std::string s = MOVE_CMD_PREFIX;            // "M "
+    std::string s = "M ";
     s.push_back(file_char(src_col));
     s.push_back(rank_char(src_row));
-    s.push_back(capture ? MOVE_CMD_CAPTURE_SEP : MOVE_CMD_NORMAL_SEP);
+    s.push_back(capture ? SEP_CAPTURE : SEP_NORMAL);
     s.push_back(file_char(dst_col));
     s.push_back(rank_char(dst_row));
-    return s;  // 7 bytes — firmware accepts 7..25
+    s.push_back(' ');
+    s.push_back(piece == 0 ? 'E' : piece);
+    return s;  // e.g. "M e2-e4 P"
 }
 
-inline std::string make_move_cmd_uci(const std::string& uci, bool capture) {
-    if (uci.size() < 4) return std::string{};
-    int sc = uci[0] - 'a', sr = uci[1] - '1';
-    int dc = uci[2] - 'a', dr = uci[3] - '1';
-    return make_move_cmd(sc, sr, dc, dr, capture);
+// The constant leading "side" frame.
+inline std::vector<uint8_t> make_side_frame() {
+    return make_frame(GameOp::Side, "2");
 }
 
-// Convenience: same but as a byte vector for the SimpleBLE
-// write_request path which takes ByteArray (== std::string for
-// SimpleBLE).
-inline std::vector<uint8_t> make_move_cmd_bytes(int src_col, int src_row,
+// The movement frame for a single move.
+inline std::vector<uint8_t> make_movement_frame(int src_col, int src_row,
                                                 int dst_col, int dst_row,
-                                                bool capture) {
-    std::string s = make_move_cmd(src_col, src_row, dst_col, dst_row, capture);
-    return std::vector<uint8_t>(s.begin(), s.end());
+                                                bool capture, char piece) {
+    return make_frame(GameOp::Movement,
+                      move_text(src_col, src_row, dst_col, dst_row,
+                                capture, piece));
 }
 
-// True iff the given device-name string looks like a Phantom board.
-// Matched case-insensitively against advertising names — covers the
-// two brand variants the firmware string table mentions.
+// Convenience: the full two-frame move sequence as a pair.
+inline std::array<std::vector<uint8_t>, 2> make_move_frames(
+        int src_col, int src_row, int dst_col, int dst_row,
+        bool capture, char piece) {
+    return { make_side_frame(),
+             make_movement_frame(src_col, src_row, dst_col, dst_row,
+                                  capture, piece) };
+}
+
+// ===========================================================================
+// Inbound detected-move parse (board → app). A physical move arrives as a
+// notification on GAME_UUID: `[0x06] + ASCII "<from><sep><to> <t2> <t3>"`.
+// We only need the first whitespace-delimited token (the move); the trailing
+// tokens are unused by the official app too. Out-params receive the squares in
+// file/rank indices (col 0 = a-file, row 0 = rank 1). Returns false on any
+// frame that isn't a well-formed move (wrong opcode, short, bad chars).
+// ===========================================================================
+inline bool parse_detected_move(const uint8_t* frame, size_t len,
+                                int& src_col, int& src_row,
+                                int& dst_col, int& dst_row,
+                                bool& is_capture) {
+    if (len < 6) return false;
+    if (frame[0] != INBOUND_MOVE_OPCODE) return false;
+    // ASCII payload starts at byte 1; isolate the first space-delimited token.
+    std::string s(reinterpret_cast<const char*>(frame + 1), len - 1);
+    size_t sp = s.find(' ');
+    std::string mv = (sp == std::string::npos) ? s : s.substr(0, sp);
+    if (mv.size() < 5) return false;
+    char sf = mv[0], sr = mv[1], sep = mv[2], df = mv[3], dr = mv[4];
+    if (sf < 'a' || sf > 'h' || df < 'a' || df > 'h') return false;
+    if (sr < '1' || sr > '8' || dr < '1' || dr > '8') return false;
+    if (sep != SEP_NORMAL && sep != SEP_CAPTURE) return false;
+    src_col = sf - 'a'; src_row = sr - '1';
+    dst_col = df - 'a'; dst_row = dr - '1';
+    is_capture = (sep == SEP_CAPTURE);
+    return true;
+}
+
+// ===========================================================================
+// FEN piece lookup. Return the FEN piece letter at (file 0..7 = a..h,
+// rank 0..7 = 1..8) in the board field of `fen`, or 0 if the square is empty
+// or out of range. The FEN board field lists rank 8 first, files a..h within
+// each rank. Used to fill the advisory piece letter in an outbound move frame.
+// ===========================================================================
+inline char fen_piece_at(const std::string& fen, int file, int rank) {
+    if (file < 0 || file > 7 || rank < 0 || rank > 7) return 0;
+    size_t sp = fen.find(' ');
+    std::string bd = (sp == std::string::npos) ? fen : fen.substr(0, sp);
+    const int want_line = 7 - rank;      // 0 = rank 8 (first '/'-segment)
+    int line = 0;
+    size_t i = 0;
+    while (line < want_line && i < bd.size()) {
+        if (bd[i] == '/') line++;
+        i++;
+    }
+    int f = 0;                            // file 0 = 'a'
+    for (; i < bd.size() && bd[i] != '/'; i++) {
+        char c = bd[i];
+        if (c >= '1' && c <= '8') {
+            f += c - '0';
+        } else {
+            if (f == file) return c;
+            f++;
+        }
+        if (f > file) return 0;           // target fell in an empty run
+    }
+    return 0;
+}
+
+// ===========================================================================
+// True iff the given device-name string looks like a Phantom board. Matched
+// case-insensitively against advertising names — covers the two brand variants
+// the firmware string table mentions.
+// ===========================================================================
 inline bool is_phantom_name(const std::string& name) {
     std::string l;
     l.reserve(name.size());

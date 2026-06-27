@@ -45,10 +45,17 @@ public:
     // Phantom has no per-move LED API on verified channels.
     const char* label() const override { return "Phantom"; }
 
-    // Phantom-specific raw write — exposed for callers that want
-    // to send a custom MOVE_CMD payload (debugging, prefix probing).
-    void send_move(int src_col, int src_row, int dst_col, int dst_row,
-                   bool capture);
+    // Phantom-specific raw writes (v0.3.0 protocol). Coordinates are
+    // file/rank indices (0 = a-file / rank 1) — NOT the app's internal
+    // board columns. `piece` is the moved piece's FEN letter (advisory;
+    // 'E' if unknown). Exposed for debugging / manual driving.
+    void send_move(int src_file, int src_row, int dst_file, int dst_row,
+                   bool capture, char piece = 'E');
+
+    // Put the board into play mode (write "2" to the mode characteristic)
+    // so it starts reporting detected sensor moves. Done automatically on
+    // connect; exposed for re-sync / debugging.
+    void enter_play_mode();
 
 private:
     struct Impl;

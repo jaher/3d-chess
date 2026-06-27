@@ -5223,6 +5223,57 @@ void app_chessnut_apply_sensor_frame(AppState& a,
     (void)capture;
 }
 
+// Apply a Phantom-detected physical move into the digital game. Inputs are
+// file/rank indices (0 = a-file / rank 1) straight off phantom::parse_detected
+// _move. The board's firmware already validated the move, but we re-check
+// legality defensively and route it through the same AI-animation pipeline a
+// Chessnut sensor move uses (arrow + flying-piece visual), skipping the
+// post-animation board sync since the piece is already physically placed.
+static void app_phantom_commit_detected_move(AppState& a,
+        int src_file, int src_row, int dst_file, int dst_row) {
+    if (!a.chessnut_connected) return;
+    if (!sensor_action_allowed(a)) {
+        std::fprintf(stderr,
+            "[phantom/sensor] move ignored — sensor action not allowed\n");
+        return;
+    }
+    // file → internal column (col 7 = a-file). Rows already match (row 0 =
+    // rank 1).
+    int fc = 7 - src_file, fr = src_row;
+    int tc = 7 - dst_file, tr = dst_row;
+    if (fc < 0 || fc > 7 || tc < 0 || tc > 7 ||
+        fr < 0 || fr > 7 || tr < 0 || tr > 7) return;
+    GameState& gs = cur_gs(a);
+    int piece_idx = gs.grid[fr][fc];
+    if (piece_idx < 0) {
+        std::fprintf(stderr,
+            "[phantom/sensor] no piece at source square — ignoring\n");
+        return;
+    }
+    int side_to_move_white = gs.white_turn ? 1 : 0;
+    if ((gs.pieces[piece_idx].is_white ? 1 : 0) != side_to_move_white) {
+        std::fprintf(stderr, "[phantom/sensor] wrong side moved — ignoring\n");
+        return;
+    }
+    bool legal = false;
+    for (const auto& [mc, mr] : generate_legal_moves(gs, fc, fr)) {
+        if (mc == tc && mr == tr) { legal = true; break; }
+    }
+    if (!legal) {
+        std::fprintf(stderr, "[phantom/sensor] illegal move — ignoring\n");
+        return;
+    }
+    // Commit through the animation pipeline. ai_anim_skip_chessnut_sync stops
+    // the post-animation sync from re-driving the motor (the piece is already
+    // where the user put it); ai_anim_trigger_ai_after kicks Stockfish off in
+    // single-player. Both flags are consumed by tick_ai_animation.
+    gs.selected_col = gs.selected_row = -1;
+    gs.valid_moves.clear();
+    gs.ai_anim_skip_chessnut_sync = true;
+    gs.ai_anim_trigger_ai_after   = !a.two_player_mode;
+    start_ai_animation(a, fc, fr, tc, tr);
+}
+
 void app_chessnut_apply_status(AppState& a, const std::string& status) {
     // The picker is shown even when chessnut_enabled is false —
     // we open the picker BEFORE flipping the toggle on. Don't
@@ -5277,8 +5328,8 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
         // capture frames without terminal access. Truncate the UUID
         // to its 8-char prefix and the hex to a screen-friendly
         // length so the line fits the status bar at typical widths.
+        std::string uuid = rest.substr(0, sp);
         if (a.ble_verbose_log) {
-            std::string uuid = rest.substr(0, sp);
             std::string uuid_short = uuid.substr(0, 8);
             std::string hex_show = hex.size() > 64
                 ? (hex.substr(0, 60) + "…")
@@ -5287,32 +5338,32 @@ void app_chessnut_apply_status(AppState& a, const std::string& status) {
             set_status(a, msg.c_str());
             queue_redraw(a);
         }
-        if (hex.size() >= chessnut::FEN_DATA_HEX_CHARS) {
+        // Chessnut Move: 38-byte FEN-data sensor frame (≥76 hex chars).
+        if (a.chessnut_board_kind != AppState::ChessnutBoardKind::Phantom &&
+            hex.size() >= chessnut::FEN_DATA_HEX_CHARS) {
             app_chessnut_apply_sensor_frame(a, hex);
             return;
         }
-        // Phantom detected-move parse: 18 hex chars, ASCII payload
-        // with the verified `"M 1 "` prefix.
-        if (hex.size() == phantom::DETECTED_MOVE_FRAME_LEN * 2 &&
-            a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom) {
-            uint8_t bytes[phantom::DETECTED_MOVE_FRAME_LEN];
-            for (size_t i = 0; i < phantom::DETECTED_MOVE_FRAME_LEN; ++i) {
+        // Phantom v0.3.0: a detected physical move arrives as an opcode-0x06
+        // frame ("M e2-e4 …" ASCII) on the GAME characteristic. Other notify
+        // channels (warnings, matrix-validation status) flow past unparsed.
+        if (a.chessnut_board_kind == AppState::ChessnutBoardKind::Phantom &&
+            uuid == phantom::GAME_UUID && hex.size() >= 4) {
+            std::vector<uint8_t> bytes;
+            bytes.reserve(hex.size() / 2);
+            for (size_t i = 0; i + 1 < hex.size(); i += 2) {
                 unsigned v = 0;
-                std::sscanf(hex.substr(i * 2, 2).c_str(), "%x", &v);
-                bytes[i] = static_cast<uint8_t>(v);
+                std::sscanf(hex.substr(i, 2).c_str(), "%x", &v);
+                bytes.push_back(static_cast<uint8_t>(v));
             }
-            int sc, sr, dc, dr; bool capture;
-            if (phantom::parse_detected_move(bytes,
-                    phantom::DETECTED_MOVE_FRAME_LEN,
-                    sc, sr, dc, dr, capture)) {
+            int sf, sr, df, dr; bool capture;
+            if (phantom::parse_detected_move(bytes.data(), bytes.size(),
+                                             sf, sr, df, dr, capture)) {
                 std::fprintf(stderr,
-                    "[phantom/sensor] detected move %c%c%c%c%c "
-                    "(capture=%d)\n",
-                    'a' + sc, '1' + sr, capture ? 'x' : '-',
-                    'a' + dc, '1' + dr, capture ? 1 : 0);
-                // TODO: feed (sc,sr)→(dc,dr) into the digital game
-                // via execute_move() once the modal / animation
-                // wiring is in place. For now we just log.
+                    "[phantom/sensor] detected move %c%c%c%c%c (capture=%d)\n",
+                    'a' + sf, '1' + sr, capture ? 'x' : '-',
+                    'a' + df, '1' + dr, capture ? 1 : 0);
+                app_phantom_commit_detected_move(a, sf, sr, df, dr);
             }
         }
         return;
