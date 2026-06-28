@@ -22,12 +22,6 @@ EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
 # dark clear when no SPZ loads).
 SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_500k.spz),\
     --preload-file ../world_labs/medieval_room/splat_500k.spz@/world_labs/medieval_room/splat_500k.spz,)
-# Sagrada Familia interior (Spaitial capture, ~36 MB). Optional —
-# falls through when the symlink/file isn't present so a clean
-# checkout still builds. Preloading this near-doubles the chess.data
-# payload, so consider stripping if the bundle size starts to bite.
-SPLAT_SPZ_PRELOAD += $(if $(wildcard ../spaitial/sagrada_familia_interior/splat.spz),\
-    --preload-file ../spaitial/sagrada_familia_interior/splat.spz@/spaitial/sagrada_familia_interior/splat.spz,)
 
 LDFLAGS   := \
     -s USE_SDL=2 \

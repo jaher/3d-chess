@@ -369,26 +369,6 @@ static const EnvironmentDesc g_environments[] = {
         25.0f,
         -8.878f,
     },
-    // 1 = SagradaFamilia — interior canopy generated via Spaitial's
-    // API (different provider from medieval_room's World Labs
-    // capture, hence the separate `spaitial/` asset folder). The
-    // splat_scale below is a starting guess — the cathedral source
-    // bbox is much wider than the medieval room's, so the same 25×
-    // world-scale would dwarf the chess table; tune visually after
-    // first launch.
-    {
-        "Sagrada Familia",
-        {
-            "spaitial/sagrada_familia_interior/splat.spz",
-            "/spaitial/sagrada_familia_interior/splat.spz",
-        },
-        {
-            "spaitial/sagrada_familia_interior/panorama.jpg",
-            "/spaitial/sagrada_familia_interior/panorama.jpg",
-        },
-        12.0f,
-        -8.878f,
-    },
 };
 constexpr int g_environment_count =
     static_cast<int>(sizeof(g_environments) / sizeof(g_environments[0]));

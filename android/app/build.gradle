@@ -108,7 +108,6 @@ tasks.register('stageAssets', Sync) {
     // the dark clear), exactly like the web/iOS optional preload.
     [
         'world_labs/medieval_room/splat_500k.spz',
-        'spaitial/sagrada_familia_interior/splat.spz',
     ].each { rel ->
         def f = file("${repoRoot}/${rel}")
         if (f.exists()) {

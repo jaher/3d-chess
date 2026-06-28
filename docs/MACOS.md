@@ -73,8 +73,8 @@ root-level `.o` files, so `make chess`, `make -C web`, and
 ## 3. The OpenGL 4.1 / no-compute / per-quad-splat limitation
 
 macOS's OpenGL tops out at **4.1 core** and has **no compute shaders**. The
-Gaussian-splat environment (the photoreal "Medieval Room" / "Sagrada Família"
-backdrops) can be rasterized two ways:
+Gaussian-splat environment (the photoreal "Medieval Room"
+backdrop) can be rasterized two ways:
 
 1. a **GL-compute tile rasterizer** (`gl_raster/`), which needs **GL 4.3** —
    unavailable on macOS; and

@@ -188,8 +188,7 @@ bundle_asset_dir(3dchess_ios "${REPO_ROOT}/openings"   "openings")
 # checkout without them still builds (board_renderer falls back to the dark
 # clear when no SPZ loads), exactly like the web build's optional preload.
 foreach(_spz
-        "world_labs/medieval_room/splat_500k.spz"
-        "spaitial/sagrada_familia_interior/splat.spz")
+        "world_labs/medieval_room/splat_500k.spz")
     if(EXISTS "${REPO_ROOT}/${_spz}")
         get_filename_component(_spz_dir "${_spz}" DIRECTORY)
         target_sources(3dchess_ios PRIVATE "${REPO_ROOT}/${_spz}")

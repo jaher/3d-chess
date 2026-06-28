@@ -21,7 +21,7 @@ struct OptionsScannedDevice {
 //   10 = "Gaussian splats" backdrop toggle (Marble medieval-room
 //        splat cloud behind the chess board),
 //   11 = "Environment" cycle — click steps through the registered
-//        splat backdrops (e.g. Medieval room → Sagrada Familia → …),
+//        splat backdrops (e.g. Medieval room → …),
 //   100+i = picker row #i.
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
