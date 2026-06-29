@@ -39,8 +39,100 @@ const CLS = {
   blunder: { glyph: '??', kind: 'blunder' },
 };
 
+// ---------------------------------------------------------------------------
+// Move sync (glasses <-> desktop). The glasses Web App has no Web Bluetooth, so
+// the link is a WebSocket to the sync-server.js relay; the desktop joins the
+// same room over raw TCP. When `linked`, the AI is off and the OTHER colour's
+// moves arrive from the remote. See sync.js / sync-server.js.
+// ---------------------------------------------------------------------------
+const FILE = 'abcdefgh', RANK = '87654321';
+function moveToUci(m) {
+  return FILE[m.from.c] + RANK[m.from.r] + FILE[m.to.c] + RANK[m.to.r] + (m.promo ? m.promo.toLowerCase() : '');
+}
+function uciToMove(g, uci) {
+  const fc = FILE.indexOf(uci[0]), fr = RANK.indexOf(uci[1]);
+  const tc = FILE.indexOf(uci[2]), tr = RANK.indexOf(uci[3]);
+  const promo = uci[4] ? uci[4].toUpperCase() : null;
+  return R.legalMoves(g).find((m) =>
+    m.from.r === fr && m.from.c === fc && m.to.r === tr && m.to.c === tc &&
+    (promo ? (m.promo && m.promo.toUpperCase() === promo) : !m.promo));
+}
+
+let linked = false;        // a synced game is active
+let peerPresent = false;   // the other end is in the room
+const sync = {
+  status: 'off',           // off | connected | closed | error
+  url: () => {
+    const proto = (location && location.protocol === 'https:') ? 'wss' : 'ws';
+    const host = (location && location.hostname) ? location.hostname : 'localhost';
+    return `${proto}://${host}:8090`;
+  },
+};
+
+function connectSync() {
+  if (!window.ChessSync) return;
+  sync.status = 'connecting';
+  window.ChessSync.connect(sync.url(), String(prefs.room), 'glasses', {
+    onMove: applyRemoteMove,
+    onReset: onRemoteReset,
+    // The relay assigns a role on join: the first into the room is the colour
+    // authority (initiator) and sends the reset; a later joiner waits for it.
+    onRole: (initiator) => {
+      linked = true;
+      if (initiator) startLinkedGame(true);
+      else { newGame(); render(); }   // follower: wait for the initiator's reset
+    },
+    onPeer: (name, joined) => {
+      peerPresent = joined;
+      // If we're the authority and a peer (re)joins, re-send our reset so they sync.
+      if (joined && linked && state && state.game.full === 1 && state.game.white) window.ChessSync.sendReset(prefs.humanIsWhite);
+      renderHud();
+    },
+    onStatus: (s) => {
+      sync.status = s;
+      if (s === 'closed' || s === 'error') { linked = false; peerPresent = false; }
+      renderHud();
+    },
+  });
+}
+function disconnectSync() {
+  if (window.ChessSync) window.ChessSync.disconnect();
+  linked = false; peerPresent = false; sync.status = 'off';
+}
+// Begin a fresh synced game. The initiator is the colour authority: it sends a
+// reset carrying its own colour; the remote adopts the opposite.
+function startLinkedGame(initiate) {
+  linked = true;
+  newGame();
+  if (initiate && window.ChessSync) window.ChessSync.sendReset(prefs.humanIsWhite);
+  render();
+}
+function onRemoteReset(fromWhite) {
+  prefs.humanIsWhite = !fromWhite;   // take the opposite colour to the initiator
+  savePrefs();
+  linked = true;
+  newGame();
+  render();
+}
+function applyRemoteMove(uci) {
+  if (!state || !linked) return;
+  const g = state.game;
+  if (g.white === prefs.humanIsWhite) return;     // not the remote's turn — ignore
+  const move = uciToMove(g, uci);
+  if (!move) return;                              // unknown/illegal here — ignore (desync guard)
+  const san = R.toSan(g, move);
+  state.game = R.applyMove(g, move);
+  state.last = { from: move.from, to: move.to, san };
+  state.badge = null;
+  state.evalWhite = E.evaluate(state.game);       // static eval for the bar (no engine when linked)
+  state.thinking = false;
+  save();
+  checkOver();
+  render();
+}
+
 // Persistent preferences (survive new games + reloads).
-let prefs = { humanIsWhite: true, difficulty: 1 };
+let prefs = { humanIsWhite: true, difficulty: 1, room: 1 };
 let state = null;
 let mode = 'play';        // 'play' | 'promo' | 'menu' | 'over'
 let overlay = null;       // { items, idx, ... } for promo/menu/over
@@ -61,8 +153,9 @@ function newGame() {
   };
   mode = 'play';
   overlay = null;
-  // If the human plays black, white (the AI) moves first.
-  if (!prefs.humanIsWhite) startThink();
+  // If the human plays black, white moves first — the AI (unlinked) or the
+  // remote (linked, so we just wait for their move).
+  if (!linked && !prefs.humanIsWhite) startThink();
 }
 
 // ---------------------------------------------------------------------------
@@ -143,10 +236,16 @@ function renderHud() {
   const g = state.game;
   const humanTurn = g.white === prefs.humanIsWhite;
   const inChk = R.inCheck(g, g.white);
-  let prompt = state.thinking ? 'Thinking…' : (humanTurn ? 'Your move' : 'Waiting');
+  let prompt = state.thinking ? 'Thinking…'
+             : (humanTurn ? 'Your move' : (linked ? 'Waiting…' : 'Waiting'));
   if (inChk && !state.thinking) prompt = humanTurn ? 'Check!' : prompt;
   el.prompt.textContent = prompt;
   el.prompt.className = 'prompt' + (prompt === 'Your move' ? '' : prompt === 'Check!' ? ' check' : ' waiting');
+
+  // Hint line doubles as the link-status indicator.
+  el.hint.textContent = linked
+    ? `Linked · room ${prefs.room} · ${peerPresent ? 'desktop ✓' : 'waiting for desktop'}`
+    : '◀▲ ▼▶ move · ⏎ pick · ⎋ menu';
 
   const myMs = prefs.humanIsWhite ? state.whiteMs : state.blackMs;
   el.clock.textContent = fmtClock(myMs);
@@ -248,8 +347,9 @@ function commitMove(move) {
   clearPick();
   mode = 'play';
   save();
+  if (linked) window.ChessSync.sendMove(moveToUci(move));   // push to the desktop
   if (checkOver()) { render(); return; }
-  startThink();
+  if (!linked) startThink();                                // linked: wait for the remote
   render();
 }
 
@@ -330,12 +430,16 @@ function openMenu() {
   render();
 }
 function buildMenu() {
+  const linkLabel = linked ? 'Unlink desktop'
+    : sync.status === 'connecting' ? 'Linking…' : 'Link to desktop';
   return [
     { label: 'New game', act: () => { newGame(); render(); } },
     { label: `Play: ${prefs.humanIsWhite ? 'White' : 'Black'}`, act: () => { prefs.humanIsWhite = !prefs.humanIsWhite; savePrefs(); newGame(); render(); } },
-    { label: `Level: ${DIFFS[prefs.difficulty].name}`, act: () => { prefs.difficulty = (prefs.difficulty + 1) % DIFFS.length; savePrefs(); openMenu(); } },
+    { label: `Level: ${DIFFS[prefs.difficulty].name}`, hidden: linked, act: () => { prefs.difficulty = (prefs.difficulty + 1) % DIFFS.length; savePrefs(); openMenu(); } },
+    { label: linkLabel, act: () => { if (linked || sync.status !== 'off') disconnectSync(); else connectSync(); openMenu(); } },
+    { label: `Room: ${prefs.room}`, act: () => { prefs.room = (prefs.room % 9) + 1; savePrefs(); openMenu(); } },
     { label: 'Resume', act: () => { mode = 'play'; overlay = null; render(); } },
-  ];
+  ].filter((it) => !it.hidden);
 }
 
 // ---------------------------------------------------------------------------

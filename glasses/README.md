@@ -67,6 +67,30 @@ python3 -m http.server 8080
 Self-tests: `node chess.js perft` (move-gen correctness) and
 `node engine.js smoke` (the AI plays a few self-moves).
 
+## Link to the desktop (move sync)
+
+The glasses can mirror a game with the C++ desktop build so moves made on the
+glasses appear on the computer and vice versa. The glasses **cannot use
+Bluetooth** (the Web App sandbox has no Web Bluetooth API — only Neural Band,
+IMU, GPS, storage), so the link is a **WebSocket** to a small relay; the desktop
+joins the same room over raw **TCP**. The relay bridges both transports per room.
+
+```bash
+# 1. start the relay (pure Node, no npm deps; speaks WebSocket + TCP)
+node glasses/sync-server.js            # ws :8090, tcp :8091
+
+# 2. link the desktop to room 1
+CHESS_SYNC_ROOM=1 ./chess              # CHESS_SYNC_HOST/PORT override the relay
+
+# 3. on the glasses: menu (Escape) -> "Room: N" to match -> "Link to desktop"
+```
+
+The first peer into a room is the colour authority (the relay assigns the role),
+so the link is order-independent. Files: `sync.js` (glasses client), `sync-server.js`
+(relay), and `net_sync.cpp`/`.h` on the desktop side. For real glasses use the
+relay must sit behind **WSS** (the glasses require HTTPS/WSS); `ws://localhost`
+is fine for local testing.
+
 ## Deploy to the glasses
 
 Meta loads Web Apps from a **public HTTPS URL** via the Meta AI app (Developer

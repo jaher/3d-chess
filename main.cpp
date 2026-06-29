@@ -20,6 +20,7 @@
 #include "voice_tts.h"
 #include "chess_rules.h"
 #include "chess_types.h"
+#include "net_sync.h"
 #include "stl_model.h"
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,32 @@ static void plat_trigger_puzzle_fetch(bool daily) {
     }).detach();
 }
 
+// --- Glasses <-> desktop move sync (net_sync.cpp over the relay) ------------
+// AppPlatform::trigger_send_move: a local move was made in network_mode — push
+// its UCI to the linked glasses (no-op if not connected).
+static void plat_send_move(const char* uci) { net_sync_send_move(uci); }
+
+// These run on the GLib main thread (net_sync marshals via g_idle_add), so they
+// may touch g_app directly.
+static void on_sync_move(const char* uci) { app_remote_move_ready(g_app, uci); }
+static void on_sync_reset(bool from_white) {
+    // The initiator chose `from_white`; we take the opposite colour.
+    app_start_network_game(g_app, !from_white);
+}
+static bool g_sync_initiator = false;
+static void on_sync_role(bool initiator) {
+    // First into the room is the colour authority: start as white and tell the
+    // follower. A follower waits for the initiator's reset (on_sync_reset).
+    g_sync_initiator = initiator;
+    if (initiator) { app_start_network_game(g_app, true); net_sync_send_reset(true); }
+}
+static void on_sync_peer(bool joined) {
+    plat_set_status(joined ? "3D Chess — glasses linked" : "3D Chess — glasses disconnected");
+    // As the authority, re-send our reset so a peer that joined AFTER us syncs
+    // (the first reset went to an empty room).
+    if (joined && g_sync_initiator) { app_start_network_game(g_app, true); net_sync_send_reset(true); }
+}
+
 static const AppPlatform g_platform = {
     plat_set_status,
     plat_queue_redraw,
@@ -193,7 +220,7 @@ static const AppPlatform g_platform = {
     plat_set_ai_elo,
     plat_request_quit,
     plat_trigger_puzzle_fetch,
-    nullptr,   // trigger_send_move: online multiplayer is web-only
+    plat_send_move,   // trigger_send_move: also used for the glasses link
 };
 
 // ---------------------------------------------------------------------------
@@ -561,7 +588,25 @@ int main(int argc, char* argv[]) {
     gtk_widget_show_all(g_window);
 
     app_enter_menu(g_app);
+
+    // Optional glasses<->desktop move sync. Launch with CHESS_SYNC_ROOM set to
+    // link this desktop to the glasses Web App through the relay
+    // (glasses/sync-server.js). Host/port default to the local relay.
+    if (const char* room = std::getenv("CHESS_SYNC_ROOM")) {
+        const char* host = std::getenv("CHESS_SYNC_HOST"); if (!host) host = "127.0.0.1";
+        int port = std::getenv("CHESS_SYNC_PORT") ? std::atoi(std::getenv("CHESS_SYNC_PORT")) : 8091;
+        net_sync_init(on_sync_move, on_sync_reset, on_sync_peer, on_sync_role);
+        net_sync_connect(host, port, room, "desktop");
+        // Debug/headless: CHESS_SYNC_TESTMOVE=<uci> sends one move after a
+        // short delay so the outgoing path can be verified without a click.
+        if (const char* tm = std::getenv("CHESS_SYNC_TESTMOVE")) {
+            static std::string s_tm = tm;
+            g_timeout_add(2500, [](gpointer) -> gboolean { net_sync_send_move(s_tm.c_str()); return G_SOURCE_REMOVE; }, nullptr);
+        }
+    }
+
     gtk_main();
+    net_sync_disconnect();     // close the glasses link + join its reader thread
     app_voice_shutdown(g_app);
     voice_tts_shutdown();      // stops TTS playback before the device closes
     app_chessnut_shutdown(g_app);

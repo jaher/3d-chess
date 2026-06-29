@@ -57,6 +57,9 @@
        (importScripts in engine-worker.js) — one source of truth. -->
   <script src="chess.js"></script>
   <script src="engine.js"></script>
+  <!-- Optional glasses<->desktop move sync (WebSocket relay; no Bluetooth in
+       the Web App sandbox). Safe to load even when unused. -->
+  <script src="sync.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

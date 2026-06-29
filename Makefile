@@ -31,6 +31,7 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             voice_input.cpp voice_whisper.cpp \
             voice_tts.cpp voice_tts_native.cpp \
             chessnut_bridge.cpp phantom_bridge.cpp \
+            net_sync.cpp \
             splat.cpp packed_splats.cpp \
             gl_raster/gl_rasterizer.cpp
 OBJS     := $(SRCS:.cpp=.o)
