@@ -6,16 +6,21 @@
        https://wearables.developer.meta.com/docs/develop/webapps/build/ -->
   <meta name="viewport"
         content="width=600, height=600, initial-scale=1.0, user-scalable=no">
+  <meta name="description"
+        content="Play chess on the Meta Ray-Ban Display: a glanceable board with an on-device AI and Neural Band move entry.">
   <!-- Marks this page as a Ray-Ban Display Web App. -->
   <meta name="mrbd-web-app-capable" content="yes">
-  <title>3D Chess — Glasses HUD</title>
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <title>3D Chess — Glasses</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <!-- The additive lens treats pure black as transparent, so the frame is
        black and everything visible is light/high-contrast. Everything lives
        inside one non-scrolling 600x600 stage. -->
-  <main id="stage" aria-label="Chess HUD">
+  <main id="stage" aria-label="Chess on glasses">
     <!-- Top status row: side-to-move prompt + clock -->
     <header id="topbar">
       <span id="prompt" class="prompt">Your move</span>
@@ -28,8 +33,7 @@
       <span id="evaltext" class="evaltext">0.0</span>
     </div>
 
-    <!-- 8x8 board, rendered as a CSS grid of Unicode glyphs. The cursor /
-         selected square are focus-ring styled per Meta's design guidance. -->
+    <!-- 8x8 board, rendered as a CSS grid of Unicode glyphs. -->
     <div id="board" class="board" role="grid" aria-label="Chess board"></div>
 
     <!-- Bottom row: last move + its quality badge -->
@@ -39,9 +43,20 @@
     </footer>
 
     <!-- One-line hint of the D-pad controls (Neural Band swipes/pinches). -->
-    <div id="hint" class="hint">◀▲▼▶ move cursor · ⏎ pick · ⎋ cancel</div>
+    <div id="hint" class="hint">◀▲▼▶ move · ⏎ pick · ⎋ menu</div>
+
+    <!-- Overlay reused for the promotion picker, the menu, and game-over. -->
+    <div id="overlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div id="ov-title" class="ov-title"></div>
+      <div id="ov-list" class="ov-list"></div>
+      <div id="ov-hint" class="hint"></div>
+    </div>
   </main>
 
+  <!-- Rules + engine are shared verbatim with the engine Web Worker
+       (importScripts in engine-worker.js) — one source of truth. -->
+  <script src="chess.js"></script>
+  <script src="engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

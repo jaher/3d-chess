@@ -15,6 +15,7 @@
   --bad:      #ff6b6b;  /* mistake / blunder badge */
   --light-sq: #2a3946;  /* light board square (still dark — additive) */
   --dark-sq:  #000000;  /* dark square: transparent on the lens */
+  --black-pc: #ff9d3a;  /* black pieces in amber so both sides read as "light" */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -31,6 +32,7 @@ html, body {
 }
 
 #stage {
+  position: relative;
   width: 600px;
   height: 600px;
   display: grid;
@@ -47,6 +49,7 @@ html, body {
 }
 .prompt { font-size: 24px; font-weight: 700; color: var(--accent); }
 .prompt.waiting { color: var(--dim); }
+.prompt.check { color: var(--bad); }
 .clock  { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .clock.low { color: var(--bad); }
 
@@ -92,6 +95,7 @@ html, body {
   overflow: hidden;
 }
 .sq {
+  position: relative;
   display: grid;
   place-items: center;
   font-size: 34px;
@@ -99,15 +103,33 @@ html, body {
 }
 .sq.light { background: var(--light-sq); }
 .sq.dark  { background: var(--dark-sq); }
-.sq .pc.white { color: #ffffff; text-shadow: 0 0 4px rgba(0,0,0,0.9); }
-.sq .pc.black { color: #9fc7df; text-shadow: 0 0 4px rgba(0,0,0,0.9); }
+.sq .pc.white { color: #ffffff;        text-shadow: 0 0 4px rgba(0,0,0,0.9); }
+.sq .pc.black { color: var(--black-pc); text-shadow: 0 0 4px rgba(0,0,0,0.9); }
 
-/* Cursor (current focus) and the picked from-square. */
+/* Legal-move hints for the picked piece: a dot on empty squares, a ring on
+   capturable ones. */
+.sq.target::after {
+  content: "";
+  position: absolute;
+  width: 26%;
+  height: 26%;
+  border-radius: 50%;
+  background: rgba(88, 224, 138, 0.85);
+}
+.sq.target.capture::after {
+  width: 84%;
+  height: 84%;
+  background: transparent;
+  border: 4px solid rgba(88, 224, 138, 0.9);
+}
+
+/* Cursor (current focus), the picked from-square, last move, king in check. */
 .sq.cursor  { outline: 3px solid var(--accent); outline-offset: -3px;
-              box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.45); }
+              box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.45); z-index: 1; }
 .sq.picked  { box-shadow: inset 0 0 0 3px var(--good); }
 .sq.lastsrc { box-shadow: inset 0 0 0 3px rgba(88, 224, 138, 0.5); }
 .sq.lastdst { box-shadow: inset 0 0 0 3px rgba(88, 224, 138, 0.9); }
+.sq.check   { box-shadow: inset 0 0 0 4px var(--bad); }
 
 /* --- Bottom bar --- */
 #bottombar {
@@ -115,7 +137,7 @@ html, body {
   align-items: center;
   gap: 10px;
 }
-.lastmove { font-size: 22px; font-weight: 700; }
+.lastmove { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .badge {
   font-size: 20px;
   font-weight: 800;
@@ -130,3 +152,49 @@ html, body {
 
 /* --- Hint --- */
 .hint { font-size: 16px; color: var(--dim); text-align: center; }
+
+/* --- Overlay: menu / promotion picker / game-over --- */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  /* Not pure-black so it reads as a panel over the board, but still dim. */
+  background: rgba(0, 0, 0, 0.92);
+  padding: 24px;
+}
+.overlay.hidden { display: none; }
+.ov-title { font-size: 30px; font-weight: 800; color: var(--accent); text-align: center; }
+.ov-title.win  { color: var(--good); }
+.ov-title.lose { color: var(--bad); }
+.ov-title.draw { color: var(--ink); }
+.ov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 78%;
+}
+/* Focusable rows per Meta's guidance: arrow-key cycled, 88px-ish targets. */
+.ov-item {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ink);
+  border: 2px solid var(--dim);
+  border-radius: 12px;
+  padding: 0 16px;
+}
+.ov-item.sel {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.4);
+  color: var(--accent);
+}
+/* Promotion picker lays its four choices in a row of big glyphs. */
+.ov-list.promo { flex-direction: row; justify-content: center; gap: 16px; }
+.ov-list.promo .ov-item { width: 96px; min-height: 96px; font-size: 52px; }

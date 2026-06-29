@@ -1,15 +1,17 @@
 # Meta Ray-Ban Display glasses — HUD front-end (research + plan + scaffold)
 
-> **Status: research + design + a runnable Web-App stub. NOT a hardware build.**
-> There is a complete, browser-testable Web-App scaffold under
-> [`glasses/`](../glasses/) that renders a glanceable chess HUD into the
-> 600×600 in-lens viewport model Meta specifies, driven entirely by the
-> D-pad/Neural-Band key events the glasses emit. It has **not** been run on
-> real Ray-Ban Display hardware (the author has none), and the chess engine /
-> rules are deliberately stubbed — see "What's stubbed" below. The Linux GTK
-> (`make`), web (`make -C web`), native SDL2 (`make -f Makefile.sdl`), iOS, and
-> Android builds are **unaffected**: the scaffold is static HTML/CSS/JS that no
-> Makefile compiles, and this change touches no shared C++ source.
+> **Status: a complete, browser-testable Web App. NOT yet run on hardware.**
+> There is a full, playable chess game under [`glasses/`](../glasses/) that
+> renders a glanceable HUD into the 600×600 in-lens viewport model Meta
+> specifies, driven entirely by the D-pad/Neural-Band key events the glasses
+> emit. The chess rules and AI are **fully implemented** (no longer stubbed):
+> `chess.js` is a perft-verified legal move generator and `engine.js` is an
+> alpha-beta AI run off-thread in a Web Worker — see "What's implemented" below.
+> It has **not** been run on real Ray-Ban Display hardware (the author has
+> none). The Linux GTK (`make`), web (`make -C web`), native SDL2
+> (`make -f Makefile.sdl`), iOS, and Android builds are **unaffected**: the app
+> is static HTML/CSS/JS that no Makefile compiles, and it touches no shared
+> C++ source.
 
 This document captures (1) what the Meta developer platform actually offers for
 the Ray-Ban Display glasses today, with citations; (2) which integration shape
@@ -182,8 +184,8 @@ the desktop click path, mapped onto Neural Band swipes/pinches.
 | Render | GL 3.3 PBR 3D | WebGL2 PBR 3D | **2D HUD, 600×600 additive** (no GL) |
 | Text | Cairo/Pango | stb_truetype | **DOM / CSS + Unicode glyphs** |
 | Input | mouse + keys + SPACE voice | mouse + SpeechRecognition | **D-pad keydown** (`Arrow*`/`Enter`/`Escape`) from Neural Band |
-| AI | Stockfish subprocess | Stockfish.js Web Worker | **Stockfish.js Web Worker** (reuse `web/stockfish/`) |
-| Rules | shared C++ `chess_rules` | shared C++ (WASM) | **stub today**; target = same C++ rules compiled to WASM, or a small JS port |
+| AI | Stockfish subprocess | Stockfish.js Web Worker | **JS alpha-beta engine** (`engine.js`) in a Web Worker — dependency-free, sized for the on-device browser |
+| Rules | shared C++ `chess_rules` | shared C++ (WASM) | **JS rules port** (`chess.js`), perft-verified to depth 5 |
 | Engine wiring shape | `AppPlatform` hooks | `AppPlatform` hooks | **same hook *contract*, JS side** (`trigger_ai_move` → worker post, reply → `app_ai_move_ready`) |
 
 The Web App is a **new, separate front-end** — it does **not** link the C++
@@ -196,30 +198,38 @@ shape `web/stockfish-bridge.js` already implements for the main web build.
 
 ## 3. Staged implementation plan
 
-**M0 — Scaffold (this change).** A browser-testable `glasses/` Web App: 600×600
-dark HUD, board + eval bar + last-move + clock + "your move" prompt, D-pad cursor
-move entry, `localStorage` for the in-progress game. Engine + legality stubbed,
-clearly marked. Runs in a desktop browser with arrow keys = D-pad (Meta's own
-local-test model). **No hardware, no build-system changes.**
+**M0 — Scaffold (done).** A browser-testable `glasses/` Web App: 600×600 dark
+HUD, board + eval bar + last-move + clock + "your move" prompt, D-pad cursor
+move entry, `localStorage` for the in-progress game.
 
-**M1 — Real rules + real engine.** Replace the stub move application with real
-legality, and wire the vendored **Stockfish.js** worker (`web/stockfish/`) for
-AI replies and eval, following `web/stockfish-bridge.js`. Two options for rules,
-in preference order:
-  1. **Compile the shared C++ core to a headless WASM module** (`chess_rules` +
-     a thin FEN-in/UCI-out shim via Emscripten `EXPORTED_FUNCTIONS`), so the
-     glasses HUD and the main web build share one source of truth for legality
-     and SAN; **or**
-  2. a small hand-written JS rules port if the WASM shim proves heavy for the
-     on-glasses browser.
-Reuse the eval → win-% → move-class mapping so the HUD's badges match the desktop
-classifier byte-for-byte.
+**M1 — Real rules + real engine (done).** The stub move application and canned
+engine were replaced with a full implementation:
+  - **Rules** — `glasses/chess.js` (`ChessRules`): complete legal move
+    generation (castling, en passant, promotion, check/checkmate/stalemate,
+    50-move + insufficient-material draws), SAN + FEN. Correctness is pinned by
+    **perft** (depth 5 = 4 865 609, verified via `node chess.js perft`). A
+    hand-written **JS port** was chosen over compiling the shared C++ `chess_rules`
+    to WASM: the glasses run a lightweight on-device browser, so a small
+    dependency-free bundle is the right fit, and perft makes the port provably
+    equivalent for legality.
+  - **Engine** — `glasses/engine.js` (`ChessEngine`): alpha-beta with iterative
+    deepening, a wall-clock budget, MVV-LVA move ordering, and a quiescence
+    search over a material + piece-square-table evaluation. It runs in a **Web
+    Worker** (`engine-worker.js`, importScripts of the same two files) so the HUD
+    and clock never stall while it thinks, with a synchronous fallback for
+    `file://`. Stockfish.js (used by the desktop/full-web build) is deliberately
+    *not* used here — too heavy for the on-device browser.
+  - **Coaching** — the move-quality badge (`!`/`?!`/`?`/`??`) is derived from the
+    engine's eval swing across the human's move, mirroring the desktop
+    classifier's spirit.
 
-**M2 — HUD polish for the additive lens.** Tune contrast/levels per Meta's design
-guidance (dark bg, 20–24 px primary text, focus rings on the active square),
-add the eval-bar animation, last-move highlight, and a compact captured-material
-readout. Add a PNG app icon (≥52×52) and the `mrbd-web-app-capable` meta tag
-(already present in the stub).
+**M2 — HUD polish for the additive lens (largely done).** Contrast/levels per
+Meta's design guidance (dark bg, 20–24 px primary text, cyan focus rings on the
+active square and on the `.focusable` menu rows), eval-bar animation, last-move
+highlight, legal-move dots/rings, a promotion picker, board flip for playing
+Black, check indication, a settings menu, and game-over states are all in. PNG
+app icons + a web-app `manifest.json` and the `mrbd-web-app-capable` meta tag are
+present. Remaining nice-to-have: a compact captured-material readout.
 
 **M3 — Deploy + on-glasses test.** Host on a public HTTPS URL (Meta's docs note
 Vercel + QR as the common flow), enable Developer Mode in the Meta AI app, load
@@ -261,10 +271,20 @@ identical plumbing to the WebRTC opponent move.
   does **not** simulate Display glasses, so even the native path can't fake the
   lens.)
 
-## What's stubbed in the M0 scaffold
+## What's implemented vs. remaining
 
-- **No real chess rules / legality** — the stub moves whatever piece is on the
-  from-square to the to-square. Real legality lands in M1.
-- **No real engine** — the "opponent" is a placeholder; Stockfish.js wiring is
-  M1. The eval bar shows a static/demo value.
-- **Not run on hardware** — validated only in a desktop browser at 600×600.
+**Implemented (M0–M2):**
+- **Full legal chess rules** — `chess.js`, perft-verified to depth 5.
+- **A real AI opponent** — `engine.js` alpha-beta in a Web Worker; Easy/Normal/
+  Hard time budgets.
+- **Complete game flow** — legal-move highlighting, promotion picker, board flip
+  for Black, check/checkmate/stalemate/draw + timeout, move-quality coaching,
+  clock, settings menu, `localStorage` resume.
+- **Deployment assets** — `manifest.json` + PNG icons + the required meta tags.
+
+**Remaining:**
+- **Not run on hardware** — validated only in a desktop/headless browser at
+  600×600. Real additive-lens readability and the Neural Band gesture feel need
+  M3 hardware.
+- **Nice-to-haves** — captured-material readout; opening-book variety; tuning the
+  move-quality thresholds against the desktop classifier.

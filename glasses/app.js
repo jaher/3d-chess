@@ -1,124 +1,137 @@
 /*
- * 3D Chess — Meta Ray-Ban Display HUD (Web App scaffold, M0).
+ * 3D Chess — Meta Ray-Ban Display Web App (full integration).
  *
- * A glanceable chess HUD for the 600x600 in-lens display, driven entirely by
- * the D-pad key events the glasses emit (Neural Band swipes/pinches and frame
- * cap-touch arrive as standard ArrowUp/Down/Left/Right + Enter + Escape
+ * A complete, playable chess game for the 600x600 in-lens display, driven
+ * entirely by the D-pad events the glasses emit (Neural Band swipes/pinches and
+ * frame cap-touch arrive as standard ArrowUp/Down/Left/Right + Enter + Escape
  * `keydown` events — see docs/meta-rayban-display.md).
  *
- * STATUS: scaffold. Runs in a desktop browser (arrow keys = D-pad) exactly as
- * Meta's local-test loop intends. The chess RULES and the AI ENGINE are
- * STUBBED — the two seams where the real implementations plug in are marked
- * `M1 SEAM` below:
- *   - applyMoveStub()      -> real legality (shared C++ rules compiled to WASM,
- *                             or a small JS rules port)
- *   - requestEngineMove()  -> the vendored Stockfish.js worker (web/stockfish/,
- *                             mirroring web/stockfish-bridge.js)
+ * Real rules come from chess.js (ChessRules, perft-verified) and a real
+ * alpha-beta AI from engine.js (ChessEngine), run off-thread in
+ * engine-worker.js so the HUD and clock never stall while the AI thinks. No
+ * stubs: legal move generation, castling, en passant, promotion, check /
+ * checkmate / stalemate / draws, a move-quality coach, a clock with flagging,
+ * a settings menu, and localStorage persistence.
+ *
+ * It runs in any desktop browser too (arrow keys = D-pad), which is exactly
+ * Meta's "build and preview in your browser, then deploy via URL" loop.
  */
-
 'use strict';
 
-// ---------------------------------------------------------------------------
-// Board model
-// ---------------------------------------------------------------------------
-// board[r][c]: r=0 is rank 8 (top of HUD), c=0 is file a. Uppercase = white,
-// lowercase = black, '.' = empty. Standard starting position.
-const START = [
-  ['r','n','b','q','k','b','n','r'],
-  ['p','p','p','p','p','p','p','p'],
-  ['.','.','.','.','.','.','.','.'],
-  ['.','.','.','.','.','.','.','.'],
-  ['.','.','.','.','.','.','.','.'],
-  ['.','.','.','.','.','.','.','.'],
-  ['P','P','P','P','P','P','P','P'],
-  ['R','N','B','Q','K','B','N','R'],
-];
+const R = window.ChessRules;
+const E = window.ChessEngine;
 
 const GLYPH = {
-  K:'♔', Q:'♕', R:'♖', B:'♗', N:'♘', P:'♙',
-  k:'♚', q:'♛', r:'♜', b:'♝', n:'♞', p:'♟',
+  K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙',
+  k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟',
 };
 
-const state = {
-  board: START.map(row => row.slice()),
-  whiteToMove: true,
-  humanIsWhite: true,
-  cursor: { r: 6, c: 4 },   // start on the e2 pawn
-  picked: null,             // {r,c} once a from-square is chosen
-  last: null,               // {src:{r,c}, dst:{r,c}, san, cls}
-  evalCp: 0,                // white-relative centipawns (stub)
-  whiteMs: 10 * 60 * 1000,
-  blackMs: 10 * 60 * 1000,
-  thinking: false,
+const DIFFS = [
+  { name: 'Easy', timeMs: 200, maxDepth: 2 },
+  { name: 'Normal', timeMs: 600, maxDepth: 4 },
+  { name: 'Hard', timeMs: 1200, maxDepth: 6 },
+];
+
+const CLS = {
+  good: { glyph: '!', kind: 'good' },
+  inaccuracy: { glyph: '?!', kind: 'miss' },
+  mistake: { glyph: '?', kind: 'mistake' },
+  blunder: { glyph: '??', kind: 'blunder' },
 };
 
-// ---------------------------------------------------------------------------
-// Coordinate helpers
-// ---------------------------------------------------------------------------
-const fileChar = c => 'abcdefgh'[c];
-const rankChar = r => '87654321'[r];
-const sqName   = (r, c) => fileChar(c) + rankChar(r);
-const isWhitePiece = p => p !== '.' && p === p.toUpperCase();
-const sideOwns = p => p !== '.' && (isWhitePiece(p) === state.whiteToMove);
+// Persistent preferences (survive new games + reloads).
+let prefs = { humanIsWhite: true, difficulty: 1 };
+let state = null;
+let mode = 'play';        // 'play' | 'promo' | 'menu' | 'over'
+let overlay = null;       // { items, idx, ... } for promo/menu/over
 
-// FEN of the current position — the exact string the engine seam consumes.
-function toFen() {
-  let rows = state.board.map(row => {
-    let out = '', empty = 0;
-    for (const p of row) {
-      if (p === '.') { empty++; continue; }
-      if (empty) { out += empty; empty = 0; }
-      out += p;
-    }
-    if (empty) out += empty;
-    return out;
-  }).join('/');
-  // Castling/en-passant are omitted in the stub; M1 carries full state.
-  return `${rows} ${state.whiteToMove ? 'w' : 'b'} - - 0 1`;
+function newGame() {
+  state = {
+    game: R.initialState(),
+    cursor: prefs.humanIsWhite ? { r: 6, c: 4 } : { r: 1, c: 4 },
+    picked: null,
+    targets: [],          // legal moves from the picked square
+    last: null,           // { from, to, san }
+    badge: null,          // CLS entry for the human's last move
+    evalWhite: 0,         // white-relative centipawns (from the engine)
+    prevEvalWhite: 0,     // eval before the human's pending move
+    whiteMs: 10 * 60 * 1000,
+    blackMs: 10 * 60 * 1000,
+    thinking: false,
+  };
+  mode = 'play';
+  overlay = null;
+  // If the human plays black, white (the AI) moves first.
+  if (!prefs.humanIsWhite) startThink();
 }
+
+// ---------------------------------------------------------------------------
+// DOM
+// ---------------------------------------------------------------------------
+const el = {
+  stage: document.getElementById('stage'),
+  prompt: document.getElementById('prompt'),
+  clock: document.getElementById('clock'),
+  evalfill: document.getElementById('evalfill'),
+  evaltext: document.getElementById('evaltext'),
+  board: document.getElementById('board'),
+  lastmove: document.getElementById('lastmove'),
+  badge: document.getElementById('badge'),
+  hint: document.getElementById('hint'),
+  overlay: document.getElementById('overlay'),
+  ovTitle: document.getElementById('ov-title'),
+  ovList: document.getElementById('ov-list'),
+  ovHint: document.getElementById('ov-hint'),
+};
+
+// 64 display cells, built once. Display order is always top-left to bottom-
+// right; board<->display mapping handles orientation (human side at bottom).
+const cells = [];
+for (let i = 0; i < 64; i++) {
+  const div = document.createElement('div');
+  div.setAttribute('role', 'gridcell');
+  el.board.appendChild(div);
+  cells.push(div);
+}
+const flip = () => !prefs.humanIsWhite;
+const dispToBoard = (i) => flip()
+  ? { r: 7 - Math.floor(i / 8), c: 7 - (i % 8) }
+  : { r: Math.floor(i / 8), c: i % 8 };
 
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-const el = {
-  board:    document.getElementById('board'),
-  prompt:   document.getElementById('prompt'),
-  clock:    document.getElementById('clock'),
-  evalfill: document.getElementById('evalfill'),
-  evaltext: document.getElementById('evaltext'),
-  lastmove: document.getElementById('lastmove'),
-  badge:    document.getElementById('badge'),
-};
-
-// Build the 64 cells once; we only toggle classes/text afterwards.
-const cells = [];
-for (let r = 0; r < 8; r++) {
-  cells[r] = [];
-  for (let c = 0; c < 8; c++) {
-    const div = document.createElement('div');
-    div.className = 'sq ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
-    div.setAttribute('role', 'gridcell');
-    el.board.appendChild(div);
-    cells[r][c] = div;
-  }
-}
+const fileChar = (c) => 'abcdefgh'[c];
+const rankChar = (r) => '87654321'[r];
+const same = (a, b) => a && b && a.r === b.r && a.c === b.c;
 
 function renderBoard() {
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      const div = cells[r][c];
-      div.classList.remove('cursor', 'picked', 'lastsrc', 'lastdst');
-      const p = state.board[r][c];
-      div.innerHTML = p === '.' ? '' :
-        `<span class="pc ${isWhitePiece(p) ? 'white' : 'black'}">${GLYPH[p]}</span>`;
-      if (state.last) {
-        if (r === state.last.src.r && c === state.last.src.c) div.classList.add('lastsrc');
-        if (r === state.last.dst.r && c === state.last.dst.c) div.classList.add('lastdst');
-      }
-      if (state.picked && r === state.picked.r && c === state.picked.c) div.classList.add('picked');
-      if (r === state.cursor.r && c === state.cursor.c) div.classList.add('cursor');
+  const g = state.game;
+  const kingPos = R.inCheck(g, g.white) ? findKingPos(g.board, g.white) : null;
+  for (let i = 0; i < 64; i++) {
+    const { r, c } = dispToBoard(i);
+    const div = cells[i];
+    const p = g.board[r][c];
+    div.className = 'sq ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+    div.innerHTML = p === '.' ? '' :
+      `<span class="pc ${R.isWhite(p) ? 'white' : 'black'}">${GLYPH[p]}</span>`;
+    if (state.last) {
+      if (same({ r, c }, state.last.from)) div.classList.add('lastsrc');
+      if (same({ r, c }, state.last.to)) div.classList.add('lastdst');
     }
+    if (state.targets.some((m) => m.to.r === r && m.to.c === c)) {
+      div.classList.add('target');
+      if (p !== '.' || state.targets.some((m) => m.to.r === r && m.to.c === c && m.ep)) div.classList.add('capture');
+    }
+    if (state.picked && same({ r, c }, state.picked)) div.classList.add('picked');
+    if (kingPos && kingPos.r === r && kingPos.c === c) div.classList.add('check');
+    if (mode === 'play' && same({ r, c }, state.cursor)) div.classList.add('cursor');
   }
+}
+function findKingPos(board, white) {
+  const k = white ? 'K' : 'k';
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (board[r][c] === k) return { r, c };
+  return null;
 }
 
 function fmtClock(ms) {
@@ -127,173 +140,317 @@ function fmtClock(ms) {
 }
 
 function renderHud() {
-  state.prompt = state.thinking ? 'Thinking…'
-               : (state.whiteToMove === state.humanIsWhite ? 'Your move' : 'Waiting');
-  el.prompt.textContent = state.prompt;
-  el.prompt.classList.toggle('waiting', state.prompt !== 'Your move');
+  const g = state.game;
+  const humanTurn = g.white === prefs.humanIsWhite;
+  const inChk = R.inCheck(g, g.white);
+  let prompt = state.thinking ? 'Thinking…' : (humanTurn ? 'Your move' : 'Waiting');
+  if (inChk && !state.thinking) prompt = humanTurn ? 'Check!' : prompt;
+  el.prompt.textContent = prompt;
+  el.prompt.className = 'prompt' + (prompt === 'Your move' ? '' : prompt === 'Check!' ? ' check' : ' waiting');
 
-  const myMs = state.humanIsWhite ? state.whiteMs : state.blackMs;
+  const myMs = prefs.humanIsWhite ? state.whiteMs : state.blackMs;
   el.clock.textContent = fmtClock(myMs);
   el.clock.classList.toggle('low', myMs < 30000);
 
-  // Eval bar: clamp centipawns to a +/-1000 window, white fills from the left.
-  const cp = Math.max(-1000, Math.min(1000, state.evalCp));
+  const cp = Math.max(-1000, Math.min(1000, state.evalWhite));
   el.evalfill.style.width = `${50 + (cp / 1000) * 50}%`;
   const pawns = (cp / 100).toFixed(1);
   el.evaltext.textContent = cp > 0 ? `+${pawns}` : pawns;
 
-  if (state.last) {
-    el.lastmove.textContent = state.last.san;
-    el.badge.textContent = state.last.cls ? state.last.cls.glyph : '';
-    el.badge.className = 'badge ' + (state.last.cls ? state.last.cls.kind : '');
-  } else {
-    el.lastmove.textContent = '—';
-    el.badge.textContent = '';
-    el.badge.className = 'badge';
+  el.lastmove.textContent = state.last ? state.last.san : '—';
+  el.badge.textContent = state.badge ? state.badge.glyph : '';
+  el.badge.className = 'badge ' + (state.badge ? state.badge.kind : '');
+}
+
+function render() { renderBoard(); renderHud(); renderOverlay(); }
+
+// ---------------------------------------------------------------------------
+// Overlay (promotion picker / menu / game-over)
+// ---------------------------------------------------------------------------
+function renderOverlay() {
+  if (mode !== 'promo' && mode !== 'menu' && mode !== 'over') {
+    el.overlay.classList.add('hidden');
+    el.hint.style.visibility = 'visible';
+    return;
   }
-}
-
-function render() { renderBoard(); renderHud(); }
-
-// ---------------------------------------------------------------------------
-// Move application — M1 SEAM (legality is stubbed)
-// ---------------------------------------------------------------------------
-// STUB: moves the piece on `src` onto `dst` with no legality check. Replace
-// with the shared C++ rules compiled to WASM (FEN in / legal-move check /
-// SAN out) so the HUD matches the desktop & web builds exactly.
-function applyMoveStub(src, dst) {
-  const piece = state.board[src.r][src.c];
-  if (piece === '.') return false;
-  state.board[dst.r][dst.c] = piece;
-  state.board[src.r][src.c] = '.';
-  state.last = { src, dst, san: sqName(src.r, src.c) + sqName(dst.r, dst.c), cls: null };
-  state.whiteToMove = !state.whiteToMove;
-  save();
-  return true;
+  el.hint.style.visibility = 'hidden';
+  el.overlay.classList.remove('hidden');
+  el.ovList.className = 'ov-list' + (mode === 'promo' ? ' promo' : '');
+  el.ovTitle.className = 'ov-title' + (overlay.titleClass || '');
+  el.ovTitle.textContent = overlay.title;
+  el.ovList.innerHTML = '';
+  overlay.items.forEach((it, i) => {
+    const d = document.createElement('div');
+    d.className = 'ov-item focusable' + (i === overlay.idx ? ' sel' : '');
+    d.textContent = it.label;
+    el.ovList.appendChild(d);
+  });
+  el.ovHint.textContent = overlay.hint || '';
 }
 
 // ---------------------------------------------------------------------------
-// Engine — M1 SEAM (Stockfish.js wiring is stubbed)
+// Cursor + move entry (play mode)
 // ---------------------------------------------------------------------------
-// STUB: instead of posting `fen` to the vendored Stockfish.js worker
-// (web/stockfish/, see web/stockfish-bridge.js) and awaiting `bestmove`, this
-// echoes a trivial canned reply so the turn-flow is demonstrable. The eval is
-// a placeholder. M1 replaces the body; `onEngineMove` stays the callback.
-function requestEngineMove(fen) {
-  state.thinking = true;
-  renderHud();
-  setTimeout(() => {
-    // Canned opening replies for Black so the demo plays a few moves; falls
-    // back to "no reply" once off-book (stub has no move generator).
-    const canned = { 1: { from: { r: 1, c: 4 }, to: { r: 3, c: 4 } },   // e7e5
-                     2: { from: { r: 0, c: 6 }, to: { r: 2, c: 5 } } };  // g8f6
-    const reply = canned[++requestEngineMove._n];
-    if (reply) onEngineMove(reply.from, reply.to);
-    else { state.thinking = false; renderHud(); }   // off-book: human plays on
-  }, 500);
-}
-requestEngineMove._n = 0;
-
-function onEngineMove(src, dst) {
-  applyMoveStub(src, dst);
-  state.thinking = false;
-  state.evalCp = Math.round((Math.random() * 80) - 40);  // stub eval
-  render();
-}
-
-// ---------------------------------------------------------------------------
-// Move-quality badge vocabulary (matches the desktop/web classifier glyphs).
-// In M1 this is fed by the eval swing instead of being hand-set.
-// ---------------------------------------------------------------------------
-const CLS = {
-  brilliant: { glyph: '!!', kind: 'brilliant' },
-  good:      { glyph: '!',  kind: 'good' },
-  miss:      { glyph: '?!', kind: 'miss' },
-  mistake:   { glyph: '?',  kind: 'mistake' },
-  blunder:   { glyph: '??', kind: 'blunder' },
-};
-
-// ---------------------------------------------------------------------------
-// Input — D-pad (Neural Band swipes/pinches => arrow keys + Enter + Escape)
-// ---------------------------------------------------------------------------
-function moveCursor(dr, dc) {
+function moveCursor(visualDr, visualDc) {
+  // "Visual" up/left map to board deltas depending on orientation.
+  const dr = flip() ? -visualDr : visualDr;
+  const dc = flip() ? -visualDc : visualDc;
   state.cursor.r = Math.max(0, Math.min(7, state.cursor.r + dr));
   state.cursor.c = Math.max(0, Math.min(7, state.cursor.c + dc));
   renderBoard();
 }
 
 function activate() {
-  if (state.thinking) return;
-  if (state.whiteToMove !== state.humanIsWhite) return;  // not your turn
+  const g = state.game;
+  if (state.thinking || g.white !== prefs.humanIsWhite) return;  // not your turn
   const { r, c } = state.cursor;
   if (!state.picked) {
-    // Pick a from-square only if it holds a piece of the side to move.
-    if (sideOwns(state.board[r][c])) { state.picked = { r, c }; renderBoard(); }
+    const moves = R.legalMoves(g).filter((m) => m.from.r === r && m.from.c === c);
+    if (moves.length) { state.picked = { r, c }; state.targets = moves; renderBoard(); }
     return;
   }
-  // Second tap: commit the from -> to move.
-  const src = state.picked;
-  state.picked = null;
-  if (src.r === r && src.c === c) { renderBoard(); return; }  // tapped same sq = cancel
-  if (applyMoveStub(src, { r, c })) {
-    render();
-    requestEngineMove(toFen());   // ask the engine for the reply
-  } else {
-    render();
+  // Second activate: same square cancels; another own piece re-picks; a legal
+  // target commits (opening the promotion picker if it's a promotion).
+  if (same({ r, c }, state.picked)) { clearPick(); return; }
+  const matches = state.targets.filter((m) => m.to.r === r && m.to.c === c);
+  if (!matches.length) {
+    const re = R.legalMoves(g).filter((m) => m.from.r === r && m.from.c === c);
+    if (re.length) { state.picked = { r, c }; state.targets = re; renderBoard(); }
+    else clearPick();
+    return;
   }
+  if (matches.length > 1 && matches[0].promo) { openPromo(matches); return; }
+  commitMove(matches[0]);
+}
+function clearPick() { state.picked = null; state.targets = []; renderBoard(); }
+
+function openPromo(matches) {
+  mode = 'promo';
+  const order = ['Q', 'R', 'B', 'N'];
+  const items = order.map((u) => ({
+    label: GLYPH[prefs.humanIsWhite ? u : u.toLowerCase()],
+    move: matches.find((m) => m.promo && m.promo.toUpperCase() === u),
+  }));
+  overlay = { title: 'Promote', items, idx: 0, hint: '◀ ▶ choose · ⏎ confirm · ⎋ cancel' };
+  render();
 }
 
+// ---------------------------------------------------------------------------
+// Move execution + the AI reply
+// ---------------------------------------------------------------------------
+function commitMove(move) {
+  const g = state.game;
+  const san = R.toSan(g, move);
+  state.prevEvalWhite = state.evalWhite;     // baseline for move-quality scoring
+  state.game = R.applyMove(g, move);
+  state.last = { from: move.from, to: move.to, san };
+  state.badge = null;
+  clearPick();
+  mode = 'play';
+  save();
+  if (checkOver()) { render(); return; }
+  startThink();
+  render();
+}
+
+function startThink() {
+  state.thinking = true;
+  const d = DIFFS[prefs.difficulty];
+  requestSearch(state.game, { timeMs: d.timeMs, maxDepth: d.maxDepth });
+  renderHud();
+}
+
+function onBestMove(res) {
+  if (!state) return;
+  state.thinking = false;
+  if (!res.move) { checkOver(); render(); return; }   // no reply => game already over
+  const g = state.game;
+  const san = R.toSan(g, res.move);
+  state.game = R.applyMove(g, res.move);
+  state.last = { from: res.move.from, to: res.move.to, san };
+  state.evalWhite = res.evalCp;
+  // Grade the human's previous move by the eval swing (white-relative cp
+  // converted to the human's point of view).
+  const sign = prefs.humanIsWhite ? 1 : -1;
+  const loss = (state.prevEvalWhite - res.evalCp) * sign;
+  state.badge = classify(loss);
+  save();
+  checkOver();
+  render();
+}
+
+function classify(loss) {
+  if (loss >= 250) return CLS.blunder;
+  if (loss >= 110) return CLS.mistake;
+  if (loss >= 50) return CLS.inaccuracy;
+  if (loss <= -130) return CLS.good;      // found a strong move / won material
+  return null;                            // unremarkable — keep the HUD clean
+}
+
+function checkOver() {
+  const res = R.result(state.game);
+  if (!res) return false;
+  endGame(res);
+  return true;
+}
+
+function endGame(res) {
+  let title = 'Draw', cls = ' draw';
+  if (res === 'checkmate') {
+    // The side to move is checkmated, so the OTHER side won.
+    const humanWon = (state.game.white !== prefs.humanIsWhite);
+    title = humanWon ? 'You win!' : 'You lose';
+    cls = humanWon ? ' win' : ' lose';
+  } else if (res === 'stalemate') { title = 'Stalemate'; }
+  else if (res === 'fifty') { title = 'Draw · 50-move'; }
+  else if (res === 'insufficient') { title = 'Draw · material'; }
+  mode = 'over';
+  overlay = { title, titleClass: cls, items: [{ label: 'New game' }], idx: 0, hint: '⏎ new game · ⎋ menu' };
+  state.thinking = false;
+}
+
+function endByFlag(whoFlaggedWhite) {
+  const humanFlagged = (whoFlaggedWhite === prefs.humanIsWhite);
+  mode = 'over';
+  overlay = {
+    title: humanFlagged ? 'You lose · time' : 'You win · time',
+    titleClass: humanFlagged ? ' lose' : ' win',
+    items: [{ label: 'New game' }], idx: 0, hint: '⏎ new game · ⎋ menu',
+  };
+  state.thinking = false;
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
+function openMenu() {
+  mode = 'menu';
+  overlay = { title: '3D Chess', items: buildMenu(), idx: 0, hint: '▲ ▼ navigate · ⏎ select · ⎋ back' };
+  render();
+}
+function buildMenu() {
+  return [
+    { label: 'New game', act: () => { newGame(); render(); } },
+    { label: `Play: ${prefs.humanIsWhite ? 'White' : 'Black'}`, act: () => { prefs.humanIsWhite = !prefs.humanIsWhite; savePrefs(); newGame(); render(); } },
+    { label: `Level: ${DIFFS[prefs.difficulty].name}`, act: () => { prefs.difficulty = (prefs.difficulty + 1) % DIFFS.length; savePrefs(); openMenu(); } },
+    { label: 'Resume', act: () => { mode = 'play'; overlay = null; render(); } },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Input — D-pad (Neural Band swipes/pinches => arrows + Enter + Escape)
+// ---------------------------------------------------------------------------
 document.addEventListener('keydown', (e) => {
-  switch (e.key) {
-    case 'ArrowUp':    moveCursor(-1, 0); break;
-    case 'ArrowDown':  moveCursor(1, 0);  break;
-    case 'ArrowLeft':  moveCursor(0, -1); break;
-    case 'ArrowRight': moveCursor(0, 1);  break;
-    case 'Enter':      activate();        break;
-    case 'Escape':     state.picked = null; renderBoard(); break;
-    default: return;
-  }
+  const k = e.key;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Escape'].includes(k)) return;
   e.preventDefault();
+
+  if (mode === 'promo') {
+    if (k === 'ArrowLeft') overlay.idx = (overlay.idx + 3) % 4;
+    else if (k === 'ArrowRight') overlay.idx = (overlay.idx + 1) % 4;
+    else if (k === 'Enter') { const mv = overlay.items[overlay.idx].move; mode = 'play'; overlay = null; commitMove(mv); return; }
+    else if (k === 'Escape') { mode = 'play'; overlay = null; render(); return; }
+    renderOverlay();
+    return;
+  }
+  if (mode === 'menu') {
+    if (k === 'ArrowUp') overlay.idx = (overlay.idx + overlay.items.length - 1) % overlay.items.length;
+    else if (k === 'ArrowDown') overlay.idx = (overlay.idx + 1) % overlay.items.length;
+    else if (k === 'Enter') { overlay.items[overlay.idx].act(); return; }
+    else if (k === 'Escape') { if (state) { mode = 'play'; overlay = null; render(); } }
+    renderOverlay();
+    return;
+  }
+  if (mode === 'over') {
+    if (k === 'Enter') { newGame(); render(); }
+    else if (k === 'Escape') { openMenu(); }
+    return;
+  }
+  // play mode
+  switch (k) {
+    case 'ArrowUp': moveCursor(-1, 0); break;
+    case 'ArrowDown': moveCursor(1, 0); break;
+    case 'ArrowLeft': moveCursor(0, -1); break;
+    case 'ArrowRight': moveCursor(0, 1); break;
+    case 'Enter': activate(); break;
+    case 'Escape': if (state.picked) clearPick(); else openMenu(); break;
+  }
 });
 
 // ---------------------------------------------------------------------------
-// Clock + persistence
+// Clock
 // ---------------------------------------------------------------------------
 let lastTick = performance.now();
 function tick(now) {
   const dt = now - lastTick;
   lastTick = now;
-  if (!state.thinking || state.whiteToMove !== state.humanIsWhite) {
-    if (state.whiteToMove) state.whiteMs -= dt; else state.blackMs -= dt;
+  if (state && mode === 'play') {
+    if (state.game.white) state.whiteMs -= dt; else state.blackMs -= dt;
+    if (state.whiteMs <= 0) { state.whiteMs = 0; endByFlag(true); }
+    else if (state.blackMs <= 0) { state.blackMs = 0; endByFlag(false); }
+    el.clock.textContent = fmtClock(prefs.humanIsWhite ? state.whiteMs : state.blackMs);
+    el.clock.classList.toggle('low', (prefs.humanIsWhite ? state.whiteMs : state.blackMs) < 30000);
   }
-  el.clock.textContent = fmtClock(state.humanIsWhite ? state.whiteMs : state.blackMs);
   requestAnimationFrame(tick);
 }
 
+// ---------------------------------------------------------------------------
+// Engine: a Web Worker if available, else a synchronous fallback.
+// ---------------------------------------------------------------------------
+let worker = null;
+function setupWorker() {
+  try {
+    worker = new Worker('engine-worker.js');
+    worker.onmessage = (e) => { if (e.data && e.data.type === 'bestmove') onBestMove(e.data); };
+    worker.onerror = () => { worker = null; };   // fall back to sync on failure
+  } catch (_) { worker = null; }
+}
+function requestSearch(game, opts) {
+  if (worker) { worker.postMessage({ type: 'search', state: game, opts }); return; }
+  // Synchronous fallback (e.g. file:// where workers are blocked): yield a
+  // frame so "Thinking…" paints, then search on the main thread.
+  setTimeout(() => onBestMove(E.searchBestMove(game, opts)), 30);
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+function savePrefs() {
+  try { localStorage.setItem('glasses_chess_prefs', JSON.stringify(prefs)); } catch (_) {}
+}
 function save() {
   try {
     localStorage.setItem('glasses_chess', JSON.stringify({
-      board: state.board, whiteToMove: state.whiteToMove, last: state.last,
+      game: state.game, last: state.last, badge: state.badge,
+      evalWhite: state.evalWhite, prevEvalWhite: state.prevEvalWhite,
       whiteMs: state.whiteMs, blackMs: state.blackMs,
     }));
-  } catch (_) { /* localStorage may be unavailable; non-fatal */ }
+  } catch (_) {}
 }
-
 function restore() {
+  try { const p = JSON.parse(localStorage.getItem('glasses_chess_prefs')); if (p) prefs = Object.assign(prefs, p); } catch (_) {}
   try {
-    const raw = localStorage.getItem('glasses_chess');
-    if (!raw) return;
-    const s = JSON.parse(raw);
+    const s = JSON.parse(localStorage.getItem('glasses_chess'));
+    if (!s || !s.game) return false;
+    newGame();
     Object.assign(state, {
-      board: s.board, whiteToMove: s.whiteToMove, last: s.last,
-      whiteMs: s.whiteMs, blackMs: s.blackMs,
+      game: s.game, last: s.last, badge: s.badge,
+      evalWhite: s.evalWhite || 0, prevEvalWhite: s.prevEvalWhite || 0,
+      whiteMs: s.whiteMs, blackMs: s.blackMs, thinking: false,
     });
-  } catch (_) { /* ignore corrupt save */ }
+    mode = 'play'; overlay = null;
+    state.cursor = prefs.humanIsWhite ? { r: 6, c: 4 } : { r: 1, c: 4 };
+    // If it's the AI's turn in the restored position, let it think.
+    if (!R.result(state.game) && state.game.white !== prefs.humanIsWhite) startThink();
+    return true;
+  } catch (_) { return false; }
 }
 
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-restore();
+setupWorker();
+if (!restore()) newGame();
 render();
 requestAnimationFrame((t) => { lastTick = t; tick(t); });

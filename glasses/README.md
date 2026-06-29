@@ -1,33 +1,55 @@
-# Meta Ray-Ban Display HUD — Web App scaffold (M0)
+# Meta Ray-Ban Display — Chess Web App
 
-> **Scaffold only — NOT run on hardware. Chess rules + AI engine are stubbed.**
-> The full research, the rationale for the Web-App path, the staged plan, and
-> the C++ `AppPlatform` touch-points live in
+> **Complete, playable chess game for the Meta Ray-Ban Display.** Not yet run on
+> physical hardware (the author has none), but fully functional in any browser,
+> which is exactly Meta's documented "build and preview in your browser, then
+> deploy via URL" loop. The platform research, rationale, and staged plan live in
 > [`../docs/meta-rayban-display.md`](../docs/meta-rayban-display.md).
 
-A glanceable chess HUD for the **Meta Ray-Ban Display** in-lens screen, built as
-a **Web App** (the only publicly available path that renders a fully custom UI to
-the Display lens — no companion app required). It targets Meta's documented
+A chess game for the **Meta Ray-Ban Display** in-lens screen, built as a **Web
+App** — the only publicly available path that renders a fully custom UI to the
+Display lens, with no companion app required. It targets Meta's documented
 constraints:
 
 - **600×600 px**, no scrolling, additive lens (pure black = transparent → dark
-  background, light high-contrast UI, bright accents).
+  background, light high-contrast UI, bright accents), body text ≥16 px.
 - Input is **D-pad only**: Neural Band swipes/pinches and frame cap-touch arrive
-  as standard `ArrowUp/Down/Left/Right` + `Enter` + `Escape` `keydown` events.
-- `<meta name="mrbd-web-app-capable" content="yes">` marks the page as a Web App.
+  as standard `ArrowUp/Down/Left/Right` + `Enter` + `Escape` `keydown` events;
+  the menu uses the `.focusable` + cyan focus-ring convention.
+- `<meta name="mrbd-web-app-capable" content="yes">` + a web-app `manifest.json`
+  with PNG icons mark the page as a deployable Web App.
+
+This is a **full integration** — no stubs:
+
+- **Real rules** — `chess.js` is a complete legal move generator (castling, en
+  passant, promotion, check/checkmate/stalemate, 50-move + insufficient-material
+  draws), pinned by **perft** (depth 5 = 4 865 609, verified).
+- **Real AI** — `engine.js` is an alpha-beta search with iterative deepening, a
+  wall-clock budget, MVV-LVA ordering, and quiescence over a material +
+  piece-square-table evaluation. It runs in a **Web Worker** so the HUD and clock
+  never stall while it thinks (with a synchronous fallback for `file://`).
+  Stockfish.js is deliberately *not* used — the glasses run a lightweight
+  on-device browser, so a small dependency-free engine is the right fit.
+- **Full game** — legal-move highlighting, a promotion picker, board flips for
+  playing Black, a move-quality coach badge (`!`/`?!`/`?`/`??`) from the engine's
+  eval swing, a clock with flagging, a settings menu, and `localStorage` resume.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `index.html` | 600×600 stage: prompt + clock, eval bar, 8×8 board, last-move + quality badge, control hint |
-| `styles.css` | Additive-lens theme (black bg, cyan focus ring, high-contrast glyphs) |
-| `app.js` | Board model, rendering, D-pad input, clock, `localStorage`, and the two `M1 SEAM`s (rules, engine) |
+| `index.html` | 600×600 stage: prompt + clock, eval bar, 8×8 board, last-move + quality badge, overlay (menu/promotion/game-over) |
+| `styles.css` | Additive-lens theme (black bg, cyan focus ring, white vs amber pieces so both sides read as light) |
+| `chess.js` | Perft-verified rules engine (`ChessRules`); pure logic, no DOM |
+| `engine.js` | Alpha-beta AI (`ChessEngine`) over material + PST eval; pure logic |
+| `engine-worker.js` | Web Worker that `importScripts` chess.js + engine.js and runs the search off-thread |
+| `app.js` | HUD rendering, D-pad input, game flow, move-quality coach, clock, persistence |
+| `manifest.json`, `icon-*.png` | Web-app manifest + PNG icons for deployment |
 
 ## Run it locally (Meta's documented test loop)
 
-No build step — it's static files. Serve the folder over HTTP and open it; use
-the keyboard arrow keys as the D-pad:
+No build step — static files. Serve the folder over HTTP and open it; the
+keyboard arrow keys stand in for the D-pad:
 
 ```bash
 cd glasses
@@ -35,24 +57,20 @@ python3 -m http.server 8080
 # open http://localhost:8080/  (size the window to 600x600)
 ```
 
-- **Arrow keys** — move the square cursor (cyan ring).
-- **Enter** — pick the from-square (must hold a piece of the side to move), then
-  Enter again on the destination to play the move.
-- **Escape** — cancel the current pick.
+- **Arrow keys** — move the cursor (cyan ring). Pick a piece and its legal
+  destinations light up as green dots/rings.
+- **Enter** — pick the from-square, then Enter on a highlighted target to move
+  (a promotion opens a Q/R/B/N picker).
+- **Escape** — cancel a pick, or open the menu (new game · play White/Black ·
+  level Easy/Normal/Hard · resume).
 
-The demo plays a couple of canned Black replies so the turn-flow is visible.
+Self-tests: `node chess.js perft` (move-gen correctness) and
+`node engine.js smoke` (the AI plays a few self-moves).
 
-## What's stubbed (becomes real in M1)
-
-- **`applyMoveStub()`** — no legality; it just relocates the piece. M1 swaps in
-  the shared C++ `chess_rules` compiled to WASM (FEN in / legal check / SAN out)
-  so the HUD matches the desktop and web builds exactly.
-- **`requestEngineMove()`** — canned replies + placeholder eval. M1 wires the
-  vendored **Stockfish.js** worker (`../web/stockfish/`,
-  mirroring `../web/stockfish-bridge.js`); `onEngineMove()` stays the callback.
-
-## Deploy to the glasses (M3, needs hardware)
+## Deploy to the glasses
 
 Meta loads Web Apps from a **public HTTPS URL** via the Meta AI app (Developer
-Mode → add Web App; Vercel + QR is the common flow). Requires Ray-Ban Display
-firmware v125+ and Meta AI app v272+. See `../docs/meta-rayban-display.md` §3.
+Mode → add Web App; can be shared to up to 100 testers via a password-protected
+URL). Requires recent Ray-Ban Display firmware + Meta AI app. See
+[`../docs/meta-rayban-display.md`](../docs/meta-rayban-display.md) for the full
+deployment notes and current developer-preview availability.

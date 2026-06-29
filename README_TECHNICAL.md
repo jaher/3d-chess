@@ -160,26 +160,34 @@ prerequisites, exact build/install commands, how SDL2-Android is supplied
 (vendored sources vs prefab AAR), the asset-extraction approach, and the "needs
 Android tooling" TODO list are in [`docs/ANDROID.md`](docs/ANDROID.md).
 
-### Meta Ray-Ban Display glasses (experimental Web-App scaffold)
+### Meta Ray-Ban Display glasses (full Web-App chess game)
 
-There is an **experimental, not-hardware-tested** HUD front-end for the **Meta
-Ray-Ban Display** glasses under [`glasses/`](glasses/). Unlike the iOS/Android
-scaffolds it is **not** a C++ driver — Meta's only publicly available path for
-rendering a fully custom UI to the Display lens is a **Web App** (standard
-HTML/CSS/JS loaded from a public HTTPS URL by the Meta AI app; **no companion
-app**). So `glasses/` is a standalone static Web App that renders a glanceable
-600×600 chess HUD — board, eval bar, last move + quality badge, clock, "your
-move" prompt — driven entirely by the **D-pad key events** the glasses emit
+There is a **complete, playable** chess game for the **Meta Ray-Ban Display**
+glasses under [`glasses/`](glasses/), **not yet run on hardware**. Unlike the
+iOS/Android scaffolds it is **not** a C++ driver — Meta's only publicly available
+path for rendering a fully custom UI to the Display lens is a **Web App**
+(standard HTML/CSS/JS loaded from a public HTTPS URL by the Meta AI app; **no
+companion app**). So `glasses/` is a standalone static Web App that renders a
+glanceable 600×600 chess HUD — board, eval bar, last move + quality badge, clock,
+"your move" prompt — driven entirely by the **D-pad key events** the glasses emit
 (Neural Band sEMG swipes/pinches and frame cap-touch arrive as standard
 `Arrow*`/`Enter`/`Escape` `keydown`). It runs in a desktop browser (arrow keys =
-D-pad — Meta's own local-test loop) and the chess **rules + AI engine are
-stubbed**, with the two seams marked for M1 (shared C++ rules → WASM; the
-vendored **Stockfish.js** worker reused from the web build). No Makefile
-compiles it, so every existing build (GTK, web, SDL2, iOS, Android) is
-unaffected. The research (with official Meta SDK URLs), the rationale for the
+D-pad — Meta's own local-test loop).
+
+The chess **rules and AI are fully implemented** (no stubs): `glasses/chess.js`
+is a perft-verified legal move generator (castling, en passant, promotion,
+check/mate/stalemate, draws; depth-5 perft = 4 865 609) and `glasses/engine.js`
+is an alpha-beta AI run off the main thread in a Web Worker
+(`glasses/engine-worker.js`). A hand-written JS engine is used rather than the
+desktop/web build's Stockfish.js because the glasses run a lightweight on-device
+browser. The app adds legal-move highlighting, a promotion picker, board flip for
+playing Black, move-quality coaching, a clock with flagging, a settings menu,
+`localStorage` resume, and a web-app `manifest.json` + PNG icons for deployment.
+No Makefile compiles it, so every existing build (GTK, web, SDL2, iOS, Android)
+is unaffected. The research (with official Meta SDK URLs), the rationale for the
 Web-App path over a Unity/Spatial-SDK port or an Android companion app, the
-staged plan, and the one `AppPlatform` hook a future phone-companion bridge
-would add are in [`docs/meta-rayban-display.md`](docs/meta-rayban-display.md).
+staged plan, and the one `AppPlatform` hook a future phone-companion bridge would
+add are in [`docs/meta-rayban-display.md`](docs/meta-rayban-display.md).
 
 ## Cloning
 
@@ -886,17 +894,24 @@ walkthrough live in the user guide — see
                               Objects land in obj-sdl/ so the GTK build's
                               .o files are untouched.
 
-  # Meta Ray-Ban Display HUD (experimental Web-App scaffold)
+  # Meta Ray-Ban Display chess Web App (full game, not hardware-tested)
   glasses/index.html       -- 600x600 HUD stage (prompt+clock, eval bar,
-                              8x8 board, last move + quality badge); marks
-                              the page as a Ray-Ban Display Web App.
+                              8x8 board, last move + quality badge, overlay);
+                              marks the page as a Ray-Ban Display Web App.
   glasses/styles.css       -- Additive-lens theme (black = transparent;
                               light high-contrast UI, cyan focus ring).
-  glasses/app.js           -- Board model, D-pad input (Arrow/Enter/Escape
-                              = Neural Band), clock, localStorage, and the
-                              two M1 seams (rules -> WASM, engine ->
-                              Stockfish.js). Rules + AI stubbed.
-                              See docs/meta-rayban-display.md.
+  glasses/chess.js         -- Perft-verified legal rules engine (ChessRules):
+                              move gen, castling/en passant/promotion,
+                              check/mate/stalemate/draws, SAN, FEN. No DOM.
+  glasses/engine.js        -- Alpha-beta AI (ChessEngine): iterative
+                              deepening + quiescence over material+PST eval.
+  glasses/engine-worker.js -- Web Worker: importScripts chess.js+engine.js,
+                              runs the search off the main thread.
+  glasses/app.js           -- HUD render, D-pad input (Arrow/Enter/Escape =
+                              Neural Band), promotion picker, board flip,
+                              move-quality coach, clock, menu, localStorage.
+  glasses/manifest.json    -- Web-app manifest (+ icon-192/512.png) for
+                              deployment. See docs/meta-rayban-display.md.
 
   # Assets
   third_party/stockfish/   -- Native Stockfish engine (git submodule)
