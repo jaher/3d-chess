@@ -1,0 +1,132 @@
+/*
+ * Meta Ray-Ban Display HUD theme.
+ *
+ * The lens is an ADDITIVE waveguide: pure black (#000) renders as fully
+ * transparent, bright fills cause glare. So the rules (per Meta's build
+ * guide) are: black backgrounds, light high-contrast UI, bright accents,
+ * body text >= 16px, primary content 20-24px, no scrolling.
+ */
+
+:root {
+  --accent:   #00d4ff;  /* bright cyan accent / focus ring */
+  --ink:      #e8f6ff;  /* light UI ink */
+  --dim:      #6f8ea0;  /* secondary text */
+  --good:     #58e08a;  /* white-advantage / good badge */
+  --bad:      #ff6b6b;  /* mistake / blunder badge */
+  --light-sq: #2a3946;  /* light board square (still dark — additive) */
+  --dark-sq:  #000000;  /* dark square: transparent on the lens */
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 600px;
+  height: 600px;
+  overflow: hidden;            /* never scroll on the lens */
+  background: #000;            /* transparent on the glasses */
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#stage {
+  width: 600px;
+  height: 600px;
+  display: grid;
+  grid-template-rows: 56px 28px 1fr 44px 28px;  /* top, eval, board, bottom, hint */
+  gap: 10px;
+  padding: 18px;
+}
+
+/* --- Top bar --- */
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.prompt { font-size: 24px; font-weight: 700; color: var(--accent); }
+.prompt.waiting { color: var(--dim); }
+.clock  { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.clock.low { color: var(--bad); }
+
+/* --- Eval bar --- */
+.evalbar {
+  position: relative;
+  height: 22px;
+  border: 2px solid var(--dim);
+  border-radius: 11px;
+  overflow: hidden;
+  background: #0b1a22;
+}
+.evalfill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 50%;
+  background: var(--good);
+  transition: width 240ms ease;
+}
+.evaltext {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  mix-blend-mode: difference;  /* stays legible over the fill */
+}
+
+/* --- Board --- */
+.board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  align-self: center;
+  justify-self: center;
+  max-height: 100%;
+  border: 2px solid var(--dim);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.sq {
+  display: grid;
+  place-items: center;
+  font-size: 34px;
+  line-height: 1;
+}
+.sq.light { background: var(--light-sq); }
+.sq.dark  { background: var(--dark-sq); }
+.sq .pc.white { color: #ffffff; text-shadow: 0 0 4px rgba(0,0,0,0.9); }
+.sq .pc.black { color: #9fc7df; text-shadow: 0 0 4px rgba(0,0,0,0.9); }
+
+/* Cursor (current focus) and the picked from-square. */
+.sq.cursor  { outline: 3px solid var(--accent); outline-offset: -3px;
+              box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.45); }
+.sq.picked  { box-shadow: inset 0 0 0 3px var(--good); }
+.sq.lastsrc { box-shadow: inset 0 0 0 3px rgba(88, 224, 138, 0.5); }
+.sq.lastdst { box-shadow: inset 0 0 0 3px rgba(88, 224, 138, 0.9); }
+
+/* --- Bottom bar --- */
+#bottombar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lastmove { font-size: 22px; font-weight: 700; }
+.badge {
+  font-size: 20px;
+  font-weight: 800;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+.badge.brilliant { color: #2af0d0; }
+.badge.good      { color: var(--good); }
+.badge.miss      { color: #ffd166; }
+.badge.mistake   { color: #ff9f43; }
+.badge.blunder   { color: var(--bad); }
+
+/* --- Hint --- */
+.hint { font-size: 16px; color: var(--dim); text-align: center; }

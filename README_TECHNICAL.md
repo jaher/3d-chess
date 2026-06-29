@@ -160,6 +160,27 @@ prerequisites, exact build/install commands, how SDL2-Android is supplied
 (vendored sources vs prefab AAR), the asset-extraction approach, and the "needs
 Android tooling" TODO list are in [`docs/ANDROID.md`](docs/ANDROID.md).
 
+### Meta Ray-Ban Display glasses (experimental Web-App scaffold)
+
+There is an **experimental, not-hardware-tested** HUD front-end for the **Meta
+Ray-Ban Display** glasses under [`glasses/`](glasses/). Unlike the iOS/Android
+scaffolds it is **not** a C++ driver — Meta's only publicly available path for
+rendering a fully custom UI to the Display lens is a **Web App** (standard
+HTML/CSS/JS loaded from a public HTTPS URL by the Meta AI app; **no companion
+app**). So `glasses/` is a standalone static Web App that renders a glanceable
+600×600 chess HUD — board, eval bar, last move + quality badge, clock, "your
+move" prompt — driven entirely by the **D-pad key events** the glasses emit
+(Neural Band sEMG swipes/pinches and frame cap-touch arrive as standard
+`Arrow*`/`Enter`/`Escape` `keydown`). It runs in a desktop browser (arrow keys =
+D-pad — Meta's own local-test loop) and the chess **rules + AI engine are
+stubbed**, with the two seams marked for M1 (shared C++ rules → WASM; the
+vendored **Stockfish.js** worker reused from the web build). No Makefile
+compiles it, so every existing build (GTK, web, SDL2, iOS, Android) is
+unaffected. The research (with official Meta SDK URLs), the rationale for the
+Web-App path over a Unity/Spatial-SDK port or an Android companion app, the
+staged plan, and the one `AppPlatform` hook a future phone-companion bridge
+would add are in [`docs/meta-rayban-display.md`](docs/meta-rayban-display.md).
+
 ## Cloning
 
 Clone recursively so that the Stockfish and whisper.cpp submodules are fetched:
@@ -864,6 +885,18 @@ walkthrough live in the user guide — see
                               -framework OpenGL/Cocoa + sdl2-config).
                               Objects land in obj-sdl/ so the GTK build's
                               .o files are untouched.
+
+  # Meta Ray-Ban Display HUD (experimental Web-App scaffold)
+  glasses/index.html       -- 600x600 HUD stage (prompt+clock, eval bar,
+                              8x8 board, last move + quality badge); marks
+                              the page as a Ray-Ban Display Web App.
+  glasses/styles.css       -- Additive-lens theme (black = transparent;
+                              light high-contrast UI, cyan focus ring).
+  glasses/app.js           -- Board model, D-pad input (Arrow/Enter/Escape
+                              = Neural Band), clock, localStorage, and the
+                              two M1 seams (rules -> WASM, engine ->
+                              Stockfish.js). Rules + AI stubbed.
+                              See docs/meta-rayban-display.md.
 
   # Assets
   third_party/stockfish/   -- Native Stockfish engine (git submodule)
