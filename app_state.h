@@ -422,6 +422,16 @@ struct AppState {
     // opponent's move animates through the AI-move path.
     bool network_mode = false;
     bool network_local_white = true;
+    // Glasses/companion move relay: every move applied locally (click, voice,
+    // Chessnut sensor, AI) is pushed to the linked glasses so all surfaces —
+    // screen, glasses, and the physical Chessnut board — mirror one game. The
+    // pump (end of app_tick) relays move_history entries past glasses_relay_count;
+    // glasses_skip_next_relay suppresses echoing a move that arrived FROM the
+    // glasses. This is what lets the Chessnut board and the glasses run
+    // concurrently: a sensor move is relayed out to the glasses, and a glasses
+    // move drives the Chessnut board through the normal app_chessnut_sync_board.
+    size_t glasses_relay_count = 0;
+    bool   glasses_skip_next_relay = false;
 
     // Pre-game setup screen state. Persists across menu <-> pregame
     // navigation so the user's last choices are remembered for the

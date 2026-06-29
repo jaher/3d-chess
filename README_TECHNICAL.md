@@ -189,6 +189,17 @@ Web-App path over a Unity/Spatial-SDK port or an Android companion app, the
 staged plan, and the one `AppPlatform` hook a future phone-companion bridge would
 add are in [`docs/meta-rayban-display.md`](docs/meta-rayban-display.md).
 
+**Move sync (glasses ↔ desktop ↔ Chessnut).** The glasses Web App cannot use
+Bluetooth (no Web Bluetooth in its sandbox), so it links to the desktop over a
+WebSocket relay (`glasses/sync-server.js`) while the desktop joins the same room
+over raw TCP (`net_sync.cpp`, wired to `AppPlatform::trigger_send_move` /
+`app_remote_move_ready`). Launch the desktop with `CHESS_SYNC_ROOM=<n>` to link.
+The link runs **concurrently with a paired Chessnut e-board**: a move-relay pump
+at the end of `app_tick` mirrors every newly-applied move — from any input path
+(glasses, board sensor, mouse, voice) — out to the glasses, while glasses moves
+drive the physical board through `app_chessnut_sync_board`, so the screen, the
+glasses, and the board all reflect one game.
+
 ## Cloning
 
 Clone recursively so that the Stockfish and whisper.cpp submodules are fetched:

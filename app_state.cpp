@@ -971,13 +971,11 @@ static void handle_board_click(AppState& a, double mx, double my,
                     trigger_eval(
                         a, static_cast<int>(gs.score_history.size()) - 1);
                     if (a.network_mode) {
-                        // Online game: relay this move to the remote
-                        // opponent. Their reply arrives via
-                        // app_remote_move_ready, never Stockfish.
-                        if (a.platform && a.platform->trigger_send_move &&
-                            !gs.move_history.empty())
-                            a.platform->trigger_send_move(
-                                gs.move_history.back().c_str());
+                        // Online / glasses-linked game: this move is relayed
+                        // to the remote by the glasses_relay_pump (end of
+                        // app_tick), which also covers Chessnut-sensor and
+                        // voice moves so every surface mirrors one game. The
+                        // remote's reply arrives via app_remote_move_ready.
                     } else if (!a.two_player_mode &&
                                gs.white_turn != a.human_plays_white &&
                                !gs.game_over) {
@@ -1149,6 +1147,8 @@ void app_enter_game(AppState& a) {
     a.mode = MODE_PLAYING;
     a.games.assign(N, GameInstance{});
     a.active_game = 0;
+    a.glasses_relay_count = 0;          // new game — relay only moves from here on
+    a.glasses_skip_next_relay = false;
     audio_music_stop();
     for (auto& gi : a.games) game_reset(gi.game);
     a.rot_x = 30.0f;
@@ -2692,6 +2692,8 @@ void app_start_network_game(AppState& a, bool local_is_white) {
     a.human_plays_white   = local_is_white;
     a.pregame_game_count  = 1;
     a.time_control        = TC_UNLIMITED;
+    a.glasses_relay_count = 0;          // fresh game — relay only new moves
+    a.glasses_skip_next_relay = false;
     app_enter_game(a);
     set_status(a, local_is_white
         ? "Online game — you are White. Make your move."
@@ -2708,6 +2710,9 @@ void app_remote_move_ready(AppState& a, const char* uci_c) {
     int fc, fr, tc, tr;
     if (!uci.empty() && parse_uci_move(uci, fc, fr, tc, tr) &&
         is_legal_ai_move(a, fc, fr, tc, tr)) {
+        // This move came FROM the glasses — don't echo it back when it lands
+        // (it still mirrors to the Chessnut board via the normal move path).
+        a.glasses_skip_next_relay = true;
         // Animate + execute through the same path an AI reply uses —
         // tick_ai_animation runs the move and the eval, and (because
         // ai_anim_trigger_ai_after is unset) never calls Stockfish.
@@ -3631,6 +3636,22 @@ static void chessnut_tick_reconnect(AppState& a, int64_t now);
 static inline void chessnut_tick_reconnect(AppState&, int64_t) {}
 #endif
 
+// Relay newly-applied local moves to the linked glasses. Runs every tick so it
+// catches EVERY move path (click, voice, Chessnut sensor, AI) in one place
+// without touching their individual handlers. A move that arrived FROM the
+// glasses (app_remote_move_ready) is skipped so it isn't echoed back — it has
+// already been mirrored to the Chessnut board by the normal move path.
+static void glasses_relay_pump(AppState& a) {
+    if (!a.network_mode || !a.platform || !a.platform->trigger_send_move) return;
+    GameState& gs = cur_gs(a);
+    while (a.glasses_relay_count < gs.move_history.size()) {
+        const std::string& uci = gs.move_history[a.glasses_relay_count];
+        a.glasses_relay_count++;
+        if (a.glasses_skip_next_relay) { a.glasses_skip_next_relay = false; continue; }
+        a.platform->trigger_send_move(uci.c_str());
+    }
+}
+
 void app_tick(AppState& a) {
     int64_t now = now_us(a);
     // Safe in every mode; no-op when no track is playing.
@@ -3653,6 +3674,9 @@ void app_tick(AppState& a) {
     // Helper is declared in the desktop section so it can see the
     // file-static g_chessnut_bridge handle.
     chessnut_tick_reconnect(a, now);
+
+    // Mirror any just-applied move out to the linked glasses.
+    glasses_relay_pump(a);
 }
 
 // ===========================================================================

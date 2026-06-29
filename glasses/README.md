@@ -91,6 +91,19 @@ so the link is order-independent. Files: `sync.js` (glasses client), `sync-serve
 relay must sit behind **WSS** (the glasses require HTTPS/WSS); `ws://localhost`
 is fine for local testing.
 
+### Three-way: glasses + Chessnut board at once
+
+The glasses link and a paired **Chessnut** e-board can run **concurrently** with
+the computer as the hub — all three surfaces mirror one game. A move on the
+glasses is applied on the computer and driven onto the physical board
+(`app_chessnut_sync_board`); a move on the Chessnut board is applied on the
+computer and relayed to the glasses. This is handled by a single move-relay
+"pump" in `app_state.cpp` (end of `app_tick`) that mirrors every newly-applied
+move — from any input path (glasses, board sensor, mouse, voice) — out to the
+glasses, with an echo-guard so a glasses move isn't sent back to itself. Just
+launch the desktop with both the Chessnut board paired and `CHESS_SYNC_ROOM`
+set.
+
 ## Deploy to the glasses
 
 Meta loads Web Apps from a **public HTTPS URL** via the Meta AI app (Developer
