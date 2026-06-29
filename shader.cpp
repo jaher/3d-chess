@@ -102,6 +102,7 @@ uniform vec3 uAlbedo;
 uniform float uMetallic;
 uniform float uRoughness;
 uniform float uAO;         // ambient occlusion
+uniform float uAmbientScale; // environment/IBL dimmer (1.0 = full; <1 darker room)
 uniform int uWoodEffect;
 
 // Optional textured-wood path (used by the imported Sketchfab
@@ -477,7 +478,8 @@ void main() {
 
     // Darken ambient slightly in shadowed areas (contact shadow approx)
     float ambientShadow = 1.0 - shadow * 0.18;
-    vec3 ambient = (diffuseIBL + specularIBL) * ao * ambientShadow;
+    float ambScale = uAmbientScale > 0.0 ? uAmbientScale : 1.0;
+    vec3 ambient = (diffuseIBL + specularIBL) * ao * ambientShadow * ambScale;
 
     vec3 color = ambient + Lo;
 

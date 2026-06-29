@@ -1685,6 +1685,13 @@ static float retro_letter_yaw() {   // in-plane rotation of the tile (degrees)
     return 0.0f;
 }
 
+// Environment/IBL dimmer. The cable room is a dim electronics lab, so the
+// retro environment gets less ambient fill than the bright medieval room.
+static float scene_ambient_scale() {
+    if (const char* s = std::getenv("CHESS_AMBIENT")) return std::atof(s);
+    return (g_active_environment == 1) ? 0.5f : 1.0f;
+}
+
 // Orientation (pre-translate/scale) for a piece of `type`. Retro pawns
 // get the same standard orientation as every other piece, plus an
 // optional keycap tilt (default identity).
@@ -4021,6 +4028,7 @@ void renderer_draw(GameState& gs,
                      4, lpos_r);
         glUniform3fv(glGetUniformLocation(g_program, "uLightColors"),
                      4, lcol_r);
+        glUniform1f(glGetUniformLocation(g_program, "uAmbientScale"), scene_ambient_scale());
         glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
         // CRITICAL — WebGL2 flags a feedback loop whenever a sampler
@@ -4484,6 +4492,7 @@ void renderer_draw(GameState& gs,
     float lcol[12] = {2.5f,2.3f,2, 1,1.1f,1.3f, 0.8f,0.7f,0.6f, 0.8f,0.7f,0.6f};
     glUniform3fv(glGetUniformLocation(g_program, "uLightPositions"), 4, lpos);
     glUniform3fv(glGetUniformLocation(g_program, "uLightColors"), 4, lcol);
+    glUniform1f(glGetUniformLocation(g_program, "uAmbientScale"), scene_ambient_scale());
 
     // ----- Table the chessboard sits on -----
     // The wooden square table renders before the board so the board
@@ -5385,6 +5394,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float lcol[12] = {3,2.8f,2.5f, 1.2f,1.3f,1.5f, 0.8f,0.7f,0.6f, 0.8f,0.7f,0.6f};
     glUniform3fv(glGetUniformLocation(g_program, "uLightPositions"), 4, lpos);
     glUniform3fv(glGetUniformLocation(g_program, "uLightColors"), 4, lcol);
+    glUniform1f(glGetUniformLocation(g_program, "uAmbientScale"), 1.0f);  // menu stays bright
 
     for (const auto& p : pieces) {
         float s = BASE_PIECE_SCALE * piece_scale[p.type] * p.scale / 0.35f;
