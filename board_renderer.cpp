@@ -1096,6 +1096,8 @@ static GLuint gl_load_panorama(const std::string& path) {
         path.c_str(), w, h, ch);
     return tex;
 }
+#endif  // !__EMSCRIPTEN__ — panorama loader is native-only; the retro
+        // loaders below are shared so the cable set works on web too.
 
 // Load a .uvmesh (UVME magic + uint32 vertex_count + 8 float32/vertex:
 // pos,normal,uv; triangle soup) into a ClockMesh — same format/layout as the
@@ -1143,32 +1145,35 @@ static GLuint load_retro_texture(const std::string& base) {
 // piece_filenames[] (King,Queen,Bishop,Knight,Rook,Pawn).
 static void load_retro_set() {
     if (g_retro_loaded) return;
+#ifdef __EMSCRIPTEN__
+    const std::string R = "/models/retro/";   // emscripten preloaded FS
+#else
+    const std::string R = "models/retro/";
+#endif
     static const char* Names[PIECE_COUNT] =
         {"King","Queen","Bishop","Knight","Rook","Pawn"};
     static const char* lname[PIECE_COUNT] =
         {"king","queen","bishop","knight","rook","pawn"};
     bool ok = true;
     for (int i = 0; i < PIECE_COUNT; ++i) {
-        if (!load_uvmesh_into(std::string("models/retro/") + Names[i] + ".uvmesh",
+        if (!load_uvmesh_into(R + Names[i] + ".uvmesh",
                               g_retro_pieces[i])) ok = false;
-        g_retro_tex_w[i] = load_retro_texture(
-            std::string("models/retro/tex/") + lname[i] + "_w_baseColor");
-        g_retro_tex_b[i] = load_retro_texture(
-            std::string("models/retro/tex/") + lname[i] + "_b_baseColor");
-        std::string tp = std::string("models/retro/tex/") + lname[i];
+        g_retro_tex_w[i] = load_retro_texture(R + "tex/" + lname[i] + "_w_baseColor");
+        g_retro_tex_b[i] = load_retro_texture(R + "tex/" + lname[i] + "_b_baseColor");
+        std::string tp = R + "tex/" + lname[i];
         g_retro_rough_w[i] = gl_load_texture(tp + "_w_rough.png");
         g_retro_rough_b[i] = gl_load_texture(tp + "_b_rough.png");
         g_retro_metal_w[i] = gl_load_texture(tp + "_w_metal.png");
         g_retro_metal_b[i] = gl_load_texture(tp + "_b_metal.png");
     }
-    g_retro_board_rough = gl_load_texture("models/retro/tex/board_rough.png");
-    g_retro_board_metal = gl_load_texture("models/retro/tex/board_metal.png");
+    g_retro_board_rough = gl_load_texture(R + "tex/board_rough.png");
+    g_retro_board_metal = gl_load_texture(R + "tex/board_metal.png");
     // Clean letter decals + the flat quad they ride on.
     for (int f = 0; f < 8; ++f) {
         g_retro_letter_w[f] = gl_load_texture_alpha(
-            "models/retro/tex/key_w_" + std::to_string(f) + ".png");
+            R + "tex/key_w_" + std::to_string(f) + ".png");
         g_retro_letter_b[f] = gl_load_texture_alpha(
-            "models/retro/tex/key_b_" + std::to_string(f) + ".png");
+            R + "tex/key_b_" + std::to_string(f) + ".png");
     }
     {
         // pos(3) normal(3) uv(2) per vertex; quad in XZ plane facing +Y.
@@ -1195,18 +1200,17 @@ static void load_retro_set() {
     // Per-file pawn keycaps — each a different keyboard letter. Share
     // the pawn baseColor atlas already loaded into g_retro_tex_{w,b}[PAWN].
     for (int f = 0; f < 8; ++f) {
-        load_uvmesh_into("models/retro/Pawn_w" + std::to_string(f) + ".uvmesh",
+        load_uvmesh_into(R + "Pawn_w" + std::to_string(f) + ".uvmesh",
                          g_retro_pawn_w[f]);
-        load_uvmesh_into("models/retro/Pawn_b" + std::to_string(f) + ".uvmesh",
+        load_uvmesh_into(R + "Pawn_b" + std::to_string(f) + ".uvmesh",
                          g_retro_pawn_b[f]);
     }
-    if (load_uvmesh_into("models/retro/board.uvmesh", g_retro_board))
-        g_retro_board_tex = load_retro_texture("models/retro/tex/board_baseColor");
+    if (load_uvmesh_into(R + "board.uvmesh", g_retro_board))
+        g_retro_board_tex = load_retro_texture(R + "tex/board_baseColor");
     g_retro_loaded = ok && g_retro_board.count > 0;
     std::fprintf(stderr, "[retro] piece set %s\n",
                  g_retro_loaded ? "loaded" : "FAILED (falling back to STL)");
 }
-#endif  // !__EMSCRIPTEN__
 
 // Try every path in `candidates` in order until one opens; load the
 // SPZ from it, recompute the bbox, and re-upload to g_packed +
@@ -2099,11 +2103,13 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     load_board_assets("/models/board");
     load_clock_assets("/models/clock");
     load_table_assets("/models/table");
+    load_retro_set();   // retro PC set for the Cable Room (web too)
+    g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
 #else
     load_board_assets("models/board");
     load_clock_assets("models/clock");
     load_table_assets("models/table");
-    load_retro_set();   // textured retro PC set for the Cable Room (desktop)
+    load_retro_set();   // textured retro PC set for the Cable Room
     g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
 #endif
 
