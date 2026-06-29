@@ -405,6 +405,55 @@ static void poll_ai_results() {
 }
 
 // ---------------------------------------------------------------------------
+// Debug hooks (for headless inspection via CDP): jump straight into a
+// cable-room game, and dump the current framebuffer to /dump.ppm.
+// ---------------------------------------------------------------------------
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_cable_game(void) {
+    // Mirror the real user flow: enter a normal game first, then cycle
+    // the environment mid-game (the btn==11 path in app_state.cpp) —
+    // app_enter_game is NEVER called with retro pre-selected in the UI.
+    app_enter_game(g_app);
+    std::fprintf(stderr, "[web-dbg] after enter_game mode=%d games=%zu\n",
+                (int)g_app.mode, g_app.games.size());
+    g_app.environment = AppState::Environment::CableRoom;
+    renderer_set_environment(1);
+    int npieces = 0, nalive = 0;
+    if (!g_app.games.empty()) {
+        npieces = (int)g_app.games[0].game.pieces.size();
+        for (const auto& p : g_app.games[0].game.pieces) if (p.alive) ++nalive;
+    }
+    std::fprintf(stderr, "[web-dbg] mode=%d games=%zu pieces=%d alive=%d\n",
+                (int)g_app.mode, g_app.games.size(), npieces, nalive);
+}
+// Render one frame directly (headless rAF doesn't tick) and write the
+// framebuffer to /dump.ppm — glReadPixels reads what was drawn even when
+// the software compositor never presents to the visible canvas.
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_dump(void) {
+    app_tick(g_app);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g_width, g_height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    app_render(g_app, g_width, g_height);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // WebGL2 only guarantees RGBA/UNSIGNED_BYTE readback from the default
+    // framebuffer; GL_RGB is invalid and silently yields zeros.
+    std::vector<unsigned char> px(static_cast<size_t>(g_width) * g_height * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, g_width, g_height, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    if (FILE* f = std::fopen("/dump.ppm", "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", g_width, g_height);
+        for (int y = g_height - 1; y >= 0; --y) {
+            const unsigned char* row = px.data() + static_cast<size_t>(y) * g_width * 4;
+            for (int x = 0; x < g_width; ++x)
+                std::fwrite(row + x * 4, 1, 3, f);   // RGB, drop alpha
+        }
+        std::fclose(f);
+        std::printf("[web-dump] wrote /dump.ppm %dx%d\n", g_width, g_height);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 static void main_loop_iter() {

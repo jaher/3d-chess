@@ -23,7 +23,11 @@ void GameState::rebuild_grid() {
             grid[r][c] = -1;
     for (int i = 0; i < static_cast<int>(pieces.size()); i++) {
         auto& p = pieces[i];
-        if (p.alive)
+        // Guard the store: a piece with out-of-range coords (e.g. a stray
+        // default-constructed entry) would otherwise write past grid[8][8]
+        // and corrupt adjacent memory — a heap stomp that only trips much
+        // later, at the next allocation. Skipping it keeps the grid sane.
+        if (p.alive && in_bounds(p.col, p.row))
             grid[p.row][p.col] = i;
     }
 }

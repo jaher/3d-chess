@@ -271,12 +271,14 @@
           Module.ccall('chess_start', 'number', [], []);
         } catch (e) {
           // emscripten_set_main_loop(simulate_infinite_loop=1) intentionally
-          // throws ("unwind") to bail out of main(). Anything else is real.
+          // throws to bail out of main(). Older emscripten threw the string
+          // "unwind"; newer toolchains surface it as a numeric value. A
+          // genuine init failure returns an int instead of throwing, so ANY
+          // exception caught here is the unwind — log it and keep going so
+          // resizeCanvas() still runs and the canvas renders.
           var msg = (e && e.message) ? String(e.message) : String(e);
           if (msg.indexOf('unwind') === -1) {
-            console.error('chess_start failed:', e);
-            setLoadingStatus('chess_start failed: ' + msg);
-            return;
+            console.warn('chess_start unwound (non-string form):', msg);
           }
         }
         // Run AFTER the try/catch so it fires regardless of whether

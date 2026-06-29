@@ -47,9 +47,15 @@ extern const char* piece_filenames[PIECE_COUNT];
 extern const float piece_scale[PIECE_COUNT];
 
 struct BoardPiece {
-    PieceType type;
-    bool is_white;
-    int col, row;
+    // Default initializers matter: a default-constructed BoardPiece (e.g.
+    // from vector resize) with garbage col/row that stays alive would make
+    // GameState::rebuild_grid() write grid[garbage][garbage] — an out-of-
+    // bounds store that corrupts memory. Defaulting to the in-bounds a1
+    // square keeps any stray piece harmless. Aggregate init
+    // ({type,is_white,col,row,alive}) still works in C++17.
+    PieceType type = KING;
+    bool is_white = false;
+    int col = 0, row = 0;
     bool alive = true;
 };
 
@@ -64,7 +70,7 @@ struct CastlingRights {
 
 struct BoardSnapshot {
     std::vector<BoardPiece> pieces;
-    bool white_turn;
+    bool white_turn = true;
     CastlingRights castling;
     std::string last_move;
     // En passant target square (the square BEHIND the pawn that just
