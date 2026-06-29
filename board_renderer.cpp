@@ -1644,12 +1644,12 @@ static float retro_board_y() {
         return std::atof(s);
     return 0.0f;
 }
-// Yaw (degrees) applied to the retro board slab. Default 90° so the
-// painted board orientation matches the play grid.
+// Yaw (degrees) applied to the retro board slab. 270° = the prior 90°
+// rotated a further 180° so the painted board faces the other way.
 static float retro_board_yaw() {
     if (const char* s = std::getenv("CHESS_RETRO_BOARD_YAW"))
         return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
-    return static_cast<float>(M_PI) / 2.0f;
+    return 3.0f * static_cast<float>(M_PI) / 2.0f;
 }
 
 // Optional extra tilt for retro pawn keycaps, layered on top of the
