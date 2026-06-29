@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Meta Ray-Ban Display Web App: fixed 600x600, no scroll, no zoom.
+       https://wearables.developer.meta.com/docs/develop/webapps/build/ -->
+  <meta name="viewport"
+        content="width=600, height=600, initial-scale=1.0, user-scalable=no">
+  <!-- Marks this page as a Ray-Ban Display Web App. -->
+  <meta name="mrbd-web-app-capable" content="yes">
+  <title>3D Chess — Glasses HUD</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- The additive lens treats pure black as transparent, so the frame is
+       black and everything visible is light/high-contrast. Everything lives
+       inside one non-scrolling 600x600 stage. -->
+  <main id="stage" aria-label="Chess HUD">
+    <!-- Top status row: side-to-move prompt + clock -->
+    <header id="topbar">
+      <span id="prompt" class="prompt">Your move</span>
+      <span id="clock" class="clock">10:00</span>
+    </header>
+
+    <!-- Eval bar: white advantage fills from the left -->
+    <div id="evalbar" class="evalbar" aria-label="Evaluation">
+      <div id="evalfill" class="evalfill"></div>
+      <span id="evaltext" class="evaltext">0.0</span>
+    </div>
+
+    <!-- 8x8 board, rendered as a CSS grid of Unicode glyphs. The cursor /
+         selected square are focus-ring styled per Meta's design guidance. -->
+    <div id="board" class="board" role="grid" aria-label="Chess board"></div>
+
+    <!-- Bottom row: last move + its quality badge -->
+    <footer id="bottombar">
+      <span id="lastmove" class="lastmove">—</span>
+      <span id="badge" class="badge"></span>
+    </footer>
+
+    <!-- One-line hint of the D-pad controls (Neural Band swipes/pinches). -->
+    <div id="hint" class="hint">◀▲▼▶ move cursor · ⏎ pick · ⎋ cancel</div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
