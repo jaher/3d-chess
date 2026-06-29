@@ -103,6 +103,43 @@ static int    g_board_lining_count = 0;
 // tools/convert_clock_uvmesh.py) so its diffuse texture lands on
 // the dial face correctly.
 struct ClockMesh { GLuint vao = 0, vbo = 0; int count = 0; };
+
+// Retro PC chess set (CC-BY-4.0, dark_igorek; models/retro/). Textured
+// .uvmesh pieces + a per-colour baseColor texture each, used in the Cable
+// Room environment instead of the flat-shaded STL set. Loaded once in
+// renderer_init; g_use_retro_pieces (set per environment) gates which set
+// the piece/board draw uses. Piece index order matches piece_filenames[]
+// (King,Queen,Bishop,Knight,Rook,Pawn).
+static ClockMesh g_retro_pieces[PIECE_COUNT];
+static GLuint    g_retro_tex_w[PIECE_COUNT] = {0};
+static GLuint    g_retro_tex_b[PIECE_COUNT] = {0};
+// Each retro pawn is a distinct keyboard keycap (different letter per
+// file). These hold the 8 per-file keycap meshes per colour; they
+// share the pawn baseColor atlas (g_retro_tex_{w,b}[PAWN]). Indexed by
+// board column 0..7. Fall back to g_retro_pieces[PAWN] if unloaded.
+static ClockMesh g_retro_pawn_w[8];
+static ClockMesh g_retro_pawn_b[8];
+// PBR roughness/metalness maps (glTF metallicRoughness split: G→rough,
+// B→metal). The rook is genuinely metallic, the board reads as rubber
+// (high roughness). Sampled via the shader's uClockPbrMapsMode path.
+static GLuint    g_retro_rough_w[PIECE_COUNT] = {0};
+static GLuint    g_retro_rough_b[PIECE_COUNT] = {0};
+static GLuint    g_retro_metal_w[PIECE_COUNT] = {0};
+static GLuint    g_retro_metal_b[PIECE_COUNT] = {0};
+static GLuint    g_retro_board_rough = 0;
+static GLuint    g_retro_board_metal = 0;
+// Clean flat letter decals: the model bakes each keycap legend onto a
+// sloped face which never reads level, so we draw the keycap body plain
+// and overlay a crisp letter tile (Q W E R T Y CTRL ESC) on a flat quad
+// sitting on top of the keycap. Indexed by file 0..7, per colour.
+static GLuint    g_retro_letter_w[8] = {0};
+static GLuint    g_retro_letter_b[8] = {0};
+static ClockMesh g_letter_quad;   // unit quad in XZ facing +Y
+static ClockMesh g_retro_board;
+static GLuint    g_retro_board_tex = 0;
+static float     g_retro_board_scale = 1.0f;  // bbox→board fit, set on load
+static bool      g_retro_loaded = false;
+static bool      g_use_retro_pieces = false;
 // Body sans hands. tools/split_clock_dials.py extracts each hand
 // into its own uvmesh so the renderer can rotate them
 // independently. Two hands per dial: a long minute hand mounted at
@@ -395,9 +432,9 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/cable_room/panorama.jpg",
             "/world_labs/cable_room/panorama.jpg",
         },
-        14.0f,        // splat_scale — bigger room
+        14.0f,         // splat_scale — bigger room
         -8.878f,
-        0.0f, 40.0f,  // offset: slide the room so the board lands on the open floor
+        20.0f, 28.0f,  // offset: board shifted right + back toward the tunnel
     },
 };
 constexpr int g_environment_count =
@@ -957,6 +994,29 @@ static GLuint gl_load_texture(const std::string& path) {
     return tex;
 }
 
+// RGBA loader (keeps the alpha channel) for the letter-decal tiles, whose
+// transparent background is alpha-cut-out in the shader.
+static GLuint gl_load_texture_alpha(const std::string& path) {
+    int w = 0, h = 0, ch = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &ch, 4 /*RGBA*/);
+    if (!pixels) return 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    stbi_image_free(pixels);
+    // No mipmaps: mip averaging on a mostly-transparent tile drops the
+    // alpha below the cutout threshold and erases the letter.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
 // Set up the splat draw VAO (just one quad attribute — everything else
 // comes from the splat-data textures via texelFetch in the vertex
 // shader). Called once after the program is created.
@@ -1035,6 +1095,116 @@ static GLuint gl_load_panorama(const std::string& path) {
         "[board] loaded panorama %s — %dx%d (orig %d ch)\n",
         path.c_str(), w, h, ch);
     return tex;
+}
+
+// Load a .uvmesh (UVME magic + uint32 vertex_count + 8 float32/vertex:
+// pos,normal,uv; triangle soup) into a ClockMesh — same format/layout as the
+// clock/table textured meshes.
+static bool load_uvmesh_into(const std::string& path, ClockMesh& out) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { std::fprintf(stderr, "[retro] open failed %s\n", path.c_str()); return false; }
+    char magic[4]; uint32_t vc = 0;
+    if (std::fread(magic, 1, 4, f) != 4 || std::memcmp(magic, "UVME", 4) != 0 ||
+        std::fread(&vc, sizeof(vc), 1, f) != 1) { std::fclose(f); return false; }
+    std::vector<float> buf(static_cast<size_t>(vc) * 8);
+    if (std::fread(buf.data(), sizeof(float), buf.size(), f) != buf.size()) {
+        std::fclose(f); return false;
+    }
+    std::fclose(f);
+    glGenVertexArrays(1, &out.vao); glGenBuffers(1, &out.vbo);
+    glBindVertexArray(out.vao); glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(buf.size() * sizeof(float)),
+                 buf.data(), GL_STATIC_DRAW);
+    const GLsizei st = 8 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, st, (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glBindVertexArray(0);
+    out.count = static_cast<int>(vc);
+    return true;
+}
+
+// Load a baseColor texture, trying ".jpg" then ".png".
+static GLuint load_retro_texture(const std::string& base) {
+    for (const char* ext : {".jpg", ".png"}) {
+        std::string p = base + ext;
+        std::FILE* f = std::fopen(p.c_str(), "rb");
+        if (f) { std::fclose(f); return gl_load_texture(p); }
+    }
+    return 0;
+}
+
+// Load the retro PC chess set: 6 piece .uvmesh + per-colour baseColor
+// textures, plus the single textured board. Index order matches
+// piece_filenames[] (King,Queen,Bishop,Knight,Rook,Pawn).
+static void load_retro_set() {
+    if (g_retro_loaded) return;
+    static const char* Names[PIECE_COUNT] =
+        {"King","Queen","Bishop","Knight","Rook","Pawn"};
+    static const char* lname[PIECE_COUNT] =
+        {"king","queen","bishop","knight","rook","pawn"};
+    bool ok = true;
+    for (int i = 0; i < PIECE_COUNT; ++i) {
+        if (!load_uvmesh_into(std::string("models/retro/") + Names[i] + ".uvmesh",
+                              g_retro_pieces[i])) ok = false;
+        g_retro_tex_w[i] = load_retro_texture(
+            std::string("models/retro/tex/") + lname[i] + "_w_baseColor");
+        g_retro_tex_b[i] = load_retro_texture(
+            std::string("models/retro/tex/") + lname[i] + "_b_baseColor");
+        std::string tp = std::string("models/retro/tex/") + lname[i];
+        g_retro_rough_w[i] = gl_load_texture(tp + "_w_rough.png");
+        g_retro_rough_b[i] = gl_load_texture(tp + "_b_rough.png");
+        g_retro_metal_w[i] = gl_load_texture(tp + "_w_metal.png");
+        g_retro_metal_b[i] = gl_load_texture(tp + "_b_metal.png");
+    }
+    g_retro_board_rough = gl_load_texture("models/retro/tex/board_rough.png");
+    g_retro_board_metal = gl_load_texture("models/retro/tex/board_metal.png");
+    // Clean letter decals + the flat quad they ride on.
+    for (int f = 0; f < 8; ++f) {
+        g_retro_letter_w[f] = gl_load_texture_alpha(
+            "models/retro/tex/key_w_" + std::to_string(f) + ".png");
+        g_retro_letter_b[f] = gl_load_texture_alpha(
+            "models/retro/tex/key_b_" + std::to_string(f) + ".png");
+    }
+    {
+        // pos(3) normal(3) uv(2) per vertex; quad in XZ plane facing +Y.
+        const float q[] = {
+            -0.5f,0,-0.5f, 0,1,0, 0,1,   0.5f,0,-0.5f, 0,1,0, 1,1,
+             0.5f,0, 0.5f, 0,1,0, 1,0,  -0.5f,0,-0.5f, 0,1,0, 0,1,
+             0.5f,0, 0.5f, 0,1,0, 1,0,  -0.5f,0, 0.5f, 0,1,0, 0,0,
+        };
+        glGenVertexArrays(1, &g_letter_quad.vao);
+        glGenBuffers(1, &g_letter_quad.vbo);
+        glBindVertexArray(g_letter_quad.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_letter_quad.vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(q), q, GL_STATIC_DRAW);
+        const GLsizei st = 8 * sizeof(float);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st, (void*)(3*sizeof(float)));
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, st, (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, st, (void*)(6*sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glBindVertexArray(0);
+        g_letter_quad.count = 6;
+    }
+    // Per-file pawn keycaps — each a different keyboard letter. Share
+    // the pawn baseColor atlas already loaded into g_retro_tex_{w,b}[PAWN].
+    for (int f = 0; f < 8; ++f) {
+        load_uvmesh_into("models/retro/Pawn_w" + std::to_string(f) + ".uvmesh",
+                         g_retro_pawn_w[f]);
+        load_uvmesh_into("models/retro/Pawn_b" + std::to_string(f) + ".uvmesh",
+                         g_retro_pawn_b[f]);
+    }
+    if (load_uvmesh_into("models/retro/board.uvmesh", g_retro_board))
+        g_retro_board_tex = load_retro_texture("models/retro/tex/board_baseColor");
+    g_retro_loaded = ok && g_retro_board.count > 0;
+    std::fprintf(stderr, "[retro] piece set %s\n",
+                 g_retro_loaded ? "loaded" : "FAILED (falling back to STL)");
 }
 #endif  // !__EMSCRIPTEN__
 
@@ -1124,6 +1294,10 @@ bool renderer_set_environment(int env_kind) {
         return false;
     }
     g_active_environment = env_kind;
+    // Cable Room (env 1) uses the textured retro PC piece set; others use STL.
+    g_use_retro_pieces = (env_kind == 1) && g_retro_loaded;
+    std::fprintf(stderr, "[retro] set_environment env=%d retro_loaded=%d use_retro=%d\n",
+                 env_kind, g_retro_loaded ? 1 : 0, g_use_retro_pieces ? 1 : 0);
 
 #ifndef __EMSCRIPTEN__
     // GL compute path keeps its own per-load upload flag — flip it
@@ -1446,11 +1620,207 @@ static void draw_with_model(GLuint prog, const Mat4& model_mat, GLuint vao, int 
 }
 
 // Piece model matrix
-static Mat4 piece_model_matrix(float wx, float wz, float s, bool is_white, float rot_z_to_y) {
+// Extra yaw applied to retro pieces (they ship facing a fixed direction).
+// Tunable via CHESS_RETRO_YAW (degrees); default -90° = a left turn.
+static float retro_piece_yaw() {
+    if (const char* s = std::getenv("CHESS_RETRO_YAW"))
+        return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
+    return static_cast<float>(M_PI) / 2.0f;
+}
+
+// Uniform scale applied to the retro board slab. The board.uvmesh is
+// 9.095 units across (frame included) and the play grid is 8 units
+// (SQ=1 × 8), so 1.0 leaves the painted frame just outside the piece
+// grid — a natural board border. Tunable live via env for fitting.
+static float retro_board_scale() {
+    if (const char* s = std::getenv("CHESS_RETRO_BOARD_SCALE"))
+        return std::atof(s);
+    return g_retro_board_scale;
+}
+// Extra Y nudge for the retro board on top of the flush-with-play-plane
+// placement (the slab's top surface is anchored at BOARD_Y).
+static float retro_board_y() {
+    if (const char* s = std::getenv("CHESS_RETRO_BOARD_Y"))
+        return std::atof(s);
+    return 0.0f;
+}
+// Yaw (degrees) applied to the retro board slab. Default 90° so the
+// painted board orientation matches the play grid.
+static float retro_board_yaw() {
+    if (const char* s = std::getenv("CHESS_RETRO_BOARD_YAW"))
+        return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
+    return static_cast<float>(M_PI) / 2.0f;
+}
+
+// Optional extra tilt for retro pawn keycaps, layered on top of the
+// standard piece orientation. Defaults to identity — the keycaps already
+// sit letter-up like the original single pawn the user confirmed correct.
+// Exposed so the keycap can be dialled (degrees) without a re-bake if a
+// tweak is ever needed.
+static float retro_pawn_pitch() {
+    if (const char* s = std::getenv("CHESS_PAWN_PITCH"))
+        return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
+    return 0.0f;   // upright keycap (legend on the front skirt), like the original
+}
+static float retro_pawn_spin() {
+    if (const char* s = std::getenv("CHESS_PAWN_SPIN"))
+        return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
+    return 0.0f;   // keycap meshes are pre-mirrored so the natural pose reads upright
+}
+
+// Placement of the flat letter decal in the keycap's local space (unit-
+// sphere normalised, so the keycap spans ~[-1,1]). Y sits the tile on the
+// keycap top; scale fits it within the dish. Tunable for fitting.
+static float retro_letter_y() {
+    if (const char* s = std::getenv("CHESS_LETTER_Y")) return std::atof(s);
+    return 1.06f;   // just above the keycap top (keycap spans ~[-1,1] in Y)
+}
+static float retro_letter_scale() {
+    if (const char* s = std::getenv("CHESS_LETTER_SCALE")) return std::atof(s);
+    return 1.0f;
+}
+static float retro_letter_yaw() {   // in-plane rotation of the tile (degrees)
+    if (const char* s = std::getenv("CHESS_LETTER_YAW"))
+        return std::atof(s) * static_cast<float>(M_PI) / 180.0f;
+    return 0.0f;
+}
+
+// Orientation (pre-translate/scale) for a piece of `type`. Retro pawns
+// get the same standard orientation as every other piece, plus an
+// optional keycap tilt (default identity).
+static Mat4 retro_piece_orient(int type, bool is_white, float rot_z_to_y) {
     Mat4 orient = mat4_rotate_x(rot_z_to_y);
+    // Non-pawn retro pieces get the shared facing yaw. Pawn keycaps keep
+    // their natural (extracted) orientation — the model already authored
+    // the legend readable — so the king's +90° yaw doesn't rotate the
+    // legend off-axis. An optional pawn-only pitch/spin tweaks from there.
+    if (g_use_retro_pieces && type != PAWN)
+        orient = mat4_multiply(mat4_rotate_y(retro_piece_yaw()), orient);
+    if (g_use_retro_pieces && type == PAWN)
+        orient = mat4_multiply(
+            mat4_multiply(mat4_rotate_y(retro_pawn_spin()),
+                          mat4_rotate_x(retro_pawn_pitch())),
+            orient);
     if (!is_white)
         orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
+    return orient;
+}
+
+static Mat4 piece_model_matrix(float wx, float wz, float s, bool is_white,
+                               float rot_z_to_y, int type = -1) {
+    Mat4 orient = retro_piece_orient(type, is_white, rot_z_to_y);
     return mat4_multiply(mat4_translate(wx, BOARD_Y + s, wz), mat4_multiply(mat4_scale(s, s, s), orient));
+}
+
+// rot_z_to_y to use for the active piece set: STL pieces ship Z-up and need
+// the Z→Y rotation; the retro .uvmesh pieces are already Y-up, so 0.
+static inline float active_piece_rot(float stl_rot) {
+    return g_use_retro_pieces ? 0.0f : stl_rot;
+}
+
+// Draw a piece of `type` at model matrix `pm` through g_program. Uses the
+// textured retro set when active (per-colour baseColor via the uClock* path),
+// else the flat-shaded STL set. Sets uModel/uNormalMat itself.
+static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
+                               int file = -1) {
+    float pnm[9]; mat4_normal_matrix(pm, pnm);
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, pm.m);
+    glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, pnm);
+    // For retro pawns pick the per-file keycap (a distinct keyboard
+    // letter per column); other types use the single per-type mesh.
+    const ClockMesh* mesh = &g_retro_pieces[type];
+    if (type == PAWN && file >= 0 && file < 8) {
+        const ClockMesh* kc = is_white ? &g_retro_pawn_w[file]
+                                       : &g_retro_pawn_b[file];
+        if (kc->count > 0) mesh = kc;
+    }
+    // Retro pawn: draw the keycap body plain (no baked slope-letter), then
+    // overlay a crisp, level letter tile on a flat quad on top.
+    if (g_use_retro_pieces && type == PAWN && file >= 0 && file < 8 &&
+        mesh->count > 0) {
+        GLuint letter = is_white ? g_retro_letter_w[file] : g_retro_letter_b[file];
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodEffect"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+        glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+        // keycap body — plain matte plastic
+        if (is_white) set_material(g_program, 0.69f, 0.65f, 0.58f, 0.0f, 0.5f, 1.0f, 0);
+        else          set_material(g_program, 0.15f, 0.15f, 0.16f, 0.0f, 0.5f, 1.0f, 0);
+        glBindVertexArray(mesh->vao);
+        glDrawArrays(GL_TRIANGLES, 0, mesh->count);
+        glBindVertexArray(0);
+        // letter decal quad on top
+        if (letter && g_letter_quad.count > 0) {
+            float ls = retro_letter_scale();
+            Mat4 dm = mat4_multiply(pm, mat4_multiply(
+                mat4_translate(0.0f, retro_letter_y(), 0.0f),
+                mat4_multiply(mat4_rotate_y(retro_letter_yaw()),
+                              mat4_scale(ls, 1.0f, ls))));
+            float dnm[9]; mat4_normal_matrix(dm, dnm);
+            glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, dm.m);
+            glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, dnm);
+            glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+            glUniform1i(glGetUniformLocation(g_program, "uClockAlphaCutout"), 1);
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, letter);
+            glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+            glActiveTexture(GL_TEXTURE0);
+            set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.6f, 1.0f, 0);
+            glDisable(GL_CULL_FACE);
+            glBindVertexArray(g_letter_quad.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_letter_quad.count);
+            glBindVertexArray(0);
+            glEnable(GL_CULL_FACE);
+            glUniform1i(glGetUniformLocation(g_program, "uClockAlphaCutout"), 0);
+            glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        }
+        return;
+    }
+    if (g_use_retro_pieces && mesh->count > 0) {
+        GLuint tex = is_white ? g_retro_tex_w[type] : g_retro_tex_b[type];
+        // Defensive: clear the board's wood/reflection/opacity flags so they
+        // can't override the clock-diffuse texture path.
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodEffect"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+        glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+        // PBR maps: roughness (G) + metalness (B) from the glTF
+        // metallicRoughness split. uMetallic/uRoughness pass through as
+        // 1.0 so the textures drive the look (metallic rook, etc.).
+        GLuint rough = is_white ? g_retro_rough_w[type] : g_retro_rough_b[type];
+        GLuint metal = is_white ? g_retro_metal_w[type] : g_retro_metal_b[type];
+        if (rough && metal) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, rough);
+            glUniform1i(glGetUniformLocation(g_program, "uClockRoughnessTex"), 6);
+            glActiveTexture(GL_TEXTURE7);
+            glBindTexture(GL_TEXTURE_2D, metal);
+            glUniform1i(glGetUniformLocation(g_program, "uClockMetalnessTex"), 7);
+            glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 1);
+            set_material(g_program, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+        } else {
+            glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+            set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.55f, 1.0f, 0);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindVertexArray(mesh->vao);
+        glDrawArrays(GL_TRIANGLES, 0, mesh->count);
+        glBindVertexArray(0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+    } else {
+        if (is_white) set_material(g_program, 0.97f, 0.95f, 0.90f, 0, 0.28f, 1, 0);
+        else          set_material(g_program, 0.02f, 0.02f, 0.02f, 0, 0.35f, 1, 0);
+        glBindVertexArray(g_pieces[type].vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_pieces[type].num_vertices);
+        glBindVertexArray(0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1724,6 +2094,8 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     load_board_assets("models/board");
     load_clock_assets("models/clock");
     load_table_assets("models/table");
+    load_retro_set();   // textured retro PC set for the Cable Room (desktop)
+    g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
 #endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
@@ -3568,10 +3940,14 @@ void renderer_draw(GameState& gs,
         if (!bp.alive) continue;
         float wx, wz; square_center(bp.col, bp.row, wx, wz);
         float s = BASE_PIECE_SCALE * piece_scale[bp.type];
-        Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, rot_z_to_y);
+        Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, active_piece_rot(rot_z_to_y));
         glUniformMatrix4fv(smod, 1, GL_FALSE, pm.m);
-        glBindVertexArray(g_pieces[bp.type].vao);
-        glDrawArrays(GL_TRIANGLES, 0, g_pieces[bp.type].num_vertices);
+        GLuint vao = g_use_retro_pieces ? g_retro_pieces[bp.type].vao
+                                        : g_pieces[bp.type].vao;
+        int cnt = g_use_retro_pieces ? g_retro_pieces[bp.type].count
+                                     : g_pieces[bp.type].num_vertices;
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLES, 0, cnt);
         glBindVertexArray(0);
     }
 
@@ -3772,19 +4148,21 @@ void renderer_draw(GameState& gs,
         float floor_world_y = env.floor_y;
         float off_x = env.offset_x;
         float off_z = env.offset_z;
-        // Runtime placement overrides — dial a room in without a rebuild.
+        // Runtime placement overrides (env vars + live ~/.cache/chess_splat_tune
+        // file) — for DIALING IN a room without a rebuild. Scoped to the Cable
+        // Room (env 1) only, so they never disturb the medieval room's
+        // baked-in coordinates when the user switches environments.
         //   CHESS_SPLAT_SCALE / _FLOOR / _OFFX / _OFFZ
-        if (const char* s = std::getenv("CHESS_SPLAT_SCALE")) {
-            float v = std::atof(s); if (v > 0.0f) splat_scale = v;
+        if (g_active_environment == 1) {
+            if (const char* s = std::getenv("CHESS_SPLAT_SCALE")) {
+                float v = std::atof(s); if (v > 0.0f) splat_scale = v;
+            }
+            if (const char* s = std::getenv("CHESS_SPLAT_FLOOR")) floor_world_y = std::atof(s);
+            if (const char* s = std::getenv("CHESS_SPLAT_OFFX"))  off_x = std::atof(s);
+            if (const char* s = std::getenv("CHESS_SPLAT_OFFZ"))  off_z = std::atof(s);
+            if (read_splat_tune(splat_scale, floor_world_y, off_x, off_z))
+                g_splat_bg_cache_valid = false;
         }
-        if (const char* s = std::getenv("CHESS_SPLAT_FLOOR")) floor_world_y = std::atof(s);
-        if (const char* s = std::getenv("CHESS_SPLAT_OFFX"))  off_x = std::atof(s);
-        if (const char* s = std::getenv("CHESS_SPLAT_OFFZ"))  off_z = std::atof(s);
-        // Live file tuning (highest precedence; editable while the game runs).
-        // When the file changes, invalidate the backdrop cache so the move
-        // shows on the next frame without restarting.
-        if (read_splat_tune(splat_scale, floor_world_y, off_x, off_z))
-            g_splat_bg_cache_valid = false;
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale + off_x;
@@ -4157,6 +4535,41 @@ void renderer_draw(GameState& gs,
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
     }
 
+    // Board — retro PC slab when the retro set is active, otherwise
+    // the procedural lacquered squares + walnut frame + silver lining.
+    if (g_use_retro_pieces && g_retro_board.count > 0) {
+        // Single textured slab. Anchor its top surface (mesh-y 0.269)
+        // flush with the play plane (BOARD_Y) so pieces rest on it.
+        float s = retro_board_scale();
+        const float MESH_TOP = 0.269f;
+        float ty = BOARD_Y + retro_board_y() - MESH_TOP * s;
+        Mat4 rbm = mat4_multiply(
+            mat4_translate(0.0f, ty, 0.0f),
+            mat4_multiply(mat4_rotate_y(retro_board_yaw()),
+                          mat4_scale(s, s, s)));
+        float rnm[9]; mat4_normal_matrix(rbm, rnm);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, rbm.m);
+        glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, rnm);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodEffect"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+        glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, g_retro_board_tex);
+        glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+        // PCB solder-mask coating: tint the baseColor toward saturated PCB
+        // green and give it a semi-gloss sheen (low roughness, non-metallic)
+        // instead of the matte rubber roughness map.
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+        set_material(g_program, 0.55f, 0.92f, 0.52f, 0.0f, 0.26f, 1.0f, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindVertexArray(g_retro_board.vao);
+        glDrawArrays(GL_TRIANGLES, 0, g_retro_board.count);
+        glBindVertexArray(0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+    } else {
     // Board
     float bnm[9]; mat4_normal_matrix(board_model, bnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, board_model.m);
@@ -4257,6 +4670,7 @@ void renderer_draw(GameState& gs,
         glDrawArrays(GL_TRIANGLES, 0, g_board_lining_count);
     }
     glBindVertexArray(0);
+    }  // end procedural-board else
 
     // ----- 3D chess clock — sits alongside the right side of the
     // board with its long base parallel to the board's edge.
@@ -4500,22 +4914,25 @@ void renderer_draw(GameState& gs,
             wx = fx + (tx - fx) * ai_anim_t;
             wz = fz + (tz - fz) * ai_anim_t;
             float arc = std::sin(ai_anim_t * static_cast<float>(M_PI)) * 0.3f;
-            Mat4 orient = mat4_rotate_x(rot_z_to_y);
+            // Standard retro orient (+ optional pawn tilt), then the legacy
+            // animating-path unconditional M_PI.
+            Mat4 orient = mat4_rotate_x(active_piece_rot(rot_z_to_y));
+            if (g_use_retro_pieces && bp.type != PAWN)
+                orient = mat4_multiply(mat4_rotate_y(retro_piece_yaw()), orient);
+            if (g_use_retro_pieces && bp.type == PAWN)
+                orient = mat4_multiply(
+                    mat4_multiply(mat4_rotate_y(retro_pawn_spin()),
+                                  mat4_rotate_x(retro_pawn_pitch())),
+                    orient);
             orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
             Mat4 pm = mat4_multiply(mat4_translate(wx, BOARD_Y + s + arc, wz),
                                     mat4_multiply(mat4_scale(s,s,s), orient));
-            // Material picks up the piece colour so a white piece
-            // doesn't render black mid-flight.
-            if (bp.is_white) set_material(g_program, 0.97f,0.95f,0.90f, 0,0.28f,1, 0);
-            else             set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
-            draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
             continue;
         }
 
-        Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, rot_z_to_y);
-        if (bp.is_white) set_material(g_program, 0.97f,0.95f,0.90f, 0,0.28f,1, 0);
-        else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.35f,1, 0);
-        draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
+        Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, active_piece_rot(rot_z_to_y), bp.type);
+        draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
     }
 
     // "Why?" ghost move — when a flagged-move panel is open and the
@@ -4830,8 +5247,9 @@ void renderer_draw(GameState& gs,
     // of each glyph so the labels read as carved into the walnut
     // frame instead of painted on top. Atlas dims (768 × 288) come
     // from text_atlas.cpp's CELL_SIZE × ATLAS_COLS / ATLAS_ROWS; the
-    // texel size is precomputed for the rim taps.
-    {
+    // texel size is precomputed for the rim taps. Skipped for the retro
+    // board, which has no walnut frame to engrave into.
+    if (!(g_use_retro_pieces && g_retro_board.count > 0)) {
         glUseProgram(g_etched_label_program);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);

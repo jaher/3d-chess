@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 #include <string>
 #include <thread>
 
@@ -200,6 +201,15 @@ static const AppPlatform g_platform = {
 // ---------------------------------------------------------------------------
 static gboolean on_tick(GtkWidget*, GdkFrameClock*, gpointer) {
     app_tick(g_app);
+    // Debug/headless: jump straight into a game after a few settle ticks
+    // so the in-game board can be inspected without driving the menu.
+    static int autostart_ticks = -1;
+    if (std::getenv("CHESS_AUTOSTART")) {
+        if (autostart_ticks < 0) autostart_ticks = 0;
+        if (autostart_ticks >= 0 && autostart_ticks < 10) {
+            if (++autostart_ticks == 10) app_enter_game(g_app);
+        }
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -374,10 +384,58 @@ static gboolean on_key_release(GtkWidget*, GdkEventKey* event, gpointer) {
 // ---------------------------------------------------------------------------
 // GL callbacks
 // ---------------------------------------------------------------------------
+// Headless driver: on Xvfb the GdkFrameClock can stop ticking once
+// animation settles, which freezes on_tick/on_render. When a dump or
+// autostart is requested we install a wall-clock timer that forces a
+// redraw every frame and jumps into a game, so the board can be
+// inspected without a live frame clock or menu input.
+static gboolean force_tick_cb(gpointer) {
+    static int n = 0; static bool started = false;
+    ++n;
+    if (!started && std::getenv("CHESS_AUTOSTART") && n >= 12) {
+        started = true;
+        app_enter_game(g_app);
+        if (const char* p = std::getenv("CHESS_CAM_PITCH")) g_app.rot_x = std::atof(p);
+        if (const char* y = std::getenv("CHESS_CAM_YAW"))   g_app.rot_y = std::atof(y);
+        if (const char* z = std::getenv("CHESS_CAM_ZOOM"))  g_app.zoom  = std::atof(z);
+    }
+    if (!g_gl_area) return G_SOURCE_CONTINUE;
+    // The frame clock can stall on Xvfb, so render directly into the
+    // GLArea's framebuffer here instead of waiting for the paint cycle.
+    GtkGLArea* area = GTK_GL_AREA(g_gl_area);
+    gtk_gl_area_make_current(area);
+    if (gtk_gl_area_get_error(area)) return G_SOURCE_CONTINUE;
+    app_tick(g_app);
+    int w = gtk_widget_get_allocated_width(g_gl_area);
+    int h = gtk_widget_get_allocated_height(g_gl_area);
+    gtk_gl_area_attach_buffers(area);   // bind the GLArea FBO
+    app_render(g_app, w, h);
+    static const char* dump_req = std::getenv("CHESS_DUMP_REQ");
+    static const char* dump_out = std::getenv("CHESS_DUMP_OUT");
+    if (dump_req && dump_out) {
+        if (FILE* rf = std::fopen(dump_req, "rb")) {
+            std::fclose(rf); std::remove(dump_req);
+            std::vector<unsigned char> px(static_cast<size_t>(w) * h * 3);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+            if (FILE* of = std::fopen(dump_out, "wb")) {
+                std::fprintf(of, "P6\n%d %d\n255\n", w, h);
+                for (int y = h - 1; y >= 0; --y)
+                    std::fwrite(px.data() + static_cast<size_t>(y) * w * 3, 1,
+                                static_cast<size_t>(w) * 3, of);
+                std::fclose(of);
+            }
+        }
+    }
+    return G_SOURCE_CONTINUE;
+}
+
 static void on_realize(GtkGLArea* area) {
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area) != nullptr) return;
     renderer_init(g_loaded_models);
+    if (std::getenv("CHESS_DUMP_REQ") || std::getenv("CHESS_AUTOSTART"))
+        g_timeout_add(80, force_tick_cb, nullptr);
 
     // Apply the splat environment saved by app_settings_load. This is
     // the right place for it: a GL context is current now (renderer_init
@@ -395,6 +453,25 @@ static gboolean on_render(GtkGLArea* area, GdkGLContext*) {
     int w = gtk_widget_get_allocated_width(GTK_WIDGET(area));
     int h = gtk_widget_get_allocated_height(GTK_WIDGET(area));
     app_render(g_app, w, h);
+    // Headless inspection hook: when $CHESS_DUMP_REQ exists, write the
+    // current frame to $CHESS_DUMP_OUT as a PPM and delete the request.
+    static const char* dump_req = std::getenv("CHESS_DUMP_REQ");
+    static const char* dump_out = std::getenv("CHESS_DUMP_OUT");
+    if (dump_req && dump_out) {
+        if (FILE* rf = std::fopen(dump_req, "rb")) {
+            std::fclose(rf); std::remove(dump_req);
+            std::vector<unsigned char> px(static_cast<size_t>(w) * h * 3);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px.data());
+            if (FILE* of = std::fopen(dump_out, "wb")) {
+                std::fprintf(of, "P6\n%d %d\n255\n", w, h);
+                for (int y = h - 1; y >= 0; --y)   // GL origin is bottom-left
+                    std::fwrite(px.data() + static_cast<size_t>(y) * w * 3, 1,
+                                static_cast<size_t>(w) * 3, of);
+                std::fclose(of);
+            }
+        }
+    }
     return TRUE;
 }
 
@@ -449,7 +526,10 @@ int main(int argc, char* argv[]) {
 
     g_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(g_window), "3D Chess");
-    gtk_window_set_default_size(GTK_WINDOW(g_window), 1024, 768);
+    int win_w = 1024, win_h = 768;
+    if (const char* e = std::getenv("CHESS_WIN_W")) win_w = std::atoi(e);
+    if (const char* e = std::getenv("CHESS_WIN_H")) win_h = std::atoi(e);
+    gtk_window_set_default_size(GTK_WINDOW(g_window), win_w, win_h);
     g_signal_connect(g_window, "destroy",
                      G_CALLBACK(gtk_main_quit), nullptr);
 

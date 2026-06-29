@@ -127,6 +127,7 @@ uniform float uMaterialOpacity;
 // fittings catch reflections without the dial face going shiny.
 uniform int uClockTextureMode;
 uniform int uClockPbrMapsMode;
+uniform int uClockAlphaCutout;   // discard transparent texels (letter decals)
 uniform sampler2D uClockDiffuse;
 uniform sampler2D uClockRoughnessTex;
 uniform sampler2D uClockMetalnessTex;
@@ -326,7 +327,9 @@ void main() {
     // flip the dial faces would render upside-down.
     if (uClockTextureMode != 0) {
         vec2 uv = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
-        vec3 tex = texture(uClockDiffuse, uv).rgb;
+        vec4 texc = texture(uClockDiffuse, uv);
+        if (uClockAlphaCutout != 0 && texc.a < 0.5) discard;
+        vec3 tex = texc.rgb;
         albedo = tex * uAlbedo;
         if (uClockPbrMapsMode != 0) {
             // Roughness + metalness sampled from their bundled
