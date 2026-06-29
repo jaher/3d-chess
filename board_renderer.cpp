@@ -1775,11 +1775,13 @@ static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
             glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
             glActiveTexture(GL_TEXTURE0);
             set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.6f, 1.0f, 0);
-            glDisable(GL_CULL_FACE);
+            // The engine renders with face-culling disabled; the decal quad
+            // shows from both sides on its own. (Previously toggled cull on
+            // here, which leaked and culled the move circles, flag cloth and
+            // eval-graph fills drawn afterwards.)
             glBindVertexArray(g_letter_quad.vao);
             glDrawArrays(GL_TRIANGLES, 0, g_letter_quad.count);
             glBindVertexArray(0);
-            glEnable(GL_CULL_FACE);
             glUniform1i(glGetUniformLocation(g_program, "uClockAlphaCutout"), 0);
             glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         }
