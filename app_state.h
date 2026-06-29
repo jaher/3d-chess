@@ -502,6 +502,7 @@ struct AppState {
     // values stable — they appear in settings.ini.
     enum class Environment : int {
         MedievalRoom    = 0,
+        CableRoom       = 1,
     };
     Environment environment = Environment::MedievalRoom;
 

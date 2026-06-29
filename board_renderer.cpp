@@ -348,6 +348,12 @@ struct EnvironmentDesc {
     const char* panorama_paths[2];
     float splat_scale;
     float floor_y;
+    // World-space shift of the room relative to the chessboard, applied
+    // AFTER the bbox-centre + scale. Lets a room whose open floor isn't at
+    // its bbox centre slide so the board sits on the clear area (and back
+    // out of any wall/clutter geometry it would otherwise intersect).
+    float offset_x;
+    float offset_z;
 };
 static const EnvironmentDesc g_environments[] = {
     // 0 = MedievalRoom — original Marble tuning.
@@ -368,6 +374,30 @@ static const EnvironmentDesc g_environments[] = {
         },
         25.0f,
         -8.878f,
+        0.0f, 0.0f,
+    },
+    // 1 = CableRoom — World Labs Marble "Cable Room (spacious)": a dark
+    // cable-tangled server hall with an open central floor. Same Marble
+    // SPZ convention as medieval, but a much larger raw footprint, so a
+    // smaller splat_scale. floor_y stays the table-bottom world anchor.
+    {
+        "Cable room",
+        {
+#ifndef __EMSCRIPTEN__
+            "world_labs/cable_room/splat_full_res.spz",
+            "world_labs/cable_room/splat_500k.spz",
+#else
+            "/world_labs/cable_room/splat_500k.spz",
+            "world_labs/cable_room/splat_500k.spz",
+#endif
+        },
+        {
+            "world_labs/cable_room/panorama.jpg",
+            "/world_labs/cable_room/panorama.jpg",
+        },
+        14.0f,        // splat_scale — bigger room
+        -8.878f,
+        0.0f, 40.0f,  // offset: slide the room so the board lands on the open floor
     },
 };
 constexpr int g_environment_count =
@@ -1035,12 +1065,59 @@ static bool load_splat_from_candidates(const char* const* candidates,
     return false;
 }
 
+// Live placement-tuning: an optional file read each frame so a room can be
+// dialed in WITHOUT restarting the game. Path: $CHESS_SPLAT_TUNE or
+// ~/.cache/chess_splat_tune. Whitespace-separated "key value" pairs:
+//   scale 14   floor -8.878   offx 20   offz 28
+// Returns true when the file's mtime changed since the last call, so the
+// caller can invalidate the splat-backdrop cache and show the move at once.
+#include <sys/stat.h>
+static bool read_splat_tune(float& scale, float& floor_y,
+                            float& offx, float& offz) {
+    static time_t last_mtime = 0;
+    static std::string path;
+    if (path.empty()) {
+        if (const char* p = std::getenv("CHESS_SPLAT_TUNE")) path = p;
+        else if (const char* h = std::getenv("HOME"))
+            path = std::string(h) + "/.cache/chess_splat_tune";
+        else path = "/tmp/chess_splat_tune";
+    }
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return false;
+    bool changed = (st.st_mtime != last_mtime);
+    last_mtime = st.st_mtime;
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return false;
+    char key[64]; float val;
+    while (std::fscanf(f, "%63s %f", key, &val) == 2) {
+        std::string k(key);
+        if      (k == "scale") scale   = val;
+        else if (k == "floor") floor_y = val;
+        else if (k == "offx")  offx    = val;
+        else if (k == "offz")  offz    = val;
+    }
+    std::fclose(f);
+    return changed;
+}
+
 bool renderer_set_environment(int env_kind) {
     if (env_kind < 0 || env_kind >= g_environment_count) return false;
     const EnvironmentDesc& d = g_environments[env_kind];
     const size_t n =
         sizeof(d.splat_paths) / sizeof(d.splat_paths[0]);
-    if (!load_splat_from_candidates(d.splat_paths, n)) {
+    // Honor CHESS_SPLAT_TIER=500k on the env-switch path too (the first
+    // load in renderer_init already does, but a switched-to environment
+    // bypasses it). Try any "500k" path before the default full_res.
+    const char* cands[4];
+    size_t nc = 0;
+    const char* tier = std::getenv("CHESS_SPLAT_TIER");
+    if (tier && std::strstr(tier, "500")) {
+        for (size_t i = 0; i < n; ++i)
+            if (d.splat_paths[i] && std::strstr(d.splat_paths[i], "500k"))
+                cands[nc++] = d.splat_paths[i];
+    }
+    for (size_t i = 0; i < n; ++i) cands[nc++] = d.splat_paths[i];
+    if (!load_splat_from_candidates(cands, nc)) {
         std::fprintf(stderr,
             "[env] failed to load splat for '%s' — keeping previous scene\n",
             d.label);
@@ -3691,13 +3768,28 @@ void renderer_draw(GameState& gs,
         // room's projected footprint should land around 50–60
         // units for that proportion.
         const EnvironmentDesc& env = env_desc(g_active_environment);
-        const float splat_scale  = env.splat_scale;
-        const float floor_world_y = env.floor_y;
+        float splat_scale   = env.splat_scale;
+        float floor_world_y = env.floor_y;
+        float off_x = env.offset_x;
+        float off_z = env.offset_z;
+        // Runtime placement overrides — dial a room in without a rebuild.
+        //   CHESS_SPLAT_SCALE / _FLOOR / _OFFX / _OFFZ
+        if (const char* s = std::getenv("CHESS_SPLAT_SCALE")) {
+            float v = std::atof(s); if (v > 0.0f) splat_scale = v;
+        }
+        if (const char* s = std::getenv("CHESS_SPLAT_FLOOR")) floor_world_y = std::atof(s);
+        if (const char* s = std::getenv("CHESS_SPLAT_OFFX"))  off_x = std::atof(s);
+        if (const char* s = std::getenv("CHESS_SPLAT_OFFZ"))  off_z = std::atof(s);
+        // Live file tuning (highest precedence; editable while the game runs).
+        // When the file changes, invalidate the backdrop cache so the move
+        // shows on the next frame without restarting.
+        if (read_splat_tune(splat_scale, floor_world_y, off_x, off_z))
+            g_splat_bg_cache_valid = false;
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
-        const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale;
+        const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale + off_x;
         const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
-        const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale;
+        const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale + off_z;
         Mat4 splat_model = mat4_multiply(
             mat4_translate(splat_cx, splat_cy, splat_cz),
             mat4_scale(splat_scale, -splat_scale, splat_scale));
