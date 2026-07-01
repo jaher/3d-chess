@@ -452,9 +452,11 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/datacenter/panorama.jpg",
             "/world_labs/datacenter/panorama.jpg",
         },
-        14.0f,         // splat_scale — tune to the datacenter's footprint
+        22.0f,         // splat_scale — larger hall so the board has headroom
+                       // under the overhead cabling instead of sitting in it
         -8.878f,
-        20.0f, 28.0f,  // offset: board placed in the central aisle
+        4.73f, -8.5f,  // offset: board centred in the open aisle, on the floor,
+                       // a little down-corridor toward the bright far end
     },
 };
 constexpr int g_environment_count =
@@ -4339,8 +4341,8 @@ void renderer_draw(GameState& gs,
         float off_x = env.offset_x;
         float off_z = env.offset_z;
         // Runtime placement overrides (env vars + live ~/.cache/chess_splat_tune
-        // file) — for DIALING IN a room without a rebuild. Scoped to the Cable
-        // Room (env 1) only, so they never disturb the medieval room's
+        // file) — for DIALING IN a room without a rebuild. Scoped to the
+        // datacenter (env 1) only, so they never disturb the medieval room's
         // baked-in coordinates when the user switches environments.
         //   CHESS_SPLAT_SCALE / _FLOOR / _OFFX / _OFFZ
         if (g_active_environment == 1) {

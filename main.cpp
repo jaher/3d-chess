@@ -464,6 +464,15 @@ static void on_realize(GtkGLArea* area) {
     if (std::getenv("CHESS_DUMP_REQ") || std::getenv("CHESS_AUTOSTART"))
         g_timeout_add(80, force_tick_cb, nullptr);
 
+    // Headless capture override: $CHESS_ENV=0|1 forces the environment
+    // (0=medieval, 1=datacenter) regardless of the saved setting, so a dump
+    // can inspect either backdrop without touching the user's settings.ini.
+    if (const char* e = std::getenv("CHESS_ENV")) {
+        int ev = std::atoi(e);
+        if (ev == 0 || ev == 1)
+            g_app.environment = static_cast<AppState::Environment>(ev);
+    }
+
     // Apply the splat environment saved by app_settings_load. This is
     // the right place for it: a GL context is current now (renderer_init
     // just loaded the medieval default under it), whereas app_settings_load
