@@ -1777,6 +1777,11 @@ static Mat4 retro_piece_orient(int type, bool is_white, float rot_z_to_y) {
     // legend off-axis. An optional pawn-only pitch/spin tweaks from there.
     if (g_use_retro_pieces && type != PAWN)
         orient = mat4_multiply(mat4_rotate_y(retro_piece_yaw()), orient);
+    // The king is a CRT monitor whose screen is on the -X face; the base yaw
+    // leaves the screen facing away, so turn the king 180° to face the player
+    // (the BSOD decal is drawn on that -X screen face).
+    if (g_use_retro_pieces && type == KING)
+        orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
     if (g_use_retro_pieces && type == PAWN)
         orient = mat4_multiply(
             mat4_multiply(mat4_rotate_y(retro_pawn_spin()),
@@ -1856,13 +1861,16 @@ static float env_f(const char* k, float d) {
 // Env-tunable (CHESS_BSOD_X/Y/Z/H/W) for on-render fitting.
 static void draw_king_bsod(const Mat4& pm) {
     if (!g_king_bsod_tex || g_letter_quad.count == 0) return;
-    float cx = env_f("CHESS_BSOD_X", 0.55f), cy = env_f("CHESS_BSOD_Y", 0.51f),
+    // Screen is the flat -X face at ~(-0.46,0.54,0); place the decal just
+    // outside it. cx negative = in front of the screen along -X.
+    float cx = env_f("CHESS_BSOD_X", -0.47f), cy = env_f("CHESS_BSOD_Y", 0.54f),
           cz = env_f("CHESS_BSOD_Z", 0.00f);
-    float h = env_f("CHESS_BSOD_H", 0.62f), w = env_f("CHESS_BSOD_W", 0.78f);
-    // Negative width flips the quad's U so the text isn't mirrored on the screen.
+    float h = env_f("CHESS_BSOD_H", 0.70f), w = env_f("CHESS_BSOD_W", 0.84f);
+    // rotate_z(+90°) turns the quad's +Y normal to face -X; +w keeps the text
+    // un-mirrored on this face.
     Mat4 dm = mat4_multiply(pm, mat4_multiply(mat4_translate(cx, cy, cz),
-              mat4_multiply(mat4_rotate_z(-static_cast<float>(M_PI) / 2.0f),
-                            mat4_scale(h, 1.0f, -w))));
+              mat4_multiply(mat4_rotate_z(static_cast<float>(M_PI) / 2.0f),
+                            mat4_scale(h, 1.0f, w))));
     float dnm[9]; mat4_normal_matrix(dm, dnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, dm.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, dnm);
@@ -1989,8 +1997,6 @@ static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
             glDrawArrays(GL_TRIANGLES, 0, mesh->count);
             glBindVertexArray(0);
         }
-        // The retro king is a monitor — paint a Blue Screen of Death on it.
-        if (type == KING) draw_king_bsod(pm);
         glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
     } else {
@@ -5132,6 +5138,12 @@ void renderer_draw(GameState& gs,
         } else {
             draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
         }
+        // Crash the king's monitor (BSOD) only while the king is selected
+        // (g_dbg_anim_type==KING forces it on for the headless GIF harness).
+        if (g_use_retro_pieces && bp.type == KING &&
+            ((gs.selected_col == bp.col && gs.selected_row == bp.row) ||
+             g_dbg_anim_type == KING))
+            draw_king_bsod(pm);
     }
 
     // "Why?" ghost move — when a flagged-move panel is open and the
