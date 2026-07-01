@@ -34,7 +34,7 @@ LDFLAGS   := \
     -s MINIFY_HTML=0 \
     -s USE_ZLIB=1 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString,FS \
-    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js,_chess_start_network_game,_on_remote_move_from_js,_chess_dbg_dump,_chess_dbg_cable_game,_chess_dbg_animate \
+    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js,_chess_start_network_game,_on_remote_move_from_js,_chess_dbg_dump,_chess_dbg_cable_game,_chess_dbg_animate,_chess_dbg_camera \
     --preload-file ../models-web-packed@/models \
     --preload-file ../models/board@/models/board \
     --preload-file ../models/clock@/models/clock \

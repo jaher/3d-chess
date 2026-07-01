@@ -430,6 +430,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_cable_game(void) {
 extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_animate(int type, float t_seconds) {
     renderer_dbg_animate(type, t_seconds);
 }
+// GIF harness: orbit the camera (degrees pitch, degrees yaw, zoom) so a face
+// that points away from the default view (e.g. the king's screen) can be seen.
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_camera(float rot_x, float rot_y, float zoom) {
+    g_app.rot_x = rot_x; g_app.rot_y = rot_y; if (zoom > 0.0f) g_app.zoom = zoom;
+}
 // Render one frame directly (headless rAF doesn't tick) and write the
 // framebuffer to /dump.ppm — glReadPixels reads what was drawn even when
 // the software compositor never presents to the visible canvas.

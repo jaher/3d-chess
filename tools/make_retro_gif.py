@@ -57,6 +57,9 @@ async def main():
         mid=await call("Page.navigate",{"url":f"http://localhost:{HTTP}/chess.html"}); await wait(mid,3)
         await asyncio.sleep(14)
         await ev("Module.ccall('chess_dbg_cable_game',null,[],[])"); await asyncio.sleep(1.0)
+        cry=os.environ.get('CAM_RY'); crx=os.environ.get('CAM_RX','25'); cz=os.environ.get('CAM_ZOOM','0')
+        if cry is not None:
+            await ev(f"Module.ccall('chess_dbg_camera',null,['number','number','number'],[{crx},{cry},{cz}])")
         for i in range(FRAMES):
             t = CYCLE * i / FRAMES
             await ev(f"Module.ccall('chess_dbg_animate',null,['number','number'],[{TYPE},{t}])")

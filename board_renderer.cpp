@@ -137,7 +137,8 @@ static GLuint    g_retro_letter_b[8] = {0};
 static ClockMesh g_letter_quad;   // unit quad in XZ facing +Y
 static ClockMesh g_retro_board;
 static GLuint    g_retro_board_tex = 0;
-static GLuint    g_king_bsod_tex = 0;         // Blue-Screen-of-Death on the king's monitor
+static const int KING_NOISE_FRAMES = 16;      // TV-static flipbook on the king's monitor
+static GLuint    g_king_noise[KING_NOISE_FRAMES] = {0};
 static float     g_retro_board_scale = 1.0f;  // bbox→board fit, set on load
 static bool      g_retro_loaded = false;
 static bool      g_use_retro_pieces = false;
@@ -1187,7 +1188,10 @@ static void load_retro_set() {
     }
     g_retro_board_rough = gl_load_texture(R + "tex/board_rough.png");
     g_retro_board_metal = gl_load_texture(R + "tex/board_metal.png");
-    g_king_bsod_tex     = gl_load_texture(R + "tex/king_bsod.png");
+    for (int f = 0; f < KING_NOISE_FRAMES; ++f) {
+        char nm[64]; std::snprintf(nm, sizeof(nm), "tex/king_noise_%02d.png", f);
+        g_king_noise[f] = gl_load_texture(R + nm);
+    }
     // Clean letter decals + the flat quad they ride on.
     for (int f = 0; f < 8; ++f) {
         g_retro_letter_w[f] = gl_load_texture_alpha(
@@ -1777,11 +1781,6 @@ static Mat4 retro_piece_orient(int type, bool is_white, float rot_z_to_y) {
     // legend off-axis. An optional pawn-only pitch/spin tweaks from there.
     if (g_use_retro_pieces && type != PAWN)
         orient = mat4_multiply(mat4_rotate_y(retro_piece_yaw()), orient);
-    // The king is a CRT monitor whose screen is on the -X face; the base yaw
-    // leaves the screen facing away, so turn the king 180° to face the player
-    // (the BSOD decal is drawn on that -X screen face).
-    if (g_use_retro_pieces && type == KING)
-        orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
     if (g_use_retro_pieces && type == PAWN)
         orient = mat4_multiply(
             mat4_multiply(mat4_rotate_y(retro_pawn_spin()),
@@ -1854,20 +1853,23 @@ static Mat4 retro_part_xform(int type, float angle) {
 static float env_f(const char* k, float d) {
     const char* s = std::getenv(k); return s ? static_cast<float>(std::atof(s)) : d;
 }
-// Draw the Blue-Screen-of-Death decal on the retro king's monitor. The screen
-// is a flat face at ~(0.53,0.51,0) facing +X in the king's normalised space
-// (found by geometry analysis). The unit quad (XZ, +Y normal) is scaled to the
-// screen size, its normal rotated +Y→+X, then placed at the screen centre.
-// Env-tunable (CHESS_BSOD_X/Y/Z/H/W) for on-render fitting.
-static void draw_king_bsod(const Mat4& pm) {
-    if (!g_king_bsod_tex || g_letter_quad.count == 0) return;
-    // Screen is the flat -X face at ~(-0.46,0.54,0); place the decal just
-    // outside it. cx negative = in front of the screen along -X.
-    float cx = env_f("CHESS_BSOD_X", -0.47f), cy = env_f("CHESS_BSOD_Y", 0.54f),
-          cz = env_f("CHESS_BSOD_Z", 0.00f);
-    float h = env_f("CHESS_BSOD_H", 0.70f), w = env_f("CHESS_BSOD_W", 0.84f);
-    // rotate_z(+90°) turns the quad's +Y normal to face -X; +w keeps the text
-    // un-mirrored on this face.
+// Animated TV-static (white noise) on the retro king's monitor SCREEN. The
+// model's screen is the -X face (where the KING.EXE_ terminal is authored); it
+// naturally faces away from the owner (toward the opponent), so the piece is
+// NOT rotated — the decal sits on that real screen face. Flips through the noise
+// frames by time (the harness forces the phase via g_dbg_anim_t). Env-tunable.
+static void draw_king_noise(const Mat4& pm, int64_t now) {
+    if (g_letter_quad.count == 0) return;
+    int frame = (g_dbg_anim_type == KING)
+        ? static_cast<int>(g_dbg_anim_t * 18.0f)      // harness: phase → frame
+        : static_cast<int>(now / 55000);              // live: ~18 fps flicker
+    frame = ((frame % KING_NOISE_FRAMES) + KING_NOISE_FRAMES) % KING_NOISE_FRAMES;
+    GLuint tex = g_king_noise[frame];
+    if (!tex) return;
+    float cx = env_f("CHESS_SCREEN_X", -0.47f), cy = env_f("CHESS_SCREEN_Y", 0.54f),
+          cz = env_f("CHESS_SCREEN_Z", 0.00f);
+    float h = env_f("CHESS_SCREEN_H", 0.70f), w = env_f("CHESS_SCREEN_W", 0.84f);
+    // unit quad (+Y normal) → screen size → normal to -X (the real screen face).
     Mat4 dm = mat4_multiply(pm, mat4_multiply(mat4_translate(cx, cy, cz),
               mat4_multiply(mat4_rotate_z(static_cast<float>(M_PI) / 2.0f),
                             mat4_scale(h, 1.0f, w))));
@@ -1880,10 +1882,10 @@ static void draw_king_bsod(const Mat4& pm) {
     glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
     glUniform1i(glGetUniformLocation(g_program, "uClockAlphaCutout"), 0);
     glActiveTexture(GL_TEXTURE5);
-    glBindTexture(GL_TEXTURE_2D, g_king_bsod_tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
     glActiveTexture(GL_TEXTURE0);
-    set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.4f, 1.0f, 0);  // bright, matte
+    set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.5f, 1.0f, 0);  // bright, matte
     glBindVertexArray(g_letter_quad.vao);
     glDrawArrays(GL_TRIANGLES, 0, g_letter_quad.count);
     glBindVertexArray(0);
@@ -5138,12 +5140,12 @@ void renderer_draw(GameState& gs,
         } else {
             draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
         }
-        // Crash the king's monitor (BSOD) only while the king is selected
+        // White-noise (static) on the king's monitor only while it's selected
         // (g_dbg_anim_type==KING forces it on for the headless GIF harness).
         if (g_use_retro_pieces && bp.type == KING &&
             ((gs.selected_col == bp.col && gs.selected_row == bp.row) ||
              g_dbg_anim_type == KING))
-            draw_king_bsod(pm);
+            draw_king_noise(pm, press_now);
     }
 
     // "Why?" ghost move — when a flagged-move panel is open and the
