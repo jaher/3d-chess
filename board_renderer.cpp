@@ -1672,6 +1672,28 @@ static float retro_pawn_spin() {
     return 0.0f;   // keycap meshes are pre-mirrored so the natural pose reads upright
 }
 
+// Retro keycap "key press": the selected pawn's keycap dips down while it is
+// held, eased in over ~90 ms from the moment of selection (gs.anim_start_time,
+// same monotonic clock as g_get_monotonic_time). It is back up at the
+// destination once the move lands — the source keycap is gone by then, so the
+// pop-up reads as releasing the key. Depth is in world units.
+static float retro_key_press_depth() {
+    if (const char* s = std::getenv("CHESS_KEY_PRESS_DEPTH")) return std::atof(s);
+    return 0.10f;   // a clear keycap dip without sinking into the board
+}
+static float retro_key_press_amt(const GameState& gs, int col, int row, int64_t now) {
+    if (!g_use_retro_pieces) return 0.0f;
+    if (gs.selected_col != col || gs.selected_row != row) return 0.0f;
+    int idx = gs.grid[row][col];
+    if (idx < 0 || idx >= static_cast<int>(gs.pieces.size()) ||
+        gs.pieces[idx].type != PAWN) return 0.0f;
+    float t = static_cast<float>(now - gs.anim_start_time) / 1.0e6f;   // s since select
+    float p = t / 0.09f;                                               // ease-in ~90 ms
+    if (p < 0.0f) p = 0.0f;
+    if (p > 1.0f) p = 1.0f;
+    return p * p * (3.0f - 2.0f * p);                                  // smoothstep
+}
+
 // Placement of the flat letter decal in the keycap's local space (unit-
 // sphere normalised, so the keycap spans ~[-1,1]). Y sits the tile on the
 // keycap top; scale fits it within the dish. Tunable for fitting.
@@ -4913,6 +4935,9 @@ void renderer_draw(GameState& gs,
         ai_anim_t = ai_anim_t * ai_anim_t * (3.0f - 2.0f * ai_anim_t);
     }
 
+    // Timestamp for the keycap-press ease (same clock as gs.anim_start_time,
+    // matching the selection-pulse code below).
+    gint64 press_now = g_get_monotonic_time();
     for (const auto& bp : gs.pieces) {
         if (!bp.alive) continue;
         float wx, wz; square_center(bp.col, bp.row, wx, wz);
@@ -4949,6 +4974,11 @@ void renderer_draw(GameState& gs,
         }
 
         Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, active_piece_rot(rot_z_to_y), bp.type);
+        // Retro keycap press: dip the selected pawn's keycap (+ its letter
+        // decal, which rides the same matrix) down while it's held.
+        float press = retro_key_press_amt(gs, bp.col, bp.row, press_now);
+        if (press > 0.0f)
+            pm = mat4_multiply(mat4_translate(0.0f, -retro_key_press_depth() * press, 0.0f), pm);
         draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
     }
 
