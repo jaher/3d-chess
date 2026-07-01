@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Meta Ray-Ban Display Web App: fixed 600x600, no scroll, no zoom.
+       Same conventions as ../glasses/index.html. -->
+  <meta name="viewport"
+        content="width=600, height=600, initial-scale=1.0, user-scalable=no">
+  <meta name="description"
+        content="Walk around a Gaussian-splat world on the Meta Ray-Ban Display. Frames are rendered server-side and streamed; the Neural Band moves the camera.">
+  <meta name="mrbd-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="manifest.json">
+  <title>Splat World — Glasses</title>
+  <style>
+    /* The additive lens treats pure black as transparent; everything visible
+       must be light and high-contrast. No scrolling, one 600x600 stage. */
+    html, body { margin: 0; padding: 0; background: #000; overflow: hidden;
+                 width: 600px; height: 600px; }
+    #view { position: absolute; inset: 0; width: 600px; height: 600px;
+            object-fit: contain; image-rendering: auto; background: #000; }
+    #hud  { position: absolute; left: 0; right: 0; bottom: 6px;
+            text-align: center; font: 600 20px/1.3 system-ui, sans-serif;
+            color: #e8e8e8; text-shadow: 0 0 6px #000, 0 0 2px #000;
+            pointer-events: none; }
+    #world { position: absolute; left: 0; right: 0; top: 6px;
+             text-align: center; font: 600 18px/1.3 system-ui, sans-serif;
+             color: #9fdcff; text-shadow: 0 0 6px #000; pointer-events: none; }
+    .dim { opacity: 0.55; }
+  </style>
+</head>
+<body>
+  <img id="view" alt="Streamed splat world">
+  <div id="world" class="dim">connecting…</div>
+  <div id="hud" class="dim">◀ ▶ turn · ▲ ▼ walk · ⏎ reset</div>
+
+  <script>
+  'use strict';
+  // ------------------------------------------------------------------------
+  // Streamed viewer: the glasses do ZERO splat rendering. Frames arrive as
+  // binary JPEG WebSocket messages from server.js; we just swap them into an
+  // <img>. If the WS dies we fall back to the MJPEG stream, which browsers
+  // decode natively inside <img>.
+  // ------------------------------------------------------------------------
+  const view = document.getElementById('view');
+  const hud = document.getElementById('hud');
+  const worldEl = document.getElementById('world');
+  let ws = null;
+  let lastUrl = null;
+  let frames = 0, fpsT0 = performance.now();
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/`);
+    ws.binaryType = 'blob';
+    ws.onopen = () => { ws.send(JSON.stringify({ type: 'hello', role: 'viewer' })); };
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'world') worldEl.textContent = msg.name;
+        } catch (_) {}
+        return;
+      }
+      // Binary JPEG frame.
+      const url = URL.createObjectURL(ev.data);
+      view.onload = () => { if (lastUrl) URL.revokeObjectURL(lastUrl); lastUrl = url; };
+      view.src = url;
+      if (++frames % 30 === 0) {
+        const now = performance.now();
+        hud.textContent = `◀ ▶ turn · ▲ ▼ walk · ⏎ reset · ${(30000 / (now - fpsT0)).toFixed(0)} fps`;
+        fpsT0 = now;
+      }
+    };
+    ws.onclose = () => {
+      worldEl.textContent = 'reconnecting…';
+      // MJPEG fallback keeps the view alive while we retry the socket.
+      view.src = '/stream.mjpg';
+      setTimeout(connect, 2000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  }
+  connect();
+
+  // ------------------------------------------------------------------------
+  // Input — Neural Band swipes/pinches and frame cap-touch arrive as standard
+  // ArrowUp/Down/Left/Right + Enter + Escape `keydown` events (identical to
+  // the chess glasses app, see ../glasses/app.js). Map:
+  //   swipe left/right -> turn,  swipe up/down -> walk fwd/back,
+  //   pinch (Enter)    -> reset view.
+  // Key-repeat while holding gives continuous motion for free.
+  // ------------------------------------------------------------------------
+  const NAV = { ArrowLeft: 'left', ArrowRight: 'right',
+                ArrowUp: 'fwd', ArrowDown: 'back', Enter: 'reset' };
+  document.addEventListener('keydown', (e) => {
+    const action = NAV[e.key];
+    if (!action) return;
+    e.preventDefault();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'nav', action }));
+    } else {
+      fetch('/api/nav', { method: 'POST', body: JSON.stringify({ action }) });
+    }
+  });
+  </script>
+</body>
+</html>

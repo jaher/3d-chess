@@ -51,6 +51,11 @@ realistic lighting, wood textures, and reflections.
 - **Enjoy the board** — soft shadows and realistic lighting, walnut wood, glossy
   reflective squares, a working analog clock, and a playful main menu where you
   can grab and fling the pieces around.
+- **Walk through a photo on your glasses** *(experimental)* — snap a photo on
+  your phone, let it grow into a 3D Gaussian-splat world, and stroll around it
+  on a Meta Ray-Ban Display with the Neural Band — the server renders and
+  streams every frame, the glasses just watch. See
+  [`splat_glasses/README.md`](splat_glasses/README.md).
 
 ## Play in your browser
 
