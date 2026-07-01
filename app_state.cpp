@@ -5847,7 +5847,7 @@ void apply_setting(AppState& a, const std::string& key, const std::string& val) 
         // NOT touch the renderer here (app_settings_load runs before any GL
         // context); main.cpp / main_sdl.cpp apply it once a context exists.
         if (val == "cable")
-            a.environment = AppState::Environment::CableRoom;
+            a.environment = AppState::Environment::DataCenter;
         else
             a.environment = AppState::Environment::MedievalRoom;
     }
@@ -5876,7 +5876,7 @@ std::string serialize_settings(const AppState& a) {
     const CategoryStat& fk = a.learner.stats[static_cast<int>(TacticCategory::Fork)];
     const CategoryStat& pn = a.learner.stats[static_cast<int>(TacticCategory::Pin)];
     const char* env_name =
-        (a.environment == AppState::Environment::CableRoom) ? "cable" : "medieval";
+        (a.environment == AppState::Environment::DataCenter) ? "datacenter" : "medieval";
     char buf[512];
     std::snprintf(buf, sizeof(buf),
         "# 3d_chess user settings — auto-generated\n"

@@ -415,7 +415,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_cable_game(void) {
     app_enter_game(g_app);
     std::fprintf(stderr, "[web-dbg] after enter_game mode=%d games=%zu\n",
                 (int)g_app.mode, g_app.games.size());
-    g_app.environment = AppState::Environment::CableRoom;
+    g_app.environment = AppState::Environment::DataCenter;
     renderer_set_environment(1);
     int npieces = 0, nalive = 0;
     if (!g_app.games.empty()) {

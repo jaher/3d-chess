@@ -22,8 +22,8 @@ EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
 # dark clear when no SPZ loads).
 SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_500k.spz),\
     --preload-file ../world_labs/medieval_room/splat_500k.spz@/world_labs/medieval_room/splat_500k.spz,) \
-  $(if $(wildcard ../world_labs/cable_room/splat_500k.spz),\
-    --preload-file ../world_labs/cable_room/splat_500k.spz@/world_labs/cable_room/splat_500k.spz,)
+  $(if $(wildcard ../world_labs/datacenter/splat_500k.spz),\
+    --preload-file ../world_labs/datacenter/splat_500k.spz@/world_labs/datacenter/splat_500k.spz,)
 
 LDFLAGS   := \
     -s USE_SDL=2 \

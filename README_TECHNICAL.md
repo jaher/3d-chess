@@ -1019,8 +1019,10 @@ walkthrough live in the user guide — see
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
-- **Gaussian-splat backdrop** — the medieval-room SPZ behind the board.
-  Two rasterizer paths:
+- **Gaussian-splat backdrop** — a World-Labs-Marble SPZ behind the board,
+  selectable per environment: the default **medieval room**, or the
+  **datacenter** (server hall generated from a datacenter photo) that hosts
+  the retro-PC piece set. Two rasterizer paths:
   - **Desktop default**: tile-based GL compute rasterizer (one
     workgroup per 16×16 tile, per-pixel front-to-back compositing —
     the Kerbl 2023 3DGS algorithm ported to GLSL compute, see

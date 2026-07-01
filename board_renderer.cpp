@@ -433,28 +433,28 @@ static const EnvironmentDesc g_environments[] = {
         -8.878f,
         0.0f, 0.0f,
     },
-    // 1 = CableRoom — World Labs Marble "Cable Room (spacious)": a dark
-    // cable-tangled server hall with an open central floor. Same Marble
-    // SPZ convention as medieval, but a much larger raw footprint, so a
-    // smaller splat_scale. floor_y stays the table-bottom world anchor.
+    // 1 = DataCenter — World Labs Marble generation from a datacenter photo: a
+    // server hall with colourful overhead cabling and racks down both sides,
+    // an open central aisle for the board. Replaces the old cable-room splat
+    // (too many artifacts). Same Marble SPZ convention as medieval.
     {
-        "Cable room",
+        "Datacenter",
         {
 #ifndef __EMSCRIPTEN__
-            "world_labs/cable_room/splat_full_res.spz",
-            "world_labs/cable_room/splat_500k.spz",
+            "world_labs/datacenter/splat_full_res.spz",
+            "world_labs/datacenter/splat_500k.spz",
 #else
-            "/world_labs/cable_room/splat_500k.spz",
-            "world_labs/cable_room/splat_500k.spz",
+            "/world_labs/datacenter/splat_500k.spz",
+            "world_labs/datacenter/splat_500k.spz",
 #endif
         },
         {
-            "world_labs/cable_room/panorama.jpg",
-            "/world_labs/cable_room/panorama.jpg",
+            "world_labs/datacenter/panorama.jpg",
+            "/world_labs/datacenter/panorama.jpg",
         },
-        14.0f,         // splat_scale — bigger room
+        14.0f,         // splat_scale — tune to the datacenter's footprint
         -8.878f,
-        20.0f, 28.0f,  // offset: board shifted right + back toward the tunnel
+        20.0f, 28.0f,  // offset: board placed in the central aisle
     },
 };
 constexpr int g_environment_count =
