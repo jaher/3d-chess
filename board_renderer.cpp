@@ -444,7 +444,10 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/datacenter/splat_full_res.spz",
             "world_labs/datacenter/splat_500k.spz",
 #else
-            "/world_labs/datacenter/splat_500k.spz",
+            // Highest-quality tier on web too — the 500k tier looked sparse /
+            // "weird" in the per-quad WebGL rasterizer; the full-res cloud
+            // (~1.9M splats) fills the hall in. Heavier download, better look.
+            "/world_labs/datacenter/splat_full_res.spz",
             "world_labs/datacenter/splat_500k.spz",
 #endif
         },
@@ -452,11 +455,12 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/datacenter/panorama.jpg",
             "/world_labs/datacenter/panorama.jpg",
         },
-        22.0f,         // splat_scale — larger hall so the board has headroom
-                       // under the overhead cabling instead of sitting in it
+        44.0f,          // splat_scale — a large warehouse: the chess table reads
+                        // as a piece of furniture inside the hall, not the whole
+                        // room, with the cabling high overhead and racks distant
         -8.878f,
-        4.73f, -8.5f,  // offset: board centred in the open aisle, on the floor,
-                       // a little down-corridor toward the bright far end
+        9.46f, -18.81f, // offset: board centred in the open aisle, on the floor,
+                        // a little down-corridor toward the bright far end
     },
 };
 constexpr int g_environment_count =

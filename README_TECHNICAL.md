@@ -1037,7 +1037,12 @@ walkthrough live in the user guide — see
   - **Web**: uses the per-splat-quad path (WebGL2 has no compute
     shaders, so the tile rasterizer is desktop-only). The backdrop is
     cached across frames and only re-rendered when the camera moves, so
-    a static view costs nothing per frame.
+    a static view costs nothing per frame. The medieval room preloads
+    the 500k tier; the datacenter preloads the **full-res tier**
+    (`web/Makefile`) — the 500k cloud looked sparse in the per-quad
+    rasterizer, so the datacenter trades a heavier `chess.data` (~72 MB)
+    for a denser, less "weird" hall. The desktop compute rasterizer is
+    still visibly crisper — see the native turntable capture.
 
 ## Upgrading Stockfish
 

@@ -433,6 +433,18 @@ static gboolean force_tick_cb(gpointer) {
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area)) return G_SOURCE_CONTINUE;
     app_tick(g_app);
+    // Live camera override for headless orbit capture: re-read $CHESS_CAM_FILE
+    // ("rot_x rot_y zoom") every frame so a capture script can sweep the view
+    // and dump a rotating sequence without relaunching the process.
+    if (const char* cf = std::getenv("CHESS_CAM_FILE")) {
+        if (FILE* f = std::fopen(cf, "r")) {
+            float rx, ry, z;
+            if (std::fscanf(f, "%f %f %f", &rx, &ry, &z) == 3) {
+                g_app.rot_x = rx; g_app.rot_y = ry; g_app.zoom = z;
+            }
+            std::fclose(f);
+        }
+    }
     int w = gtk_widget_get_allocated_width(g_gl_area);
     int h = gtk_widget_get_allocated_height(g_gl_area);
     gtk_gl_area_attach_buffers(area);   // bind the GLArea FBO
