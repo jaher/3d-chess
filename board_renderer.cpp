@@ -137,6 +137,7 @@ static GLuint    g_retro_letter_b[8] = {0};
 static ClockMesh g_letter_quad;   // unit quad in XZ facing +Y
 static ClockMesh g_retro_board;
 static GLuint    g_retro_board_tex = 0;
+static GLuint    g_king_bsod_tex = 0;         // Blue-Screen-of-Death on the king's monitor
 static float     g_retro_board_scale = 1.0f;  // bbox→board fit, set on load
 static bool      g_retro_loaded = false;
 static bool      g_use_retro_pieces = false;
@@ -1186,6 +1187,7 @@ static void load_retro_set() {
     }
     g_retro_board_rough = gl_load_texture(R + "tex/board_rough.png");
     g_retro_board_metal = gl_load_texture(R + "tex/board_metal.png");
+    g_king_bsod_tex     = gl_load_texture(R + "tex/king_bsod.png");
     // Clean letter decals + the flat quad they ride on.
     for (int f = 0; f < 8; ++f) {
         g_retro_letter_w[f] = gl_load_texture_alpha(
@@ -1844,6 +1846,42 @@ static Mat4 retro_part_xform(int type, float angle) {
                          mat4_translate(-a.px, -a.py, -a.pz)));
 }
 
+static float env_f(const char* k, float d) {
+    const char* s = std::getenv(k); return s ? static_cast<float>(std::atof(s)) : d;
+}
+// Draw the Blue-Screen-of-Death decal on the retro king's monitor. The screen
+// is a flat face at ~(0.53,0.51,0) facing +X in the king's normalised space
+// (found by geometry analysis). The unit quad (XZ, +Y normal) is scaled to the
+// screen size, its normal rotated +Y→+X, then placed at the screen centre.
+// Env-tunable (CHESS_BSOD_X/Y/Z/H/W) for on-render fitting.
+static void draw_king_bsod(const Mat4& pm) {
+    if (!g_king_bsod_tex || g_letter_quad.count == 0) return;
+    float cx = env_f("CHESS_BSOD_X", 0.55f), cy = env_f("CHESS_BSOD_Y", 0.51f),
+          cz = env_f("CHESS_BSOD_Z", 0.00f);
+    float h = env_f("CHESS_BSOD_H", 0.62f), w = env_f("CHESS_BSOD_W", 0.78f);
+    // Negative width flips the quad's U so the text isn't mirrored on the screen.
+    Mat4 dm = mat4_multiply(pm, mat4_multiply(mat4_translate(cx, cy, cz),
+              mat4_multiply(mat4_rotate_z(-static_cast<float>(M_PI) / 2.0f),
+                            mat4_scale(h, 1.0f, -w))));
+    float dnm[9]; mat4_normal_matrix(dm, dnm);
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, dm.m);
+    glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, dnm);
+    glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+    glUniform1i(glGetUniformLocation(g_program, "uPlanarReflectionMode"), 0);
+    glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+    glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+    glUniform1i(glGetUniformLocation(g_program, "uClockAlphaCutout"), 0);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, g_king_bsod_tex);
+    glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+    glActiveTexture(GL_TEXTURE0);
+    set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.4f, 1.0f, 0);  // bright, matte
+    glBindVertexArray(g_letter_quad.vao);
+    glDrawArrays(GL_TRIANGLES, 0, g_letter_quad.count);
+    glBindVertexArray(0);
+    glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+}
+
 static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
                                int file = -1, const Mat4* moving = nullptr) {
     float pnm[9]; mat4_normal_matrix(pm, pnm);
@@ -1951,6 +1989,8 @@ static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
             glDrawArrays(GL_TRIANGLES, 0, mesh->count);
             glBindVertexArray(0);
         }
+        // The retro king is a monitor — paint a Blue Screen of Death on it.
+        if (type == KING) draw_king_bsod(pm);
         glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
     } else {
