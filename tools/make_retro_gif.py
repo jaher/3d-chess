@@ -11,7 +11,7 @@ Usage: python3 tools/make_retro_gif.py <type_index> <out.gif> [cycle_s] [frames]
   crop: "x0,y0,x1,y1" as fractions of the frame (default a back-corner piece)
 Requires the web build already built + served: python3 -m http.server 8099 in web/.
 """
-import asyncio, json, subprocess, time, urllib.request, base64, sys, io
+import asyncio, json, subprocess, time, urllib.request, base64, sys, io, os
 import websockets
 from PIL import Image
 
@@ -21,7 +21,8 @@ CYCLE = float(sys.argv[3]) if len(sys.argv) > 3 else 0.667   # seconds for one l
 FRAMES = int(sys.argv[4]) if len(sys.argv) > 4 else 24
 CROP = sys.argv[5] if len(sys.argv) > 5 else "0.55,0.20,0.95,0.62"
 cx0, cy0, cx1, cy1 = [float(x) for x in CROP.split(",")]
-PORT = 9223
+PORT = int(os.environ.get("CDP_PORT","9223"))
+HTTP = os.environ.get("HTTP_PORT","8099")
 
 subprocess.run(f"ps -eo pid,args | awk '/remote-debugging-port={PORT}/ && !/awk/{{print $1}}' | xargs -r kill", shell=True); time.sleep(1)
 subprocess.Popen(["google-chrome","--headless=new","--no-sandbox","--disable-dev-shm-usage","--enable-unsafe-swiftshader",
@@ -53,7 +54,7 @@ async def main():
             return (r or {}).get("result",{}).get("value")
         await call("Page.enable"); await call("Runtime.enable")
         await call("Network.enable"); await call("Network.setCacheDisabled",{"cacheDisabled":True})
-        mid=await call("Page.navigate",{"url":"http://localhost:8099/chess.html"}); await wait(mid,3)
+        mid=await call("Page.navigate",{"url":f"http://localhost:{HTTP}/chess.html"}); await wait(mid,3)
         await asyncio.sleep(14)
         await ev("Module.ccall('chess_dbg_cable_game',null,[],[])"); await asyncio.sleep(1.0)
         for i in range(FRAMES):
