@@ -140,6 +140,24 @@ static GLuint    g_retro_board_tex = 0;
 static float     g_retro_board_scale = 1.0f;  // bbox→board fit, set on load
 static bool      g_retro_loaded = false;
 static bool      g_use_retro_pieces = false;
+
+// Per-piece animated attachment (rook fan spins, bishop joystick sways, …).
+// A piece opts in by shipping <Piece>_base.uvmesh (the static remainder) +
+// <Piece>_moving.uvmesh (the part that animates) and a line in
+// models/retro/anim.cfg. When present, the piece is drawn as base + moving,
+// and the moving part is transformed about `pivot`/`axis` while the piece is
+// selected. Config-driven so new piece animations need no code change here.
+struct RetroAnim {
+    bool  has = false;
+    int   kind = 0;                 // 0 = spin (continuous), 1 = sway (oscillate)
+    float px = 0, py = 0, pz = 0;   // pivot (normalised piece space, ~[-1,1])
+    float ax = 0, ay = 1, az = 0;   // rotation axis
+    float amp = 0.5f;               // sway amplitude (radians); spin ignores
+    float freq = 1.5f;              // Hz
+};
+static RetroAnim g_retro_anim[PIECE_COUNT];
+static ClockMesh g_retro_base[PIECE_COUNT];
+static ClockMesh g_retro_moving[PIECE_COUNT];
 // Body sans hands. tools/split_clock_dials.py extracts each hand
 // into its own uvmesh so the renderer can rotate them
 // independently. Two hands per dial: a long minute hand mounted at
@@ -1207,6 +1225,34 @@ static void load_retro_set() {
     }
     if (load_uvmesh_into(R + "board.uvmesh", g_retro_board))
         g_retro_board_tex = load_retro_texture(R + "tex/board_baseColor");
+
+    // Optional per-piece animated attachments: <Piece>_base/_moving.uvmesh +
+    // a line in anim.cfg. Loaded here so adding a piece animation is data-only.
+    for (int i = 0; i < PIECE_COUNT; ++i) {
+        load_uvmesh_into(R + Names[i] + "_base.uvmesh", g_retro_base[i]);
+        load_uvmesh_into(R + Names[i] + "_moving.uvmesh", g_retro_moving[i]);
+    }
+    if (FILE* cf = std::fopen((R + "anim.cfg").c_str(), "r")) {
+        char line[256], name[32], kind[16];
+        float px, py, pz, ax, ay, az, amp, freq;
+        while (std::fgets(line, sizeof(line), cf)) {
+            if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+            if (std::sscanf(line, "%31s %15s %f %f %f %f %f %f %f %f",
+                            name, kind, &px, &py, &pz, &ax, &ay, &az, &amp, &freq) == 10) {
+                for (int i = 0; i < PIECE_COUNT; ++i) if (std::strcmp(name, Names[i]) == 0) {
+                    RetroAnim& a = g_retro_anim[i];
+                    a.kind = (std::strcmp(kind, "spin") == 0) ? 0 : 1;
+                    a.px = px; a.py = py; a.pz = pz;
+                    a.ax = ax; a.ay = ay; a.az = az; a.amp = amp; a.freq = freq;
+                    a.has = g_retro_base[i].count > 0 && g_retro_moving[i].count > 0;
+                    if (a.has) std::fprintf(stderr,
+                        "[retro] %s animated part (%s) loaded\n", Names[i], kind);
+                }
+            }
+        }
+        std::fclose(cf);
+    }
+
     g_retro_loaded = ok && g_retro_board.count > 0;
     std::fprintf(stderr, "[retro] piece set %s\n",
                  g_retro_loaded ? "loaded" : "FAILED (falling back to STL)");
@@ -1754,8 +1800,52 @@ static inline float active_piece_rot(float stl_rot) {
 // Draw a piece of `type` at model matrix `pm` through g_program. Uses the
 // textured retro set when active (per-colour baseColor via the uClock* path),
 // else the flat-shaded STL set. Sets uModel/uNormalMat itself.
+// Rotation about a (near-)principal axis by `ang` radians (sign-aware). The
+// piece animations use principal axes (Y spin, X/Z sway).
+static Mat4 axis_rotate(float ax, float ay, float az, float ang) {
+    float fx = std::fabs(ax), fy = std::fabs(ay), fz = std::fabs(az);
+    if (fy >= fx && fy >= fz) return mat4_rotate_y(ay < 0 ? -ang : ang);
+    if (fx >= fy && fx >= fz) return mat4_rotate_x(ax < 0 ? -ang : ang);
+    return mat4_rotate_z(az < 0 ? -ang : ang);
+}
+// Debug: force a piece type's moving part to a fixed animation phase (seconds),
+// bypassing selection — used by the headless GIF harness (renderer_dbg_animate).
+static int   g_dbg_anim_type = -1;
+static float g_dbg_anim_t = 0.0f;
+
+// Animation angle for a piece's moving part while it is selected: spin winds up
+// continuously; sway oscillates. 0 when not selected (part drawn at rest).
+static float retro_part_angle(const GameState& gs, int col, int row,
+                              int64_t now, int type) {
+    const RetroAnim& a = g_retro_anim[type];
+    if (!a.has) return 0.0f;
+    float t;
+    if (g_dbg_anim_type == type) {
+        t = g_dbg_anim_t;                              // forced phase (GIF harness)
+    } else {
+        if (gs.selected_col != col || gs.selected_row != row) return 0.0f;
+        t = static_cast<float>(now - gs.anim_start_time) / 1.0e6f;
+        if (t < 0.0f) t = 0.0f;
+    }
+    float w = a.freq * 2.0f * static_cast<float>(M_PI);
+    return (a.kind == 0) ? t * w                       // spin (continuous)
+                         : a.amp * std::sin(t * w);    // sway (oscillate)
+}
+// Exposed for the headless GIF harness: force `type`'s part to phase `t_seconds`
+// (type < 0 clears the override).
+void renderer_dbg_animate(int type, float t_seconds) {
+    g_dbg_anim_type = type; g_dbg_anim_t = t_seconds;
+}
+// Local transform of the moving part: rotate `angle` about pivot+axis.
+static Mat4 retro_part_xform(int type, float angle) {
+    const RetroAnim& a = g_retro_anim[type];
+    return mat4_multiply(mat4_translate(a.px, a.py, a.pz),
+           mat4_multiply(axis_rotate(a.ax, a.ay, a.az, angle),
+                         mat4_translate(-a.px, -a.py, -a.pz)));
+}
+
 static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
-                               int file = -1) {
+                               int file = -1, const Mat4* moving = nullptr) {
     float pnm[9]; mat4_normal_matrix(pm, pnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, pm.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, pnm);
@@ -1844,9 +1934,23 @@ static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
             set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.55f, 1.0f, 0);
         }
         glActiveTexture(GL_TEXTURE0);
-        glBindVertexArray(mesh->vao);
-        glDrawArrays(GL_TRIANGLES, 0, mesh->count);
-        glBindVertexArray(0);
+        if (g_retro_anim[type].has && g_retro_base[type].count > 0) {
+            // Split piece: static base (uModel already = pm) + moving part
+            // (pm * moving-local). Same textures/material for both.
+            glBindVertexArray(g_retro_base[type].vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_retro_base[type].count);
+            Mat4 mm = moving ? mat4_multiply(pm, *moving) : pm;
+            float mnm[9]; mat4_normal_matrix(mm, mnm);
+            glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, mm.m);
+            glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, mnm);
+            glBindVertexArray(g_retro_moving[type].vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_retro_moving[type].count);
+            glBindVertexArray(0);
+        } else {
+            glBindVertexArray(mesh->vao);
+            glDrawArrays(GL_TRIANGLES, 0, mesh->count);
+            glBindVertexArray(0);
+        }
         glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
     } else {
@@ -4979,7 +5083,15 @@ void renderer_draw(GameState& gs,
         float press = retro_key_press_amt(gs, bp.col, bp.row, press_now);
         if (press > 0.0f)
             pm = mat4_multiply(mat4_translate(0.0f, -retro_key_press_depth() * press, 0.0f), pm);
-        draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+        // Retro animated attachment (rook fan spins, etc.): the moving part is
+        // transformed about its pivot while the piece is selected.
+        if (g_retro_anim[bp.type].has) {
+            Mat4 mv = retro_part_xform(bp.type,
+                retro_part_angle(gs, bp.col, bp.row, press_now, bp.type));
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv);
+        } else {
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+        }
     }
 
     // "Why?" ghost move — when a flagged-move panel is open and the

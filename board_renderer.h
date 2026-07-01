@@ -88,6 +88,10 @@ extern "C" void renderer_begin_frame();
 // chosen environment's SPZ couldn't be loaded.
 bool renderer_set_environment(int env_kind);
 
+// Debug/GIF harness: force a retro piece type's animated part to a fixed
+// animation phase (seconds), bypassing selection. type < 0 clears it.
+void renderer_dbg_animate(int type, float t_seconds);
+
 // Display label for an environment id, used by the options-screen
 // cycle row. Stable across runs; matches the spelling stored in
 // settings.ini's `environment=` line. Returns a static const string

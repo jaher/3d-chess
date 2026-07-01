@@ -425,6 +425,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_cable_game(void) {
     std::fprintf(stderr, "[web-dbg] mode=%d games=%zu pieces=%d alive=%d\n",
                 (int)g_app.mode, g_app.games.size(), npieces, nalive);
 }
+// GIF harness: force a retro piece type's animated part to a fixed phase
+// (seconds), then chess_dbg_dump renders that frame. type<0 clears it.
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_animate(int type, float t_seconds) {
+    renderer_dbg_animate(type, t_seconds);
+}
 // Render one frame directly (headless rAF doesn't tick) and write the
 // framebuffer to /dump.ppm — glReadPixels reads what was drawn even when
 // the software compositor never presents to the visible canvas.
