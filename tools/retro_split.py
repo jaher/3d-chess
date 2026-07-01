@@ -86,7 +86,10 @@ def load_piece(mesh_idx, node_name):
     prim = _MESHES[mesh_idx]["primitives"][0]
     pos = _read_acc(prim["attributes"]["POSITION"])
     nrm = _read_acc(prim["attributes"]["NORMAL"])
-    uv = _read_acc(prim["attributes"]["TEXCOORD_0"])
+    uv = _read_acc(prim["attributes"]["TEXCOORD_0"]).copy()
+    # glTF's V origin is top-left; the original converter (trimesh) flips V to
+    # bottom-left. Match it so the split meshes' textures aren't upside down.
+    uv[:, 1] = 1.0 - uv[:, 1]
     idx = _read_acc(prim["indices"]).reshape(-1).astype(np.int64)
     # world transform + whole-piece normalisation (matches convert_retro_pieces)
     posw = (W @ np.c_[pos, np.ones(len(pos))].T).T[:, :3]
