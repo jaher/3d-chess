@@ -433,34 +433,38 @@ static const EnvironmentDesc g_environments[] = {
         -8.878f,
         0.0f, 0.0f,
     },
-    // 1 = DataCenter — World Labs Marble generation from a datacenter photo: a
-    // server hall with colourful overhead cabling and racks down both sides,
-    // an open central aisle for the board. Replaces the old cable-room splat
-    // (too many artifacts). Same Marble SPZ convention as medieval.
+    // 1 = DataCenter — Spaitial "Echo 2 (HQ)" generation from a datacenter
+    // photo: a bright warehouse hall, colourful overhead pipes, green
+    // generator machinery, open floor for the board. 5M splats with SH1
+    // (view-dependent colour) — denser and cleaner than the earlier Marble
+    // generation it replaces. Single tier: Spaitial ships one .spz, so the
+    // "lighter tier" slot points at the same file (no 500k fallback here;
+    // CHESS_SPLAT_TIER=500k only affects the medieval room).
     {
         "Datacenter",
         {
 #ifndef __EMSCRIPTEN__
             "world_labs/datacenter/splat_full_res.spz",
-            "world_labs/datacenter/splat_500k.spz",
+            "world_labs/datacenter/splat_full_res.spz",
 #else
-            // Highest-quality tier on web too — the 500k tier looked sparse /
-            // "weird" in the per-quad WebGL rasterizer; the full-res cloud
-            // (~1.9M splats) fills the hall in. Heavier download, better look.
+            // Full quality on web too — the sparse tiers looked "weird" in
+            // the per-quad WebGL rasterizer. Heavier download, better look.
             "/world_labs/datacenter/splat_full_res.spz",
-            "world_labs/datacenter/splat_500k.spz",
+            "world_labs/datacenter/splat_full_res.spz",
 #endif
         },
         {
             "world_labs/datacenter/panorama.jpg",
             "/world_labs/datacenter/panorama.jpg",
         },
-        44.0f,          // splat_scale — a large warehouse: the chess table reads
+        22.0f,          // splat_scale — a large warehouse: the chess table reads
                         // as a piece of furniture inside the hall, not the whole
-                        // room, with the cabling high overhead and racks distant
+                        // room, with the cabling high overhead and racks distant.
+                        // (The Spaitial Echo-2 capture has a ~2.4x larger raw
+                        // footprint than the old Marble one, so half the scale.)
         -8.878f,
-        9.46f, -18.81f, // offset: board centred in the open aisle, on the floor,
-                        // a little down-corridor toward the bright far end
+        -50.0f, -10.0f, // offset: board in the open floor area away from the
+                        // green generator machinery, facing down the hall
     },
 };
 constexpr int g_environment_count =

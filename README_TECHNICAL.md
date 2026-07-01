@@ -1019,10 +1019,11 @@ walkthrough live in the user guide — see
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
-- **Gaussian-splat backdrop** — a World-Labs-Marble SPZ behind the board,
-  selectable per environment: the default **medieval room**, or the
-  **datacenter** (server hall generated from a datacenter photo) that hosts
-  the retro-PC piece set. Two rasterizer paths:
+- **Gaussian-splat backdrop** — a generated SPZ world behind the board,
+  selectable per environment: the default **medieval room** (World Labs
+  Marble), or the **datacenter** (Spaitial "Echo 2 (HQ)" generation from a
+  datacenter photo — 5M splats, SH1 view-dependent colour, single tier)
+  that hosts the retro-PC piece set. Two rasterizer paths:
   - **Desktop default**: tile-based GL compute rasterizer (one
     workgroup per 16×16 tile, per-pixel front-to-back compositing —
     the Kerbl 2023 3DGS algorithm ported to GLSL compute, see
@@ -1038,10 +1039,11 @@ walkthrough live in the user guide — see
     shaders, so the tile rasterizer is desktop-only). The backdrop is
     cached across frames and only re-rendered when the camera moves, so
     a static view costs nothing per frame. The medieval room preloads
-    the 500k tier; the datacenter preloads the **full-res tier**
-    (`web/Makefile`) — the 500k cloud looked sparse in the per-quad
-    rasterizer, so the datacenter trades a heavier `chess.data` (~72 MB)
-    for a denser, less "weird" hall. The desktop compute rasterizer is
+    the 500k tier; the datacenter preloads its **only** tier — the full
+    5M-splat Echo-2 file (`web/Makefile`) — because sparse tiers looked
+    wrong in the per-quad rasterizer. Honest cost: `chess.data` is
+    ~124 MB and the in-browser SPZ decode blocks the main thread for
+    tens of seconds on first load. The desktop compute rasterizer is
     still visibly crisper — see the native turntable capture.
 
 ## Upgrading Stockfish
