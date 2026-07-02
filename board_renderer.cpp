@@ -427,7 +427,9 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/medieval_room/splat_full_res.spz",
             "world_labs/medieval_room/splat_500k.spz",
 #else
-            "/world_labs/medieval_room/splat_500k.spz",
+            // Full-res on web here too (Marble exports every tier): ~0.7 s
+            // wasm decode, and this one is the eager page-load default env.
+            "/world_labs/medieval_room/splat_full_res.spz",
             "world_labs/medieval_room/splat_500k.spz",
 #endif
         },
@@ -2149,8 +2151,11 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             "world_labs/medieval_room/splat_full_res.spz",
             "world_labs/medieval_room/splat_500k.spz",
 #else
+            // Web ships full-res now too (Marble exports every tier;
+            // ~0.7 s wasm decode). Keep 500k as the fallback candidate
+            // for builds whose preload lacks the big file.
+            "/world_labs/medieval_room/splat_full_res.spz",
             "/world_labs/medieval_room/splat_500k.spz",
-            "world_labs/medieval_room/splat_500k.spz",
 #endif
         };
         const char* tier_500k[] = {
@@ -2159,14 +2164,10 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
             "world_labs/medieval_room/splat_full_res.spz",
 #else
             "/world_labs/medieval_room/splat_500k.spz",
-            "world_labs/medieval_room/splat_500k.spz",
+            "/world_labs/medieval_room/splat_full_res.spz",
 #endif
         };
         bool want_500k = false;
-#ifdef __EMSCRIPTEN__
-        want_500k = true;
-#endif
-#ifndef __EMSCRIPTEN__
         if (tier && *tier) {
             if (std::strcmp(tier, "500k") == 0 ||
                 std::strcmp(tier, "500") == 0) {
@@ -2177,9 +2178,6 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
                 want_500k = false;
             }
         }
-#else
-        (void)tier;  // web has only 500k; env var is desktop-only.
-#endif
         const char** splat_paths = want_500k ? tier_500k : full_paths;
         size_t n_paths = want_500k
             ? sizeof(tier_500k) / sizeof(*tier_500k)

@@ -20,8 +20,8 @@ EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
 # gets, but checking it in is the user's call — without it the web
 # build still compiles and runs (board_renderer falls back to the
 # dark clear when no SPZ loads).
-SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_500k.spz),\
-    --preload-file ../world_labs/medieval_room/splat_500k.spz@/world_labs/medieval_room/splat_500k.spz,) \
+SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_full_res.spz),\
+    --preload-file ../world_labs/medieval_room/splat_full_res.spz@/world_labs/medieval_room/splat_full_res.spz,) \
   $(if $(wildcard ../world_labs/datacenter/splat_500k.spz),\
     --preload-file ../world_labs/datacenter/splat_full_res.spz@/world_labs/datacenter/splat_full_res.spz,)
 
