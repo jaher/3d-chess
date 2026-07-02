@@ -454,10 +454,12 @@ static const EnvironmentDesc g_environments[] = {
             "world_labs/datacenter/splat_full_res.spz",
             "world_labs/datacenter/splat_500k.spz",
 #else
-            // The 500k tier is the web build: this generation was picked for
-            // holding up at 500k, so the web keeps a sane download size
-            // (chess.data ~50 MB instead of the old full-res 124 MB).
-            "/world_labs/datacenter/splat_500k.spz",
+            // Web ships full-res too: Marble's 1.92M-splat v2/sh0 file
+            // decodes in <1 s in wasm on the lazy env-switch (measured;
+            // the old 124 MB pain was a 5M-splat SH1 file), and it visibly
+            // closes the per-quad rasterizer's softness gap vs desktop.
+            // chess.data cost: 52 -> 72 MB.
+            "/world_labs/datacenter/splat_full_res.spz",
             "world_labs/datacenter/splat_500k.spz",
 #endif
         },

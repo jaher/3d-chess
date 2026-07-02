@@ -1039,12 +1039,15 @@ walkthrough live in the user guide — see
   - **Web**: uses the per-splat-quad path (WebGL2 has no compute
     shaders, so the tile rasterizer is desktop-only). The backdrop is
     cached across frames and only re-rendered when the camera moves, so
-    a static view costs nothing per frame. Both environments preload
-    their 500k tier (`web/Makefile`) — the datacenter generation was
-    chosen specifically for holding up at 500k, which keeps `chess.data`
-    around ~50 MB (an earlier full-res datacenter preload hit 124 MB and
-    blocked the main thread for tens of seconds on decode). The desktop
-    compute rasterizer loads the full-res tier and is visibly crisper.
+    a static view costs nothing per frame. The medieval room preloads
+    its 500k tier; the datacenter preloads its **full-res** tier
+    (1.92M splats, `web/Makefile`) — Marble's v2/sh0 file decodes in
+    under a second in wasm on the lazy env switch, and it brings the
+    web backdrop close to desktop quality (the earlier 124 MB/
+    tens-of-seconds decode pain was a 5M-splat SH1 file, since
+    replaced). `chess.data` is ~72 MB. The desktop compute rasterizer
+    remains slightly crisper than the per-quad web path at equal splat
+    count.
 
 ## Upgrading Stockfish
 
