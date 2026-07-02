@@ -411,6 +411,12 @@ struct EnvironmentDesc {
     // out of any wall/clutter geometry it would otherwise intersect).
     float offset_x;
     float offset_z;
+    // Splat-frame (Y-down) Y of the room's ground plane, from the
+    // generator's semantics: Marble's ground_plane_offset (metres) divided
+    // by metric_scale_factor, cross-checked against the collider mesh's
+    // dominant horizontal plane. NAN = derive from the robust bbox instead
+    // (the pre-metadata behaviour; keeps the medieval room's tuning).
+    float ground_y;
 };
 static const EnvironmentDesc g_environments[] = {
     // 0 = MedievalRoom — original Marble tuning.
@@ -432,6 +438,7 @@ static const EnvironmentDesc g_environments[] = {
         25.0f,
         -8.878f,
         0.0f, 0.0f,
+        NAN,            // no generator ground metadata — robust-bbox anchor
     },
     // 1 = DataCenter — World Labs Marble generation from Google's official
     // New Albany (Central Ohio) server-aisle photo (3500x2625, from the
@@ -462,6 +469,9 @@ static const EnvironmentDesc g_environments[] = {
                         // with the table as furniture inside it
         -8.878f,
         0.0f, 0.0f,     // offset: the capture's own centre is the open aisle
+        0.62102f,       // ground: Marble ground_plane_offset 1.7947522 m /
+                        // metric_scale_factor 2.890008 — matches the collider
+                        // mesh's dominant horizontal plane (y=+0.62)
     },
 };
 constexpr int g_environment_count =
@@ -4074,7 +4084,7 @@ void renderer_draw(GameState& gs,
         mat4_multiply(mat4_rotate_x(rot_x * deg2rad),
                       mat4_multiply(mat4_rotate_y(rot_y * deg2rad),
                                     mat4_translate(0, -BOARD_Y, 0))));
-    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 250.0f);
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 1500.0f);
     Mat4 vp = mat4_multiply(proj, view);
 
     float cd = zoom;
@@ -4362,8 +4372,13 @@ void renderer_draw(GameState& gs,
         }
         const float* mn = g_splats_bbox_min;
         const float* mx = g_splats_bbox_max;
+        // Ground anchor: prefer the generator's exact ground plane (splat
+        // frame, Y-down) so the table legs rest ON the room's floor; fall
+        // back to the robust bbox's lowest edge when no metadata exists.
+        const float ground_y_splat =
+            std::isnan(env.ground_y) ? mx[1] : env.ground_y;
         const float splat_cx = -(mn[0] + mx[0]) * 0.5f * splat_scale + off_x;
-        const float splat_cy = floor_world_y - (-mx[1] * splat_scale);
+        const float splat_cy = floor_world_y + ground_y_splat * splat_scale;
         const float splat_cz = -(mn[2] + mx[2]) * 0.5f * splat_scale + off_z;
         Mat4 splat_model = mat4_multiply(
             mat4_translate(splat_cx, splat_cy, splat_cz),
@@ -5583,7 +5598,7 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     float cam_angle = time * 15.0f, cam_pitch = 25.0f, cam_dist = 12.0f;
     Mat4 view = mat4_multiply(mat4_translate(0, 0, -cam_dist),
         mat4_multiply(mat4_rotate_x(cam_pitch * deg2rad), mat4_rotate_y(cam_angle * deg2rad)));
-    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 250.0f);
+    Mat4 proj = mat4_perspective(45.0f * deg2rad, aspect, 0.1f, 1500.0f);
 
     float cy = cam_dist * std::sin(-cam_pitch * deg2rad);
     float cxz = cam_dist * std::cos(-cam_pitch * deg2rad);
