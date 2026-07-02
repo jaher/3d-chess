@@ -1019,6 +1019,17 @@ walkthrough live in the user guide — see
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
+- **Digital chess clock (datacenter env)** — the analog clock is swapped
+  for a Hunyuan3D-generated DGT-3000-style digital clock in the datacenter
+  environment only: generated from a product photo on a DGX Spark
+  (768-res PBR bake), fitted to the analog clock's exact footprint, split
+  into body + pushable top rocker (see-saws with the same lever-blend
+  animation the analog levers use), with **live 7-segment LCD times** for
+  both players drawn as flat quads on the sloped face. Assets in
+  `models/clock/digital_*`; conversion pipeline in
+  `tools/convert_digital_clock.py` (direct OBJ parse, computed normals,
+  ground-disc trim, rocker split, red-bleed texture cleanup). The
+  medieval room keeps the analog clock, needles and all.
 - **Gaussian-splat backdrop** — a generated SPZ world behind the board,
   selectable per environment: the default **medieval room**, or the
   **datacenter** that hosts the retro-PC piece set (both World Labs Marble

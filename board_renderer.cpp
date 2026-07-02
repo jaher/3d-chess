@@ -225,6 +225,17 @@ static GLuint    g_clock_diffuse_tex   = 0;
 static GLuint    g_clock_cursor_tex    = 0;
 static GLuint    g_clock_roughness_tex = 0;
 static GLuint    g_clock_metalness_tex = 0;
+// Digital chess clock (datacenter environment): Hunyuan3D-generated
+// DGT-3000-style body + separate top rocker bar (the see-saw the players
+// press), fitted to the analog clock's local bbox by tools/convert (see
+// models/clock/digital_*.uvmesh provenance in README_TECHNICAL). Textures
+// are the Hunyuan PBR bake. Drawn instead of the analog clock when the
+// datacenter environment is active; the analog room keeps its clock.
+static ClockMesh g_digital_body;
+static ClockMesh g_digital_rocker;
+static GLuint    g_digital_diffuse_tex   = 0;
+static GLuint    g_digital_roughness_tex = 0;
+static GLuint    g_digital_metalness_tex = 0;
 GLuint g_wood_diffuse_tex  = 0;
 static GLuint g_wood_specular_tex = 0;
 
@@ -753,6 +764,7 @@ void renderer_redraw_into_capture_fbo(GameState& gs, int width, int height,
                   /*shake_x=*/0.0f,
                   /*withdraw_confirm_title=*/"Withdraw from game?",
                   /*white_thought_ms=*/0, /*black_thought_ms=*/0,
+                  /*white_clock_ms=*/0, /*black_clock_ms=*/0,
                   /*white_lever_blend=*/1.0f, /*black_lever_blend=*/0.0f,
                   /*force_panorama_only=*/!splats_enabled,
                   light_dir_x, light_dir_y, light_dir_z,
@@ -1597,6 +1609,26 @@ static void load_clock_assets(const std::string& dir) {
     g_clock_cursor_tex    = gl_load_texture(dir + "/clock_cursor.png");
     g_clock_roughness_tex = gl_load_texture(dir + "/clock_roughness.png");
     g_clock_metalness_tex = gl_load_texture(dir + "/clock_metalness.png");
+
+    // Digital clock (datacenter env). Same 8-float uvmesh layout as the
+    // retro pieces, so load through load_uvmesh_into.
+    if (load_uvmesh_into(dir + "/digital_body.uvmesh",   g_digital_body) &&
+        load_uvmesh_into(dir + "/digital_rocker.uvmesh", g_digital_rocker)) {
+        g_digital_diffuse_tex   = gl_load_texture(dir + "/digital_diffuse.jpg");
+        g_digital_roughness_tex = gl_load_texture(dir + "/digital_roughness.jpg");
+        g_digital_metalness_tex = gl_load_texture(dir + "/digital_metalness.jpg");
+        // The Hunyuan paint atlas packs unrelated islands edge-to-edge
+        // (red body next to white rocker); mipmap levels mix them into
+        // pink fringes on every seam. The clock is a small, mostly
+        // static object — plain LINEAR (no mips) is clean and cheap.
+        for (GLuint t : { g_digital_diffuse_tex, g_digital_roughness_tex,
+                          g_digital_metalness_tex }) {
+            if (!t) continue;
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 // Load the wooden table that the chessboard sits on. Same uvmesh
@@ -4024,6 +4056,79 @@ void viewport_for_game(int game_idx, int N, int win_w, int win_h,
     sub_h = bottom ? (win_h - half_h) : half_h;
 }
 
+
+// ---------------------------------------------------------------------------
+// Digital clock LCD: live 7-segment time for both players, drawn as flat
+// dark quads on the DGT-style wedge's sloped front face. Segment layout is
+// the classic A..G; the quads reuse g_letter_quad (unit XZ quad) mapped
+// onto the LCD plane. Placement is env-tunable (CHESS_LCD_*) for dialling
+// in against the generated mesh; the defaults are the baked-in values.
+// ---------------------------------------------------------------------------
+static void draw_lcd_segment(const Mat4& clock_model, float til,
+                             float lcd_y, float lcd_z,
+                             float cx, float cy, float w, float h) {
+    // LCD frame: ex = model +X, ey = up the sloped face (leaning back),
+    // en = out of the face. A segment at (cx, cy) in face coords sits at
+    // origin + ex*cx + ey*cy, floated 0.012 out along en to avoid z-fights.
+    const float cy_y = cy * std::cos(til), cy_z = -cy * std::sin(til);
+    const float en_y = std::sin(til), en_z = std::cos(til);
+    Mat4 m = mat4_multiply(clock_model, mat4_multiply(
+        mat4_translate(cx, lcd_y + cy_y + 0.012f * en_y,
+                       lcd_z + cy_z + 0.012f * en_z),
+        mat4_multiply(mat4_rotate_x(static_cast<float>(M_PI) * 0.5f - til),
+                      mat4_scale(w, 1.0f, h))));
+    float nm[9]; mat4_normal_matrix(m, nm);
+    glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, m.m);
+    glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, nm);
+    glBindVertexArray(g_letter_quad.vao);
+    glDrawArrays(GL_TRIANGLES, 0, g_letter_quad.count);
+}
+
+static void draw_lcd_digit(const Mat4& cm, float til, float ly, float lz,
+                           int digit, float dx, float dy,
+                           float dsx, float dsy) {
+    // Segment presence per digit, bits A,B,C,D,E,F,G (A = bit 0).
+    static const int SEG[10] = {
+        0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
+        0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111 };
+    // (cx, cy, half-w, half-h) per segment in digit-local units (x ±0.5,
+    // y ±1) — scaled by dsx/dsy into face coords.
+    static const float G[7][4] = {
+        { 0.0f,  0.95f, 0.34f, 0.10f },   // A top
+        { 0.42f, 0.48f, 0.10f, 0.36f },   // B top-right
+        { 0.42f, -0.48f, 0.10f, 0.36f },  // C bottom-right
+        { 0.0f, -0.95f, 0.34f, 0.10f },   // D bottom
+        { -0.42f, -0.48f, 0.10f, 0.36f }, // E bottom-left
+        { -0.42f, 0.48f, 0.10f, 0.36f },  // F top-left
+        { 0.0f,  0.0f,  0.34f, 0.10f },   // G middle
+    };
+    if (digit < 0 || digit > 9) return;
+    for (int i = 0; i < 7; ++i) {
+        if (!(SEG[digit] >> i & 1)) continue;
+        draw_lcd_segment(cm, til, ly, lz,
+                         dx + G[i][0] * dsx, dy + G[i][1] * dsy,
+                         G[i][2] * dsx, G[i][3] * dsy);
+    }
+}
+
+// One side's MM:SS group centred at face-x `gx` (MM capped at 99).
+static void draw_lcd_time(const Mat4& cm, float til, float ly, float lz,
+                          int64_t ms, float gx, float dsx, float dsy) {
+    if (ms < 0) ms = 0;
+    int64_t total_s = ms / 1000;
+    int mm = static_cast<int>(std::min<int64_t>(total_s / 60, 99));
+    int ss = static_cast<int>(total_s % 60);
+    const float pitch = dsx * 2.1f;
+    const float x0 = gx - 2.0f * pitch;   // 5 cells: M M : S S
+    draw_lcd_digit(cm, til, ly, lz, mm / 10, x0,             0, dsx, dsy);
+    draw_lcd_digit(cm, til, ly, lz, mm % 10, x0 + pitch,     0, dsx, dsy);
+    // colon: two small squares
+    draw_lcd_segment(cm, til, ly, lz + 0, x0 + 2.0f * pitch - dsx * 0.55f,  0.45f * dsy, dsx * 0.14f, dsy * 0.12f);
+    draw_lcd_segment(cm, til, ly, lz + 0, x0 + 2.0f * pitch - dsx * 0.55f, -0.45f * dsy, dsx * 0.14f, dsy * 0.12f);
+    draw_lcd_digit(cm, til, ly, lz, ss / 10, x0 + 2.6f * pitch, 0, dsx, dsy);
+    draw_lcd_digit(cm, til, ly, lz, ss % 10, x0 + 3.6f * pitch, 0, dsx, dsy);
+}
+
 void renderer_draw(GameState& gs,
                    int sub_x, int sub_y,
                    int width, int height,
@@ -4040,6 +4145,8 @@ void renderer_draw(GameState& gs,
                    const char* withdraw_confirm_title,
                    int64_t white_thought_ms,
                    int64_t black_thought_ms,
+                   int64_t white_clock_ms,
+                   int64_t black_clock_ms,
                    float white_lever_blend,
                    float black_lever_blend,
                    bool force_panorama_only,
@@ -4907,7 +5014,87 @@ void renderer_draw(GameState& gs,
     //     to -0.020, so the clock sits on the same notional table
     //     surface as the board instead of floating on the play
     //     plane).
-    if (g_clock_body.count > 0) {
+    // Datacenter environment swaps the analog clock for the digital
+    // (DGT-style) one: generated body + pushable top rocker + live
+    // 7-segment LCD times. The medieval room keeps the analog clock.
+    if (g_active_environment == 1 && g_digital_body.count > 0) {
+        Mat4 clock_model = mat4_multiply(
+            mat4_translate(5.7f, -0.608f, 0.0f),
+            mat4_rotate_y(-static_cast<float>(M_PI) * 0.5f));
+        float cnm[9]; mat4_normal_matrix(clock_model, cnm);
+        glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, clock_model.m);
+        glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, cnm);
+        glUniform1i(glGetUniformLocation(g_program, "uWoodTextureMode"), 0);
+        glUniform1f(glGetUniformLocation(g_program, "uMaterialOpacity"), 1.0f);
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+        if (g_digital_diffuse_tex) {
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, g_digital_diffuse_tex);
+            glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
+        }
+        // No PBR maps: the generated metalness map is noisy, and a
+        // metallic red body picks up strong blue-ish Fresnel rim
+        // speculars from the environment light (pink fringes on every
+        // edge). The DGT is matte plastic — flat non-metal shading
+        // with the baked diffuse looks right.
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+        glActiveTexture(GL_TEXTURE0);
+        set_material(g_program, 1.0f, 1.0f, 1.0f,
+                     /*metallic=*/0.0f, /*roughness=*/0.55f, /*ao=*/1.0f, 0);
+        const int dbg_parts = static_cast<int>(env_f("CHESS_DCLOCK_PARTS", 7.0f));
+        if (dbg_parts & 1) {
+            glBindVertexArray(g_digital_body.vao);
+            glDrawArrays(GL_TRIANGLES, 0, g_digital_body.count);
+        }
+
+        // Top rocker: see-saw about the model Z axis at its hinge — the
+        // pressed side's end sinks, exactly the DGT gesture. Reuses the
+        // analog levers' blend animation (left/-X end = white, same as
+        // the analog lever assignment).
+        {
+            const float tilt_max = env_f("CHESS_ROCKER_TILT", 0.10f);
+            float tilt = tilt_max * (black_lever_blend - white_lever_blend);
+            const float py = 1.02f, pz = -0.10f;   // hinge (rocker bbox base)
+            Mat4 rocker_model = mat4_multiply(clock_model, mat4_multiply(
+                mat4_translate(0.0f, py, pz),
+                mat4_multiply(mat4_rotate_z(tilt),
+                              mat4_translate(0.0f, -py, -pz))));
+            float rnm[9]; mat4_normal_matrix(rocker_model, rnm);
+            glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, rocker_model.m);
+            glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, rnm);
+            if (dbg_parts & 2) {
+                if (dbg_parts & 8) {   // dbg: untextured rocker
+                    glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+                    set_material(g_program, 0.9f, 0.9f, 0.9f, 0.0f, 0.5f, 1.0f, 0);
+                }
+                glBindVertexArray(g_digital_rocker.vao);
+                glDrawArrays(GL_TRIANGLES, 0, g_digital_rocker.count);
+                if (dbg_parts & 8)
+                    glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 1);
+            }
+        }
+
+        // Live LCD: both players' remaining time, 7-segment, on the sloped
+        // front face. Left display = white (matches the lever sides).
+        glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+        set_material(g_program, 0.07f, 0.09f, 0.08f,
+                     /*metallic=*/0.0f, /*roughness=*/0.35f, /*ao=*/1.0f, 0);
+        {
+            const float til = env_f("CHESS_LCD_TILT", 25.0f) *
+                              static_cast<float>(M_PI) / 180.0f;
+            const float ly  = env_f("CHESS_LCD_Y", 0.60f);
+            const float lz  = env_f("CHESS_LCD_Z", 0.40f);
+            const float dsx = env_f("CHESS_LCD_DSX", 0.10f);
+            const float dsy = env_f("CHESS_LCD_DSY", 0.16f);
+            const float gx  = env_f("CHESS_LCD_GX", 0.72f);
+            if (dbg_parts & 4) {
+                draw_lcd_time(clock_model, til, ly, lz, white_clock_ms, -gx, dsx, dsy);
+                draw_lcd_time(clock_model, til, ly, lz, black_clock_ms,  gx, dsx, dsy);
+            }
+        }
+        glBindVertexArray(0);
+    } else if (g_clock_body.count > 0) {
         Mat4 clock_model = mat4_multiply(
             mat4_translate(5.7f, -0.608f, 0.0f),
             mat4_rotate_y(-static_cast<float>(M_PI) * 0.5f));

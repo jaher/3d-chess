@@ -148,6 +148,11 @@ void renderer_draw(GameState& gs,
                    // increments don't reset the needles on each move.
                    int64_t white_thought_ms = 0,
                    int64_t black_thought_ms = 0,
+                   // Per-side clock time REMAINING (ms) for the digital
+                   // clock's LCD in the datacenter environment. The analog
+                   // clock ignores these (its needles use thought time).
+                   int64_t white_clock_ms = 0,
+                   int64_t black_clock_ms = 0,
                    // Per-side lever blend (1.0 = fully UP / your
                    // turn, 0.0 = fully DOWN / just pressed). The
                    // renderer translates each silver lever along Y.

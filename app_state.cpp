@@ -3902,6 +3902,7 @@ static void render_board(AppState& a, int width, int height) {
                       is_active ? a.board_shake_x : 0.0f,
                       withdraw_title,
                       gi.white_thought_ms, gi.black_thought_ms,
+                      gi.white_ms_left, gi.black_ms_left,
                       gi.white_lever_blend, gi.black_lever_blend,
                       /*force_panorama_only=*/!a.splats_enabled,
                       a.light_dir_x, a.light_dir_y, a.light_dir_z,
