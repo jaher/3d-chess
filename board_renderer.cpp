@@ -5350,13 +5350,16 @@ void renderer_draw(GameState& gs,
             float px = CAP_X0 - ci * CAP_X_SPACING;
             float pz = bp.is_white ? (CAP_WHITE_Z0 + ri * CAP_Z_SPACING)
                                    : (CAP_BLACK_Z0 - ri * CAP_Z_SPACING);
-            Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white, rot_z_to_y);
+            // Match the active piece set: retro pieces stay retro on the
+            // side of the table (draw_piece_skinned routes to the textured
+            // retro meshes when active, incl. the pawn's per-file keycap,
+            // else falls through to the flat-shaded STL set below).
+            Mat4 pm = piece_model_matrix(px, pz, s, bp.is_white,
+                                         active_piece_rot(rot_z_to_y), bp.type);
             // Drop the piece so its bottom rests on the table.
             pm = mat4_multiply(
                 mat4_translate(0.0f, TABLE_TOP_Y - BOARD_Y, 0.0f), pm);
-            if (bp.is_white) set_material(g_program, 0.85f,0.82f,0.74f, 0,0.4f,0.7f, 0);
-            else set_material(g_program, 0.02f,0.02f,0.02f, 0,0.45f,0.7f, 0);
-            draw_with_model(g_program, pm, g_pieces[bp.type].vao, g_pieces[bp.type].num_vertices);
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
             cnt++;
         }
     }
