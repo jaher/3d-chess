@@ -1019,6 +1019,13 @@ walkthrough live in the user guide — see
 - **Procedural environment** with studio-style lighting for reflections
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
+- **Datacenter table (datacenter env)** — the wooden pedestal table is
+  swapped for a Hunyuan3D-generated industrial steel workbench (from a
+  product photo, 768-res PBR bake), fitted to the medieval table's exact
+  local bbox (14×14 footprint, top-centre origin) so the board, pieces,
+  captured-piece slots and clock sit identically. Assets in
+  `models/table/dc_table_*`; pipeline in `tools/convert_dc_table.py`.
+  Medieval keeps the wooden table.
 - **Digital chess clock (datacenter env)** — the analog clock is swapped
   for a Hunyuan3D-generated DGT-3000-style digital clock in the datacenter
   environment only: generated from a product photo on a DGX Spark

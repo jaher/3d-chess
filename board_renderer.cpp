@@ -190,6 +190,14 @@ static GLuint    g_table_normal_tex    = 0;
 static GLuint    g_table_roughness_tex = 0;
 static GLuint    g_table_metallic_tex  = 0;
 static GLuint    g_table_ao_tex        = 0;
+// Datacenter-environment table: Hunyuan3D-generated industrial steel
+// workbench, fitted to the medieval table's exact bbox (14x14 footprint,
+// 8.268 tall, top-centre origin). Swapped in when env 1 is active; the
+// medieval room keeps the wooden table. models/table/dc_table_*.
+static ClockMesh g_dc_table_mesh;
+static GLuint    g_dc_table_albedo_tex    = 0;
+static GLuint    g_dc_table_roughness_tex = 0;
+static GLuint    g_dc_table_metalness_tex = 0;
 
 // How far each lever travels when fully pressed (mesh-local units).
 // The stem is ~0.128 long, so 0.04 is a clearly visible click
@@ -1684,6 +1692,22 @@ static void load_table_assets(const std::string& dir) {
     g_table_roughness_tex = gl_load_texture(dir + "/table_roughness.jpg");
     g_table_metallic_tex  = gl_load_texture(dir + "/table_metallic.jpg");
     g_table_ao_tex        = gl_load_texture(dir + "/table_ao.jpg");
+
+    // Datacenter table (optional). Same uvmesh layout as the retro pieces.
+    if (load_uvmesh_into(dir + "/dc_table.uvmesh", g_dc_table_mesh)) {
+        g_dc_table_albedo_tex    = gl_load_texture(dir + "/dc_table_diffuse.jpg");
+        g_dc_table_roughness_tex = gl_load_texture(dir + "/dc_table_roughness.jpg");
+        g_dc_table_metalness_tex = gl_load_texture(dir + "/dc_table_metalness.jpg");
+        // Same mip caveat as the digital clock: the Hunyuan atlas packs
+        // unrelated islands edge-to-edge; LINEAR (no mips) avoids bleed.
+        for (GLuint t : { g_dc_table_albedo_tex, g_dc_table_roughness_tex,
+                          g_dc_table_metalness_tex }) {
+            if (!t) continue;
+            glBindTexture(GL_TEXTURE_2D, t);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
@@ -4821,7 +4845,17 @@ void renderer_draw(GameState& gs,
     // to the board / clock model matrices — they were already
     // calibrated to this Y.
     constexpr float TABLE_TOP_Y = -0.608f;
-    if (g_table_mesh.count > 0 && g_table_albedo_tex) {
+    // Datacenter env swaps the wooden table for the generated steel
+    // workbench (same anchor + footprint, so board/pieces/captures all
+    // sit identically).
+    const bool use_dc_table =
+        (g_active_environment == 1 && g_dc_table_mesh.count > 0 &&
+         g_dc_table_albedo_tex);
+    const ClockMesh& table_mesh = use_dc_table ? g_dc_table_mesh : g_table_mesh;
+    const GLuint table_alb   = use_dc_table ? g_dc_table_albedo_tex    : g_table_albedo_tex;
+    const GLuint table_rough = use_dc_table ? g_dc_table_roughness_tex : g_table_roughness_tex;
+    const GLuint table_metal = use_dc_table ? g_dc_table_metalness_tex : g_table_metallic_tex;
+    if (table_mesh.count > 0 && table_alb) {
         Mat4 table_model = mat4_translate(0.0f, TABLE_TOP_Y, 0.0f);
         float tnm[9]; mat4_normal_matrix(table_model, tnm);
         glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"),
@@ -4836,21 +4870,21 @@ void renderer_draw(GameState& gs,
         // (1, 1, 1) so the texture comes through with no tint.
         set_material(g_program, 1.0f, 1.0f, 1.0f, 0.0f, 0.65f, 1.0f, 0);
         glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_2D, g_table_albedo_tex);
+        glBindTexture(GL_TEXTURE_2D, table_alb);
         glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
-        if (g_table_roughness_tex) {
+        if (table_rough) {
             glActiveTexture(GL_TEXTURE6);
-            glBindTexture(GL_TEXTURE_2D, g_table_roughness_tex);
+            glBindTexture(GL_TEXTURE_2D, table_rough);
             glUniform1i(glGetUniformLocation(g_program, "uClockRoughnessTex"), 6);
         }
-        if (g_table_metallic_tex) {
+        if (table_metal) {
             glActiveTexture(GL_TEXTURE7);
-            glBindTexture(GL_TEXTURE_2D, g_table_metallic_tex);
+            glBindTexture(GL_TEXTURE_2D, table_metal);
             glUniform1i(glGetUniformLocation(g_program, "uClockMetalnessTex"), 7);
         }
         glActiveTexture(GL_TEXTURE0);
-        glBindVertexArray(g_table_mesh.vao);
-        glDrawArrays(GL_TRIANGLES, 0, g_table_mesh.count);
+        glBindVertexArray(table_mesh.vao);
+        glDrawArrays(GL_TRIANGLES, 0, table_mesh.count);
         glBindVertexArray(0);
         // Restore — the chessboard frame / squares / pieces draws
         // below all expect uClockTextureMode == 0.
