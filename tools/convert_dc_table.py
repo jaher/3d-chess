@@ -74,6 +74,37 @@ if args.disc_y is not None:
 Fk = F[keep]
 print(f"after disc cut: {len(Fk)} faces")
 
+# --- Taubin smoothing (shrink-free Laplacian) ---------------------------
+# Hunyuan surfaces carry high-frequency waviness that reads as "bumpy"
+# under lighting. Smooth positions over a POSITION-WELDED adjacency (UV
+# seams split vertices; welding the graph keeps seams crack-free), then
+# fit + recompute normals from the smoothed geometry.
+weld = {}
+weld_id = np.empty(len(V), dtype=np.int64)
+for i, p in enumerate(np.round(V, 6)):
+    key = (p[0], p[1], p[2])
+    weld_id[i] = weld.setdefault(key, len(weld))
+nw = len(weld)
+# adjacency accumulation buffers in weld space
+def smooth_pass(P, lam):
+    acc = np.zeros((nw, 3))
+    cnt = np.zeros(nw)
+    wf = weld_id[F]
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        np.add.at(acc, wf[:, a], P[wf[:, b]])
+        np.add.at(cnt, wf[:, a], 1)
+        np.add.at(acc, wf[:, b], P[wf[:, a]])
+        np.add.at(cnt, wf[:, b], 1)
+    avg = acc / np.maximum(cnt, 1)[:, None]
+    return P + lam * (avg - P)
+Pw = np.zeros((nw, 3))
+Pw[weld_id] = V
+for _ in range(25):                      # Taubin: inflate-deflate pairs
+    Pw = smooth_pass(Pw, 0.5)
+    Pw = smooth_pass(Pw, -0.53)
+V = Pw[weld_id]
+print("taubin smoothing applied (25 passes)")
+
 used = np.unique(Fk)
 mn, mx = V[used].min(0), V[used].max(0)
 # medieval table local box: top-centre origin
@@ -113,6 +144,9 @@ write_uvmesh(f"{args.out_prefix}.uvmesh", Fk)
 from PIL import Image
 base = args.obj.replace(".obj", "")
 Image.open(base + ".jpg").save(f"{args.out_prefix}_diffuse.jpg", quality=94)
-Image.open(base + "_roughness.jpg").convert("L").save(f"{args.out_prefix}_roughness.jpg", quality=92)
+# glossier steel: scale the (noisy) roughness bake down
+rough = np.asarray(Image.open(base + "_roughness.jpg").convert("L"), dtype=np.float64)
+Image.fromarray((rough * 0.45).clip(0, 255).astype(np.uint8)).save(
+    f"{args.out_prefix}_roughness.jpg", quality=92)
 Image.open(base + "_metallic.jpg").convert("L").save(f"{args.out_prefix}_metalness.jpg", quality=92)
 print("textures written")
