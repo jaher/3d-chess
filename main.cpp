@@ -426,6 +426,36 @@ static gboolean force_tick_cb(gpointer) {
         if (const char* y = std::getenv("CHESS_CAM_YAW"))   g_app.rot_y = std::atof(y);
         if (const char* z = std::getenv("CHESS_CAM_ZOOM"))  g_app.zoom  = std::atof(z);
     }
+    // Headless move driver: $CHESS_AUTOMOVE="c2c4,b1c3,..." plays the listed
+    // moves through the AI sliding animation (app_dbg_animate_move), one at a
+    // time as each previous animation finishes. $CHESS_AUTOMOVE_DUR (seconds)
+    // slows the slide for capture. Debug/demo only — no legality checks.
+    static std::vector<std::string> automoves = [] {
+        std::vector<std::string> v;
+        if (const char* am = std::getenv("CHESS_AUTOMOVE")) {
+            std::string s(am), cur;
+            for (char c : s) {
+                if (c == ',') { if (!cur.empty()) v.push_back(cur); cur.clear(); }
+                else cur += c;
+            }
+            if (!cur.empty()) v.push_back(cur);
+        }
+        return v;
+    }();
+    static size_t automove_next = 0;
+    static int automove_cooldown = 0;
+    if (started && automove_next < automoves.size()) {
+        if (automove_cooldown > 0) {
+            --automove_cooldown;
+        } else {
+            float dur = 0.0f;
+            if (const char* d = std::getenv("CHESS_AUTOMOVE_DUR")) dur = std::atof(d);
+            if (app_dbg_animate_move(g_app, automoves[automove_next].c_str(), dur)) {
+                ++automove_next;
+                automove_cooldown = 30;   // settle between moves
+            }
+        }
+    }
     if (!g_gl_area) return G_SOURCE_CONTINUE;
     // The frame clock can stall on Xvfb, so render directly into the
     // GLArea's framebuffer here instead of waiting for the paint cycle.

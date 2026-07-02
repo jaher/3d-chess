@@ -2700,6 +2700,19 @@ void app_start_network_game(AppState& a, bool local_is_white) {
         : "Online game — you are Black. Waiting for White…");
 }
 
+bool app_dbg_animate_move(AppState& a, const char* uci_c, float duration_s) {
+    GameState& gs = cur_gs(a);
+    if (gs.ai_animating || gs.game_over) return false;
+    std::string uci = (uci_c && *uci_c) ? uci_c : "";
+    int fc, fr, tc, tr;
+    if (uci.empty() || !parse_uci_move(uci, fc, fr, tc, tr)) return false;
+    if (!in_bounds(fc, fr) || !in_bounds(tc, tr)) return false;
+    if (gs.grid[fr][fc] < 0) return false;   // needs a piece to slide
+    start_ai_animation(a, fc, fr, tc, tr);
+    if (duration_s > 0.0f) gs.ai_anim_duration = duration_s;
+    return true;
+}
+
 void app_remote_move_ready(AppState& a, const char* uci_c) {
     if (!a.network_mode) return;
     GameState& gs = cur_gs(a);

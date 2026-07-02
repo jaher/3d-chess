@@ -766,6 +766,13 @@ void app_ai_move_ready(AppState& a, const char* uci, int game_id);
 void app_start_network_game(AppState& a, bool local_is_white);
 void app_remote_move_ready(AppState& a, const char* uci);
 
+// Headless demo/debug: animate + execute `uci` through the same sliding
+// path an AI reply uses (start_ai_animation), regardless of whose turn or
+// which colour — NO legality check beyond "a piece stands on the from
+// square". `duration_s` > 0 overrides the animation duration (slow-motion
+// capture). Driven by $CHESS_AUTOMOVE in the desktop headless driver.
+bool app_dbg_animate_move(AppState& a, const char* uci, float duration_s);
+
 void app_eval_ready(AppState& a, int cp, int score_index,
                     const std::string& best_uci = std::string(),
                     int game_id = 0,

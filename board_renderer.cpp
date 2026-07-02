@@ -1840,23 +1840,26 @@ static Mat4 axis_rotate(float ax, float ay, float az, float ang) {
 static int   g_dbg_anim_type = -1;
 static float g_dbg_anim_t = 0.0f;
 
-// Animation angle for a piece's moving part while it is selected: spin winds up
-// continuously; sway oscillates. 0 when not selected (part drawn at rest).
-static float retro_part_angle(const GameState& gs, int col, int row,
-                              int64_t now, int type) {
+// Phase-to-angle for a piece type's moving part: spin winds up continuously;
+// sway oscillates. Shared by the selection path and the move-animation path.
+static float retro_part_angle_t(int type, float t) {
     const RetroAnim& a = g_retro_anim[type];
     if (!a.has) return 0.0f;
-    float t;
-    if (g_dbg_anim_type == type) {
-        t = g_dbg_anim_t;                              // forced phase (GIF harness)
-    } else {
-        if (gs.selected_col != col || gs.selected_row != row) return 0.0f;
-        t = static_cast<float>(now - gs.anim_start_time) / 1.0e6f;
-        if (t < 0.0f) t = 0.0f;
-    }
+    if (t < 0.0f) t = 0.0f;
     float w = a.freq * 2.0f * static_cast<float>(M_PI);
     return (a.kind == 0) ? t * w                       // spin (continuous)
                          : a.amp * std::sin(t * w);    // sway (oscillate)
+}
+// Animation angle for a piece's moving part while it is selected. 0 when not
+// selected (part drawn at rest).
+static float retro_part_angle(const GameState& gs, int col, int row,
+                              int64_t now, int type) {
+    if (!g_retro_anim[type].has) return 0.0f;
+    if (g_dbg_anim_type == type)
+        return retro_part_angle_t(type, g_dbg_anim_t); // forced phase (GIF harness)
+    if (gs.selected_col != col || gs.selected_row != row) return 0.0f;
+    return retro_part_angle_t(type,
+        static_cast<float>(now - gs.anim_start_time) / 1.0e6f);
 }
 // Exposed for the headless GIF harness: force `type`'s part to phase `t_seconds`
 // (type < 0 clears the override).
@@ -5129,21 +5132,45 @@ void renderer_draw(GameState& gs,
             square_center(gs.ai_to_col, gs.ai_to_row, tx, tz);
             wx = fx + (tx - fx) * ai_anim_t;
             wz = fz + (tz - fz) * ai_anim_t;
-            float arc = std::sin(ai_anim_t * static_cast<float>(M_PI)) * 0.3f;
+            // Retro pawns skip the flight arc: the keycap instead dips (a
+            // "key press" tapped for the duration of the slide) — an arc
+            // would fight the dip and read as a wobble.
+            bool retro_pawn = g_use_retro_pieces && bp.type == PAWN;
+            float arc = retro_pawn
+                ? 0.0f
+                : std::sin(ai_anim_t * static_cast<float>(M_PI)) * 0.3f;
             // Standard retro orient (+ optional pawn tilt), then the legacy
             // animating-path unconditional M_PI.
             Mat4 orient = mat4_rotate_x(active_piece_rot(rot_z_to_y));
             if (g_use_retro_pieces && bp.type != PAWN)
                 orient = mat4_multiply(mat4_rotate_y(retro_piece_yaw()), orient);
-            if (g_use_retro_pieces && bp.type == PAWN)
+            if (retro_pawn)
                 orient = mat4_multiply(
                     mat4_multiply(mat4_rotate_y(retro_pawn_spin()),
                                   mat4_rotate_x(retro_pawn_pitch())),
                     orient);
             orient = mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)), orient);
-            Mat4 pm = mat4_multiply(mat4_translate(wx, BOARD_Y + s + arc, wz),
-                                    mat4_multiply(mat4_scale(s,s,s), orient));
-            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+            float press = retro_pawn
+                ? std::sin(ai_anim_t * static_cast<float>(M_PI)) *
+                      retro_key_press_depth()
+                : 0.0f;
+            Mat4 pm = mat4_multiply(
+                mat4_translate(wx, BOARD_Y + s + arc - press, wz),
+                mat4_multiply(mat4_scale(s,s,s), orient));
+            // The moving piece plays its retro part animation for the whole
+            // slide (rook fan spins, bishop joystick / queen cables / knight
+            // disks sway) — phase runs from the move-animation clock so it
+            // starts fresh each move.
+            if (g_retro_anim[bp.type].has) {
+                float t = static_cast<float>(press_now - gs.ai_anim_start) / 1.0e6f;
+                Mat4 mv = retro_part_xform(bp.type, retro_part_angle_t(bp.type, t));
+                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv);
+            } else {
+                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+            }
+            // The king's monitor shows its white-noise static while it moves.
+            if (g_use_retro_pieces && bp.type == KING)
+                draw_king_noise(pm, press_now);
             continue;
         }
 
