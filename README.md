@@ -54,8 +54,8 @@ realistic lighting, wood textures, and reflections.
 - **Walk through a photo on your glasses** *(experimental)* — snap a photo on
   your phone, let it grow into a 3D Gaussian-splat world, and stroll around it
   on a Meta Ray-Ban Display with the Neural Band — the server renders and
-  streams every frame, the glasses just watch. See
-  [`splat_glasses/README.md`](splat_glasses/README.md).
+  streams every frame, the glasses just watch. Lives in its own repo:
+  [jaher/splat-glasses](https://github.com/jaher/splat-glasses).
 
 ## Play in your browser
 
