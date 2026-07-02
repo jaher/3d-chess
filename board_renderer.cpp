@@ -433,38 +433,35 @@ static const EnvironmentDesc g_environments[] = {
         -8.878f,
         0.0f, 0.0f,
     },
-    // 1 = DataCenter — Spaitial "Echo 2 (HQ)" generation from a datacenter
-    // photo: a bright warehouse hall, colourful overhead pipes, green
-    // generator machinery, open floor for the board. 5M splats with SH1
-    // (view-dependent colour) — denser and cleaner than the earlier Marble
-    // generation it replaces. Single tier: Spaitial ships one .spz, so the
-    // "lighter tier" slot points at the same file (no 500k fallback here;
-    // CHESS_SPLAT_TIER=500k only affects the medieval room).
+    // 1 = DataCenter — World Labs Marble generation from Google's official
+    // New Albany (Central Ohio) server-aisle photo (3500x2625, from the
+    // datacenters.google gallery): a bright modern hall, white racks with
+    // yellow structural beams down both sides, open wood-toned floor for the
+    // board. Chosen from a 5-generation bake-off (3 photos x Marble +
+    // Spaitial) specifically for how clean it stays at the 500k tier —
+    // bright in all directions, no dark holes or heavy floaters.
     {
         "Datacenter",
         {
 #ifndef __EMSCRIPTEN__
             "world_labs/datacenter/splat_full_res.spz",
-            "world_labs/datacenter/splat_full_res.spz",
+            "world_labs/datacenter/splat_500k.spz",
 #else
-            // Full quality on web too — the sparse tiers looked "weird" in
-            // the per-quad WebGL rasterizer. Heavier download, better look.
-            "/world_labs/datacenter/splat_full_res.spz",
-            "world_labs/datacenter/splat_full_res.spz",
+            // The 500k tier is the web build: this generation was picked for
+            // holding up at 500k, so the web keeps a sane download size
+            // (chess.data ~50 MB instead of the old full-res 124 MB).
+            "/world_labs/datacenter/splat_500k.spz",
+            "world_labs/datacenter/splat_500k.spz",
 #endif
         },
         {
             "world_labs/datacenter/panorama.jpg",
             "/world_labs/datacenter/panorama.jpg",
         },
-        22.0f,          // splat_scale — a large warehouse: the chess table reads
-                        // as a piece of furniture inside the hall, not the whole
-                        // room, with the cabling high overhead and racks distant.
-                        // (The Spaitial Echo-2 capture has a ~2.4x larger raw
-                        // footprint than the old Marble one, so half the scale.)
+        23.7f,          // splat_scale — the hall reads as a large open room
+                        // with the table as furniture inside it
         -8.878f,
-        -50.0f, -10.0f, // offset: board in the open floor area away from the
-                        // green generator machinery, facing down the hall
+        0.0f, 0.0f,     // offset: the capture's own centre is the open aisle
     },
 };
 constexpr int g_environment_count =

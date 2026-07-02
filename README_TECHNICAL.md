@@ -1020,10 +1020,11 @@ walkthrough live in the user guide — see
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
 - **Gaussian-splat backdrop** — a generated SPZ world behind the board,
-  selectable per environment: the default **medieval room** (World Labs
-  Marble), or the **datacenter** (Spaitial "Echo 2 (HQ)" generation from a
-  datacenter photo — 5M splats, SH1 view-dependent colour, single tier)
-  that hosts the retro-PC piece set. Two rasterizer paths:
+  selectable per environment: the default **medieval room**, or the
+  **datacenter** that hosts the retro-PC piece set (both World Labs Marble
+  generations; the datacenter comes from Google's official New Albany
+  server-aisle photo, picked from a multi-photo Marble/Spaitial bake-off
+  for staying clean at the 500k tier). Two rasterizer paths:
   - **Desktop default**: tile-based GL compute rasterizer (one
     workgroup per 16×16 tile, per-pixel front-to-back compositing —
     the Kerbl 2023 3DGS algorithm ported to GLSL compute, see
@@ -1038,13 +1039,12 @@ walkthrough live in the user guide — see
   - **Web**: uses the per-splat-quad path (WebGL2 has no compute
     shaders, so the tile rasterizer is desktop-only). The backdrop is
     cached across frames and only re-rendered when the camera moves, so
-    a static view costs nothing per frame. The medieval room preloads
-    the 500k tier; the datacenter preloads its **only** tier — the full
-    5M-splat Echo-2 file (`web/Makefile`) — because sparse tiers looked
-    wrong in the per-quad rasterizer. Honest cost: `chess.data` is
-    ~124 MB and the in-browser SPZ decode blocks the main thread for
-    tens of seconds on first load. The desktop compute rasterizer is
-    still visibly crisper — see the native turntable capture.
+    a static view costs nothing per frame. Both environments preload
+    their 500k tier (`web/Makefile`) — the datacenter generation was
+    chosen specifically for holding up at 500k, which keeps `chess.data`
+    around ~50 MB (an earlier full-res datacenter preload hit 124 MB and
+    blocked the main thread for tens of seconds on decode). The desktop
+    compute rasterizer loads the full-res tier and is visibly crisper.
 
 ## Upgrading Stockfish
 
