@@ -5162,8 +5162,23 @@ void renderer_draw(GameState& gs,
             // disks sway) — phase runs from the move-animation clock so it
             // starts fresh each move.
             if (g_retro_anim[bp.type].has) {
+                // Spin parts (rook fan) wind continuously on the move clock.
+                // Sway parts complete exactly two full cycles over the slide
+                // (tied to move progress, not wall time) so the motion reads
+                // at any move duration — a wall-clock sway barely deflects
+                // in a short slide.
+                const RetroAnim& ra = g_retro_anim[bp.type];
                 float t = static_cast<float>(press_now - gs.ai_anim_start) / 1.0e6f;
-                Mat4 mv = retro_part_xform(bp.type, retro_part_angle_t(bp.type, t));
+                float raw = gs.ai_anim_duration > 0.0f
+                    ? std::min(t / gs.ai_anim_duration, 1.0f) : 1.0f;
+                // Spin at ~1/3 the selection rate while sliding: the fan
+                // is ~8-fold symmetric, so at the full 1.5 rev/s its blade
+                // pattern strobes (~12 Hz) and reads as shimmer, not
+                // rotation. A slower fan reads unmistakably as spinning.
+                float ang = (ra.kind == 0)
+                    ? retro_part_angle_t(bp.type, t * 0.35f)
+                    : ra.amp * std::sin(raw * 2.0f * 2.0f * static_cast<float>(M_PI));
+                Mat4 mv = retro_part_xform(bp.type, ang);
                 draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv);
             } else {
                 draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);

@@ -2607,6 +2607,11 @@ static void start_ai_animation(AppState& a, int fc, int fr, int tc, int tr) {
     gs.ai_from_row = fr;
     gs.ai_to_col   = tc;
     gs.ai_to_row   = tr;
+    // The retro pieces play part animations while they slide (fan spin,
+    // sways, keycap press); a 0.5 s hop is too quick for any of it to
+    // read, so datacenter-environment moves glide at a statelier pace.
+    gs.ai_anim_duration =
+        (a.environment == AppState::Environment::DataCenter) ? 1.4f : 0.5f;
     gs.ai_animating = true;
     a.ai_anim_start_us = now_us(a);
     gs.ai_anim_start = a.ai_anim_start_us;
