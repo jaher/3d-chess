@@ -5060,13 +5060,13 @@ void renderer_draw(GameState& gs,
     // (DGT-style) one: modelled body + pushable top button bar + live
     // 7-segment LCD times. The medieval room keeps the analog clock.
     // The digital body is deeper than the analog one (±0.995 vs ±0.477
-    // at the same 3.0 width), so its centre moves out to X = 6.2: the
-    // front face lands at 5.2, keeping the same ~0.65 gap to the retro
-    // board slab (±4.55) the old clock had, and the back edge (7.2)
-    // stays on the folding table (±9.98 long).
+    // at the same 3.0 width), so its centre moves out to X = 6.7: the
+    // front face lands at ~5.7, a clear ~1.15 gap to the retro board
+    // slab (±4.55) so the clock doesn't crowd the board, and the back
+    // edge (7.7) stays on the folding table (±9.98 long).
     if (g_active_environment == 1 && g_digital_body.count > 0) {
         Mat4 clock_model = mat4_multiply(
-            mat4_translate(6.2f, -0.608f, 0.0f),
+            mat4_translate(6.7f, -0.608f, 0.0f),
             mat4_rotate_y(-static_cast<float>(M_PI) * 0.5f));
         float cnm[9]; mat4_normal_matrix(clock_model, cnm);
         glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, clock_model.m);
