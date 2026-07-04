@@ -233,12 +233,13 @@ static GLuint    g_clock_diffuse_tex   = 0;
 static GLuint    g_clock_cursor_tex    = 0;
 static GLuint    g_clock_roughness_tex = 0;
 static GLuint    g_clock_metalness_tex = 0;
-// Digital chess clock (datacenter environment): Hunyuan3D-generated
-// DGT-3000-style body + separate top rocker bar (the see-saw the players
-// press), fitted to the analog clock's local bbox by tools/convert (see
-// models/clock/digital_*.uvmesh provenance in README_TECHNICAL). Textures
-// are the Hunyuan PBR bake. Drawn instead of the analog clock when the
-// datacenter environment is active; the analog room keeps its clock.
+// Digital chess clock (datacenter environment): modelled DGT-style body
+// + separate top button bar (see-saw animated like the old rocker), from
+// the chessclockdigital v3.1 Blender asset via tools/convert_dgt_clock.py
+// (see models/clock/digital_*.uvmesh provenance in README_TECHNICAL).
+// Textures are its clean 4K PBR bake (AO premultiplied into the diffuse),
+// downsized to 2K. Drawn instead of the analog clock when the datacenter
+// environment is active; the medieval room keeps the analog clock.
 static ClockMesh g_digital_body;
 static ClockMesh g_digital_rocker;
 static GLuint    g_digital_diffuse_tex   = 0;
@@ -1625,10 +1626,9 @@ static void load_clock_assets(const std::string& dir) {
         g_digital_diffuse_tex   = gl_load_texture(dir + "/digital_diffuse.jpg");
         g_digital_roughness_tex = gl_load_texture(dir + "/digital_roughness.jpg");
         g_digital_metalness_tex = gl_load_texture(dir + "/digital_metalness.jpg");
-        // The Hunyuan paint atlas packs unrelated islands edge-to-edge
-        // (red body next to white rocker); mipmap levels mix them into
-        // pink fringes on every seam. The clock is a small, mostly
-        // static object — plain LINEAR (no mips) is clean and cheap.
+        // Atlas islands sit edge-to-edge, so mip levels would bleed
+        // across seams. The clock is a small, mostly static object —
+        // plain LINEAR (no mips) is clean and cheap.
         for (GLuint t : { g_digital_diffuse_tex, g_digital_roughness_tex,
                           g_digital_metalness_tex }) {
             if (!t) continue;
@@ -1698,8 +1698,8 @@ static void load_table_assets(const std::string& dir) {
         g_dc_table_albedo_tex    = gl_load_texture(dir + "/dc_table_diffuse.jpg");
         g_dc_table_roughness_tex = gl_load_texture(dir + "/dc_table_roughness.jpg");
         g_dc_table_metalness_tex = gl_load_texture(dir + "/dc_table_metalness.jpg");
-        // Same mip caveat as the digital clock: the Hunyuan atlas packs
-        // unrelated islands edge-to-edge; LINEAR (no mips) avoids bleed.
+        // Same mip caveat as the digital clock: atlas islands sit
+        // edge-to-edge; LINEAR (no mips) avoids bleed.
         for (GLuint t : { g_dc_table_albedo_tex, g_dc_table_roughness_tex,
                           g_dc_table_metalness_tex }) {
             if (!t) continue;
@@ -4096,11 +4096,14 @@ static void draw_lcd_segment(const Mat4& clock_model, float til,
     // origin + ex*cx + ey*cy, floated 0.012 out along en to avoid z-fights.
     const float cy_y = cy * std::cos(til), cy_z = -cy * std::sin(til);
     const float en_y = std::sin(til), en_z = std::cos(til);
+    // g_letter_quad spans ±0.5, so scale by 2·(w, h) to get true
+    // half-extents — at (w, h) every segment rendered half-size and the
+    // digits came out as disconnected dashes.
     Mat4 m = mat4_multiply(clock_model, mat4_multiply(
         mat4_translate(cx, lcd_y + cy_y + 0.012f * en_y,
                        lcd_z + cy_z + 0.012f * en_z),
         mat4_multiply(mat4_rotate_x(static_cast<float>(M_PI) * 0.5f - til),
-                      mat4_scale(w, 1.0f, h))));
+                      mat4_scale(2.0f * w, 1.0f, 2.0f * h))));
     float nm[9]; mat4_normal_matrix(m, nm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, m.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, nm);
@@ -4116,15 +4119,17 @@ static void draw_lcd_digit(const Mat4& cm, float til, float ly, float lz,
         0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
         0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111 };
     // (cx, cy, half-w, half-h) per segment in digit-local units (x ±0.5,
-    // y ±1) — scaled by dsx/dsy into face coords.
+    // y ±1) — scaled by dsx/dsy into face coords. Adjacent segments
+    // overlap slightly at the joints so the digit reads as one
+    // connected LCD figure.
     static const float G[7][4] = {
-        { 0.0f,  0.95f, 0.34f, 0.10f },   // A top
-        { 0.42f, 0.48f, 0.10f, 0.36f },   // B top-right
-        { 0.42f, -0.48f, 0.10f, 0.36f },  // C bottom-right
-        { 0.0f, -0.95f, 0.34f, 0.10f },   // D bottom
-        { -0.42f, -0.48f, 0.10f, 0.36f }, // E bottom-left
-        { -0.42f, 0.48f, 0.10f, 0.36f },  // F top-left
-        { 0.0f,  0.0f,  0.34f, 0.10f },   // G middle
+        { 0.0f,  0.90f, 0.33f, 0.10f },   // A top
+        { 0.40f, 0.47f, 0.10f, 0.37f },   // B top-right
+        { 0.40f, -0.47f, 0.10f, 0.37f },  // C bottom-right
+        { 0.0f, -0.90f, 0.33f, 0.10f },   // D bottom
+        { -0.40f, -0.47f, 0.10f, 0.37f }, // E bottom-left
+        { -0.40f, 0.47f, 0.10f, 0.37f },  // F top-left
+        { 0.0f,  0.0f,  0.33f, 0.10f },   // G middle
     };
     if (digit < 0 || digit > 9) return;
     for (int i = 0; i < 7; ++i) {
@@ -4845,9 +4850,12 @@ void renderer_draw(GameState& gs,
     // to the board / clock model matrices — they were already
     // calibrated to this Y.
     constexpr float TABLE_TOP_Y = -0.608f;
-    // Datacenter env swaps the wooden table for the generated steel
-    // workbench (same anchor + footprint, so board/pieces/captures all
-    // sit identically).
+    // Datacenter env swaps the wooden table for the folding table
+    // (Sketchfab GLB via tools/convert_folding_table.py). Same anchor
+    // (top at TABLE_TOP_Y, feet on the room floor) but a different
+    // footprint: ±9.98 long, ±5.3 deep — real 6-ft-table proportions
+    // instead of the medieval table's ±7 square. The capture rows pull
+    // inboard in this environment to stay on the narrower top.
     const bool use_dc_table =
         (g_active_environment == 1 && g_dc_table_mesh.count > 0 &&
          g_dc_table_albedo_tex);
@@ -5049,11 +5057,16 @@ void renderer_draw(GameState& gs,
     //     surface as the board instead of floating on the play
     //     plane).
     // Datacenter environment swaps the analog clock for the digital
-    // (DGT-style) one: generated body + pushable top rocker + live
+    // (DGT-style) one: modelled body + pushable top button bar + live
     // 7-segment LCD times. The medieval room keeps the analog clock.
+    // The digital body is deeper than the analog one (±0.995 vs ±0.477
+    // at the same 3.0 width), so its centre moves out to X = 6.2: the
+    // front face lands at 5.2, keeping the same ~0.65 gap to the retro
+    // board slab (±4.55) the old clock had, and the back edge (7.2)
+    // stays on the folding table (±9.98 long).
     if (g_active_environment == 1 && g_digital_body.count > 0) {
         Mat4 clock_model = mat4_multiply(
-            mat4_translate(5.7f, -0.608f, 0.0f),
+            mat4_translate(6.2f, -0.608f, 0.0f),
             mat4_rotate_y(-static_cast<float>(M_PI) * 0.5f));
         float cnm[9]; mat4_normal_matrix(clock_model, cnm);
         glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, clock_model.m);
@@ -5066,15 +5079,23 @@ void renderer_draw(GameState& gs,
             glBindTexture(GL_TEXTURE_2D, g_digital_diffuse_tex);
             glUniform1i(glGetUniformLocation(g_program, "uClockDiffuse"), 5);
         }
-        // No PBR maps: the generated metalness map is noisy, and a
-        // metallic red body picks up strong blue-ish Fresnel rim
-        // speculars from the environment light (pink fringes on every
-        // edge). The DGT is matte plastic — flat non-metal shading
-        // with the baked diffuse looks right.
-        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
+        // Full PBR maps: unlike the old Hunyuan bake (noisy metalness,
+        // pink Fresnel fringes), this asset's roughness/metallic maps
+        // are clean studio bakes — same path as the analog clock.
+        glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 1);
+        if (g_digital_roughness_tex) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, g_digital_roughness_tex);
+            glUniform1i(glGetUniformLocation(g_program, "uClockRoughnessTex"), 6);
+        }
+        if (g_digital_metalness_tex) {
+            glActiveTexture(GL_TEXTURE7);
+            glBindTexture(GL_TEXTURE_2D, g_digital_metalness_tex);
+            glUniform1i(glGetUniformLocation(g_program, "uClockMetalnessTex"), 7);
+        }
         glActiveTexture(GL_TEXTURE0);
         set_material(g_program, 1.0f, 1.0f, 1.0f,
-                     /*metallic=*/0.0f, /*roughness=*/0.55f, /*ao=*/1.0f, 0);
+                     /*metallic=*/1.0f, /*roughness=*/1.0f, /*ao=*/1.0f, 0);
         const int dbg_parts = static_cast<int>(env_f("CHESS_DCLOCK_PARTS", 7.0f));
         if (dbg_parts & 1) {
             glBindVertexArray(g_digital_body.vao);
@@ -5088,7 +5109,7 @@ void renderer_draw(GameState& gs,
         {
             const float tilt_max = env_f("CHESS_ROCKER_TILT", 0.10f);
             float tilt = tilt_max * (black_lever_blend - white_lever_blend);
-            const float py = 1.02f, pz = -0.10f;   // hinge (rocker bbox base)
+            const float py = 0.835f, pz = -0.426f; // hinge (rocker bbox base/z-centre)
             Mat4 rocker_model = mat4_multiply(clock_model, mat4_multiply(
                 mat4_translate(0.0f, py, pz),
                 mat4_multiply(mat4_rotate_z(tilt),
@@ -5110,18 +5131,25 @@ void renderer_draw(GameState& gs,
 
         // Live LCD: both players' remaining time, 7-segment, on the sloped
         // front face. Left display = white (matches the lever sides).
+        // Defaults are computed from the cdtgc_display band by
+        // tools/convert_dgt_clock.py: centre (y=0.547, z=0.505), face
+        // normal (0, 0.869, 0.495) -> 60.3 deg recline, band ±1.156 wide
+        // with 0.504 of usable slope-height.
         glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
-        set_material(g_program, 0.07f, 0.09f, 0.08f,
-                     /*metallic=*/0.0f, /*roughness=*/0.35f, /*ao=*/1.0f, 0);
+        // Near-full roughness: the 60°-reclined face mirrors the bright
+        // room straight into the default camera, and at 0.35 the specular
+        // sheen washed the dark segments out to the backplate's grey.
+        set_material(g_program, 0.05f, 0.07f, 0.06f,
+                     /*metallic=*/0.0f, /*roughness=*/0.9f, /*ao=*/1.0f, 0);
         {
-            const float til = env_f("CHESS_LCD_TILT", 25.0f) *
+            const float til = env_f("CHESS_LCD_TILT", 60.3f) *
                               static_cast<float>(M_PI) / 180.0f;
-            const float ly  = env_f("CHESS_LCD_Y", 0.60f);
-            const float lz  = env_f("CHESS_LCD_Z", 0.40f);
+            const float ly  = env_f("CHESS_LCD_Y", 0.547f);
+            const float lz  = env_f("CHESS_LCD_Z", 0.505f);
             const float dsx = env_f("CHESS_LCD_DSX", 0.10f);
-            const float dsy = env_f("CHESS_LCD_DSY", 0.16f);
-            const float gx  = env_f("CHESS_LCD_GX", 0.72f);
+            const float dsy = env_f("CHESS_LCD_DSY", 0.19f);
+            const float gx  = env_f("CHESS_LCD_GX", 0.585f);
             if (dbg_parts & 4) {
                 draw_lcd_time(clock_model, til, ly, lz, white_clock_ms, -gx, dsx, dsy);
                 draw_lcd_time(clock_model, til, ly, lz, black_clock_ms,  gx, dsx, dsy);
@@ -5540,7 +5568,7 @@ void renderer_draw(GameState& gs,
         // the 15 captures that are theoretically possible (every
         // piece except the king).
         //
-        // Z layout — table spans Z ∈ [-7, +7]. We anchor each
+        // Z layout — the medieval table spans Z ∈ [-7, +7]: anchor each
         // colour's far row at Z = ±5.7, leaving a ~1-unit table
         // buffer on each end and a ~1-unit gap between the two
         // colour boxes. World footprint of the largest piece (rook
@@ -5551,13 +5579,18 @@ void renderer_draw(GameState& gs,
         //   White rows: Z = -5.7, -5.0, -4.3, -3.6, -2.9, -2.2,
         //       -1.5, -0.8
         //   Black rows: Z = 5.7, 5.0, 4.3, 3.6, 2.9, 2.2, 1.5, 0.8
+        //
+        // The datacenter folding table is shallower (Z ±5.3), so there
+        // the rows pull inboard: far row at ±4.65, 0.55 spacing (still
+        // clear of the 0.22 piece radius), near row at ±0.8 unchanged.
         constexpr int   CAP_COLS        = 2;
         constexpr int   CAP_ROWS        = 8;
         constexpr float CAP_X_SPACING   = 1.0f;
-        constexpr float CAP_Z_SPACING   = 0.7f;
         constexpr float CAP_X0          = -5.2f;
-        constexpr float CAP_WHITE_Z0    = -5.7f;
-        constexpr float CAP_BLACK_Z0    =  5.7f;
+        const bool  cap_dc         = (g_active_environment == 1);
+        const float CAP_Z_SPACING  = cap_dc ? 0.55f : 0.7f;
+        const float CAP_WHITE_Z0   = cap_dc ? -4.65f : -5.7f;
+        const float CAP_BLACK_Z0   = -CAP_WHITE_Z0;
         constexpr int   CAP_MAX_SLOTS   = CAP_COLS * CAP_ROWS;
 
         int wc = 0, bc = 0;

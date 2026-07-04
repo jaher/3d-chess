@@ -1020,23 +1020,36 @@ walkthrough live in the user guide — see
 - **ACES filmic tone mapping** with gamma correction
 - **Procedural wood grain** using 6-octave FBM noise with medullary rays
 - **Datacenter table (datacenter env)** — the wooden pedestal table is
-  swapped for a Hunyuan3D-generated industrial steel workbench (from a
-  product photo, 768-res PBR bake), fitted to the medieval table's exact
-  local bbox (14×14 footprint, top-centre origin) so the board, pieces,
-  captured-piece slots and clock sit identically. Assets in
-  `models/table/dc_table_*`; pipeline in `tools/convert_dc_table.py`.
-  Medieval keeps the wooden table.
+  swapped for a Sketchfab folding table (single mesh, 2K glTF PBR set)
+  that keeps its real 6-ft proportions: height scaled exactly so the
+  feet land on the room floor with the top at the table plane, length
+  uniform with height (±9.98), depth the one compromise (±5.3, a mild
+  1.31× stretch) so the retro board slab and the capture rows — pulled
+  inboard to Z₀ ±4.65 in this environment — stay on the top. Assets in
+  `models/table/dc_table_*`; pipeline in `tools/convert_folding_table.py`
+  (Blender-driven GLB → uvmesh + metallicRoughness channel split). It
+  replaced an earlier Hunyuan3D steel workbench whose ±7-square force-fit
+  stretched it 2.5× in Z (bake artifacts + distorted legs);
+  `tools/convert_dc_table.py` documents that older pipeline. Medieval
+  keeps the wooden table.
 - **Digital chess clock (datacenter env)** — the analog clock is swapped
-  for a Hunyuan3D-generated DGT-3000-style digital clock in the datacenter
-  environment only: generated from a product photo on a DGX Spark
-  (768-res PBR bake), fitted to the analog clock's exact footprint, split
-  into body + pushable top rocker (see-saws with the same lever-blend
-  animation the analog levers use), with **live 7-segment LCD times** for
-  both players drawn as flat quads on the sloped face. Assets in
-  `models/clock/digital_*`; conversion pipeline in
-  `tools/convert_digital_clock.py` (direct OBJ parse, computed normals,
-  ground-disc trim, rocker split, red-bleed texture cleanup). The
-  medieval room keeps the analog clock, needles and all.
+  for a DGT-style digital clock in the datacenter environment only,
+  converted from the professionally-modelled `chessclockdigital v3.1`
+  Blender asset (clean 4K PBR atlases, AO premultiplied into the
+  diffuse, downsized to 2K): uniform-scaled to the analog clock's 3.0
+  width, base at Y=0, centre at X=6.2 (deeper body than the analog
+  clock, same ~0.65 gap to the board). Split into body (housing + LCD
+  backplate + legs + front buttons) + the big top rocker bar (see-saws
+  with the same lever-blend animation the analog levers use), with
+  **live 7-segment LCD times** for both players drawn as flat quads on
+  the 60°-reclined display band (its centre/tilt/extents are computed
+  by the converter and baked in as the `CHESS_LCD_*` defaults). The
+  source's baked static digits and display glass are dropped — the
+  engine draws the real time. Assets in `models/clock/digital_*`;
+  pipeline in `tools/convert_dgt_clock.py` (Blender-driven blend →
+  uvmesh; `tools/convert_digital_clock.py` documents the earlier
+  Hunyuan3D version this replaced). The medieval room keeps the analog
+  clock, needles and all.
 - **Gaussian-splat backdrop** — a generated SPZ world behind the board,
   selectable per environment: the default **medieval room**, or the
   **datacenter** that hosts the retro-PC piece set (both World Labs Marble
