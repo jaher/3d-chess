@@ -11,6 +11,8 @@ realistic lighting, wood textures, and reflections.
 
 ![Game Screenshot](screenshots/Game.png)
 
+![Datacenter Environment](screenshots/Datacenter.png)
+
 ## What you can do
 
 - **Play against a world-class engine** at any strength — from a gentle
