@@ -1036,7 +1036,10 @@ walkthrough live in the user guide — see
   for a DGT-style digital clock in the datacenter environment only,
   converted from the professionally-modelled `chessclockdigital v3.1`
   Blender asset (clean 4K PBR atlases, AO premultiplied into the
-  diffuse, downsized to 2K): uniform-scaled to the analog clock's 3.0
+  diffuse, downsized to 2K; the maroon body is recoloured to charcoal
+  black by the converter's `--body-black` saturated-red mask, keeping
+  the grey rocker/buttons/LCD and printed labels): uniform-scaled to
+  the analog clock's 3.0
   width, base at Y=0, centre at X=6.2 (deeper body than the analog
   clock, same ~0.65 gap to the board). Split into body (housing + LCD
   backplate + legs + front buttons) + the big top rocker bar (see-saws

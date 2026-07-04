@@ -51,6 +51,9 @@ ap.add_argument("--tex-dir", required=True)
 ap.add_argument("--out-dir", default="models/clock")
 ap.add_argument("--width", type=float, default=3.0,
                 help="fitted engine width (analog clock = 3.0)")
+ap.add_argument("--body-black", action="store_true",
+                help="recolour the maroon body to charcoal black (keeps the "
+                     "grey rocker/buttons/LCD and the white printed labels)")
 args = ap.parse_args(argv)
 
 BODY = ["cdtgc_housing", "cdtgc_display", "cdtgc_legs", "cdtgc_timer_buttons"]
@@ -151,6 +154,21 @@ td = args.tex_dir
 base = Image.open(f"{td}/chessclockdigital_clocks_Mat_BaseColor.png").convert("RGB")
 ao = Image.open(f"{td}/chessclockdigital_clocks_Mat_AO.png").convert("L").resize(base.size)
 b = np.asarray(base).astype(np.float32)
+if args.body_black:
+    # Saturated-red mask -> charcoal, value channel preserved so the
+    # baked shading survives. Dilate + blur the mask a touch so bilinear
+    # sampling at island borders doesn't leave maroon fringes.
+    from PIL import ImageFilter
+    r, g, bl = b[..., 0], b[..., 1], b[..., 2]
+    mx = b.max(-1)
+    sat = (mx - b.min(-1)) / (mx + 1e-6)
+    mask = ((sat > 0.25) & (r > np.maximum(g, bl) * 1.15)).astype(np.uint8) * 255
+    m = Image.fromarray(mask).filter(ImageFilter.MaxFilter(7)) \
+                             .filter(ImageFilter.GaussianBlur(2))
+    m = (np.asarray(m).astype(np.float32) / 255.0)[..., None]
+    charcoal = (mx * 0.20)[..., None].repeat(3, axis=-1)
+    b = b * (1.0 - m) + charcoal * m
+    print(f"body recoloured to charcoal: {float(m.mean()) * 100:.1f}% of atlas")
 a = (np.asarray(ao).astype(np.float32) / 255.0)[..., None]
 diff = Image.fromarray((b * a).clip(0, 255).astype(np.uint8)).resize((2048, 2048), Image.LANCZOS)
 diff.save(f"{args.out_dir}/digital_diffuse.jpg", quality=92)
