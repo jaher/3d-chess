@@ -4904,14 +4904,21 @@ void renderer_draw(GameState& gs,
     // the procedural lacquered squares + walnut frame + silver lining.
     if (g_use_retro_pieces && g_retro_board.count > 0) {
         // Single textured slab. Anchor its top surface (mesh-y 0.269)
-        // flush with the play plane (BOARD_Y) so pieces rest on it.
+        // flush with the play plane (BOARD_Y) so pieces rest on it, and
+        // stretch it vertically so its underside (mesh-y 0.011) rests on
+        // the table top at -0.608: the slab is only 0.26 thick, so the
+        // old uniform scale left it levitating 0.35 above the table (the
+        // procedural board's 0.59-deep frame always reached it).
         float s = retro_board_scale();
-        const float MESH_TOP = 0.269f;
-        float ty = BOARD_Y + retro_board_y() - MESH_TOP * s;
+        const float MESH_TOP = 0.269f, MESH_BOT = 0.011f;
+        constexpr float TABLE_TOP_Y = -0.608f;  // matches the table draw
+        float top_y = BOARD_Y + retro_board_y();
+        float sy = (top_y - TABLE_TOP_Y) / (MESH_TOP - MESH_BOT);
+        float ty = top_y - MESH_TOP * sy;
         Mat4 rbm = mat4_multiply(
             mat4_translate(0.0f, ty, 0.0f),
             mat4_multiply(mat4_rotate_y(retro_board_yaw()),
-                          mat4_scale(s, s, s)));
+                          mat4_scale(s, sy, s)));
         float rnm[9]; mat4_normal_matrix(rbm, rnm);
         glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, rbm.m);
         glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, rnm);
