@@ -50,15 +50,14 @@ realistic lighting, wood textures, and reflections.
   move's quality as you play and, when you slip, tells you *why* and what to
   play instead ("Blunder. Leaves the rook on a8 hanging. Better was knight to
   f3.") — hands-free learning while you play.
-- **Enjoy the board** — soft shadows and realistic lighting, walnut wood, glossy
-  reflective squares, a working analog clock (the datacenter room swaps in a
-  DGT-style digital clock with live LCD times on a folding table), and a playful
-  main menu where you can grab and fling the pieces around.
-- **Walk through a photo on your glasses** *(experimental)* — snap a photo on
-  your phone, let it grow into a 3D Gaussian-splat world, and stroll around it
-  on a Meta Ray-Ban Display with the Neural Band — the server renders and
-  streams every frame, the glasses just watch. Lives in its own repo:
-  [jaher/splat-glasses](https://github.com/jaher/splat-glasses).
+- **Pick your room** — two environments to play in: a cosy **medieval room**
+  with walnut wood, classic carved pieces, and a working analog clock, or a
+  **datacenter** with playful keyboard-key and hardware pieces, a DGT-style
+  digital clock with live LCD times, and a folding table. Switch anytime from
+  the options menu — your choice is remembered.
+- **Enjoy the board** — soft shadows and realistic lighting, glossy reflective
+  squares, and a playful main menu where you can grab and fling the pieces
+  around.
 
 ## Play in your browser
 
