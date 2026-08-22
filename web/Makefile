@@ -44,6 +44,7 @@ FILE_PACKAGER := $(EMSCRIPTEN_ROOT)/tools/file_packager.py
 PKG_DIR       := assets
 
 # group name : files that go in it (`@` maps host path -> virtual path)
+PKG_GAME_EXCLUDE := --exclude '*walnut_diffuse.jpg' --exclude '*walnut_specular.png'
 PKG_GAME_FILES := \
     ../models/board@/models/board \
     ../models/clock@/models/clock \
@@ -75,6 +76,8 @@ LDFLAGS   := \
     --preload-file ../models-web-packed/Pawn.stl@/models/Pawn.stl \
     --preload-file ../models-web-packed/Queen.stl@/models/Queen.stl \
     --preload-file ../models-web-packed/Rook.stl@/models/Rook.stl \
+    --preload-file ../models/board/walnut_diffuse.jpg@/models/board/walnut_diffuse.jpg \
+    --preload-file ../models/board/walnut_specular.png@/models/board/walnut_specular.png \
     --preload-file ../fonts@/fonts \
     --preload-file ../challenges@/challenges \
     --preload-file ../openings@/openings \
@@ -155,7 +158,7 @@ $(PKG_DIR)/assets-$(1).data: | $(PKG_DIR)
 	fi
 endef
 
-$(eval $(call package_rule,game,$(PKG_GAME_FILES)))
+$(eval $(call package_rule,game,$(PKG_GAME_FILES) $(PKG_GAME_EXCLUDE)))
 $(eval $(call package_rule,retro,$(PKG_RETRO_FILES)))
 $(eval $(call package_rule,splat-medieval,$(PKG_SPLAT_MEDIEVAL_FILES)))
 $(eval $(call package_rule,splat-datacenter,$(PKG_SPLAT_DATACENTER_FILES)))

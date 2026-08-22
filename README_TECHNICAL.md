@@ -258,7 +258,7 @@ Optionally specify a different models directory:
 
 ### Running the unit tests (optional)
 
-Pure-logic unit tests (chess rules, FEN/UCI helpers, linear algebra, FEN parser, challenge loader, tactic detection) live in `tests/` and are built with a vendored [doctest](https://github.com/doctest/doctest) single-header. Run from the repo root:
+Pure-logic unit tests (chess rules, FEN/UCI helpers, linear algebra, FEN parser, challenge loader, tactic detection, asset-loading tiers) live in `tests/` and are built with a vendored [doctest](https://github.com/doctest/doctest) single-header. Run from the repo root:
 
 ```bash
 make test
@@ -619,9 +619,11 @@ make
 
 The Makefile compiles the shared C++ rendering / rules code together with
 the web-only platform layer (`web/main_web.cpp`, `web/ai_player_web.cpp`,
-`web/font_atlas_stb.cpp`) and produces `chess.html`, `chess.js`, `chess.wasm`,
-and `chess.data` in `web/`. The first build takes 1–2 minutes; subsequent
-builds are incremental.
+`web/font_atlas_stb.cpp`, `web/asset_loader_web.cpp`) and produces
+`chess.html`, `chess.js`, `chess.wasm` and `chess.data` in `web/`, plus the
+background asset packages under `web/assets/` (see
+[Priority-tiered assets](#priority-tiered-assets) below). The first build
+takes 1–2 minutes; subsequent builds are incremental.
 
 > **Debian-package quirk:** the system Emscripten config at
 > `/usr/share/emscripten/.emscripten` sets `FROZEN_CACHE = True` and stores
@@ -699,8 +701,11 @@ asset bundle). The web build uses a two-step pipeline:
    producing `models-web-packed/` at ~4 MB total. The C++ loader
    sniffs the gzip magic on open, falling back to raw STL otherwise.
 
-The web Makefile preloads `models-web-packed/` into `chess.data`;
-the desktop build still reads `models/` directly.
+The web Makefile preloads only the six `models-web-packed/*.stl` piece
+meshes into `chess.data`; the retro set under `models-web-packed/retro/`
+ships in a background package instead (see
+[Priority-tiered assets](#priority-tiered-assets)). The desktop build
+still reads `models/` directly.
 
 To regenerate after editing `models/`:
 
@@ -710,6 +715,49 @@ python3 tools/pack_meshes.py                            # → models-web-packed/
 ```
 
 (Blender 4.x or newer; Python 3.)
+
+### Priority-tiered assets
+
+Emscripten downloads `--preload-file` data *before* `main()` runs, so
+anything in `chess.data` delays the main menu. Shipping every asset there
+meant waiting on ~99 MB — 58 MB of splat backdrops and 17 MB of retro
+pieces that `renderer_draw_menu` never touches.
+
+`chess.data` now carries only what the menu draws (~5.7 MB): the six piece
+meshes, both fonts, the walnut button textures (`draw_wood_button` samples
+`g_wood_diffuse_tex`, so without them the buttons come up dark), the
+opening data that challenge-select reads, and the challenge files.
+Everything else is a separate `file_packager --separate-metadata` package
+under `web/assets/`, fetched in the background once the menu is up:
+
+| Package | Size | Contents |
+|---|---|---|
+| `assets-game` | 22 MB | board, clock and table models; sound effects |
+| `assets-splat-medieval` | 28 MB | environment 0 backdrop |
+| `assets-splat-datacenter` | 29 MB | environment 1 backdrop |
+| `assets-retro` | 16 MB | retro PC piece set (environment 1) |
+| `assets-puzzles` | 0.5 MB | daily-puzzle library |
+
+`asset_loader.{h,cpp}` (shared, GL-free, unit-tested in
+`tests/asset_loader_test.cpp`) tracks per-group state and progress and
+answers *which groups a given environment actually needs*.
+`web/asset_loader_web.cpp` does the fetching: it parses each package's
+`.js.metadata` manifest and writes the slices into MEMFS itself rather
+than running the generated `.js`, whose Emscripten run-dependency
+bookkeeping is a startup mechanism and can re-trigger module callbacks
+after the runtime is up. Downloads run one at a time in priority order,
+and the order follows the *saved* environment so the scene the player will
+actually load unblocks first. The GL upload runs on the main thread, one
+group per frame, and a group is marked ready only after it installs.
+
+Pressing **Start** before the packages land doesn't lose the click:
+`app_request_start_game()` holds on the pregame screen behind a progress
+panel and `app_tick` enters the game the moment the last required package
+installs. A failed download counts as settled, so a dead package degrades
+the scene (STL pieces, no backdrop) instead of blocking play forever.
+
+The desktop build is unaffected — `app_init` marks every group ready and
+`renderer_init` still loads everything eagerly from local disk.
 
 ### Limitations vs the desktop build
 
@@ -723,6 +771,12 @@ python3 tools/pack_meshes.py                            # → models-web-packed/
   noticeable at extreme close-ups.
 - **Requires WebGL 2**: every modern browser since 2017 supports it
   (Chrome/Edge/Firefox/Safari/Opera). No fallback to WebGL 1.
+- **Heavy assets stream in after the menu**: the board, clock, table,
+  sound effects, retro piece set and splat backdrops download in the
+  background (see [Priority-tiered assets](#priority-tiered-assets)), so
+  for the first few seconds the menu has no music and starting a game may
+  wait behind a progress panel. The desktop build has everything on disk
+  up front.
 - **Audio unlocks on first user gesture**: browsers suspend the Web
   Audio context until a real click/tap/keypress. The status bar
   appends "Click to enable sound" until then; the intro music picks
@@ -836,6 +890,14 @@ walkthrough live in the user guide — see
                               `san_to_speech`). Shared between
                               desktop and web; doctest-covered in
                               tests/voice_tts_test.cpp.
+  asset_loader.h/cpp       -- Priority-tiered asset bookkeeping: per-group
+                              state (pending/loading/ready/failed),
+                              download progress, and which groups a given
+                              environment needs before a game can start.
+                              GL/SDL-free so tests/asset_loader_test.cpp
+                              covers the ordering + gating logic. Desktop
+                              marks every group ready (assets are local);
+                              the web build drives it from package fetches.
   voice_tts_native.cpp     -- Desktop only: forks the Piper
                               prebuilt binary per utterance,
                               writes text to its stdin, drains
@@ -1003,6 +1065,11 @@ walkthrough live in the user guide — see
     main_web.cpp           --   SDL2 + emscripten_set_main_loop driver
     ai_player_web.cpp      --   JS bridge to Stockfish.js Web Worker
     font_atlas_stb.cpp     --   stb_truetype font atlas baker
+    asset_loader_web.cpp   --   Streams the background asset packages
+                                 into MEMFS (manifest parse + progress),
+                                 driving ../asset_loader.cpp
+    assets/                --   generated: assets-*.data / .js.metadata
+                                 background packages (gitignored)
     stb_truetype.h         --   vendored single-header font rasterizer
     DejaVuSans-Bold.ttf    --   vendored TTF used by the atlas
     index.html             --   HTML shell (status div + canvas +

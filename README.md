@@ -67,11 +67,11 @@ The easiest way to play — no installation, no setup. Just open:
 
 It runs in any modern desktop web browser.
 
-The menu appears after a ~4.7 MB download — just the piece models, fonts
-and opening data it actually draws. Everything heavier (board, clock and
-table models, sound effects, the retro piece set and the Gaussian-splat
-rooms, ~95 MB in all) streams in afterwards while you're on the menu,
-highest priority first. Press **Start** before it has all arrived and the
+The menu appears after a ~5.7 MB download — just the piece models, fonts,
+button textures and opening data it actually draws. Everything heavier
+(board, clock and table models, sound effects, the retro piece set and
+the Gaussian-splat rooms, ~94 MB in all) streams in afterwards while
+you're on the menu, highest priority first. Press **Start** before it has all arrived and the
 game waits behind a progress panel, then begins the moment it's ready. If
 a download fails outright the game still starts — just without that
 backdrop or piece set.

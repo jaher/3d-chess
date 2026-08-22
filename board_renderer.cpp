@@ -1444,6 +1444,19 @@ int renderer_environment_count() {
 // load failure the affected mesh / texture is left as 0 — the
 // draw path falls back to the in-shader procedural wood for the
 // frame, and a missing square mesh just won't render that side.
+// Walnut textures for the board frame — and, importantly, for every
+// wood UI button (draw_wood_button samples g_wood_diffuse_tex). The
+// buttons are on screen from the very first menu frame, so on the web
+// these two files ride in the core preload and are loaded during
+// renderer_init rather than waiting for the background "game" package;
+// without them the menu buttons draw untextured/dark. Idempotent so the
+// later load_board_assets() call doesn't re-upload them.
+static void load_board_textures(const std::string& dir) {
+    if (g_wood_diffuse_tex) return;
+    g_wood_diffuse_tex  = gl_load_texture(dir + "/walnut_diffuse.jpg");
+    g_wood_specular_tex = gl_load_texture(dir + "/walnut_specular.png");
+}
+
 static void load_board_assets(const std::string& dir) {
     auto load_one = [&](const std::string& name,
                         GLuint& vao, GLuint& vbo, int& count,
@@ -1501,9 +1514,9 @@ static void load_board_assets(const std::string& dir) {
              g_board_lining_vao, g_board_lining_vbo,
              g_board_lining_count, /*crease_deg=*/30.0f);
 
-    g_wood_diffuse_tex  = gl_load_texture(dir + "/walnut_diffuse.jpg");
-    g_wood_specular_tex = gl_load_texture(dir + "/walnut_specular.png");
+    load_board_textures(dir);
 }
+
 
 // Load each chess-clock sub-mesh STL (body / needles / glass).
 // Web ships decimated body and full-res needles + glass. The
@@ -2390,6 +2403,13 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
 #ifndef __EMSCRIPTEN__
     renderer_load_game_assets();
     renderer_load_retro_assets();
+#else
+    // The walnut textures are the one part of the board asset set the
+    // *menu* needs: every wood UI button samples g_wood_diffuse_tex, so
+    // without them the buttons come up dark. They ride in the core
+    // preload (see web/Makefile) and load here; the rest of the board
+    // arrives later with the "game" package.
+    load_board_textures("/models/board");
 #endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
