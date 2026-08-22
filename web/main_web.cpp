@@ -282,9 +282,19 @@ static inline float pinch_distance_px() {
 // noticeable part of the zoom range without feeling twitchy.
 static constexpr double PINCH_SENSITIVITY = 0.035;
 
+// Set on the first click/keypress. Browsers suspend the Web Audio
+// context until a real user gesture, so decoding the 5 MB intro WAV
+// before one has happened is work that cannot possibly be heard — we
+// hold it back rather than spend a frame on it during the menu.
+static bool g_user_gesture = false;
+static bool g_music_pending = false;
+
 static void pump_events() {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
+        if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_KEYDOWN ||
+            ev.type == SDL_FINGERDOWN)
+            g_user_gesture = true;
         switch (ev.type) {
             case SDL_MOUSEBUTTONDOWN:
                 if (ev.button.button == SDL_BUTTON_LEFT)
@@ -535,7 +545,7 @@ void run_step(const PendingInstall& p) {
             // browser autoplay policy gates real sound on a user gesture
             // anyway, so starting it late costs nothing.
             audio_reload_clips();
-            if (g_app.mode == MODE_MENU) audio_music_play("intro_music.wav");
+            g_music_pending = true;
             break;
         case STEP_RETRO: renderer_load_retro_assets(); break;
         case STEP_SPLAT: {
@@ -563,24 +573,27 @@ static void pump_asset_installs() {
 
     if (g_step_count <= 0) return;
 
-    // The retro piece set (~60 texture decodes) and the splat cloud (a
-    // 1.9 M-splat gunzip + sort + upload) are the two steps too big to
-    // fit in a frame, and neither is drawn on the main menu — so hold
-    // them while the menu is up rather than stuttering its animation.
-    // They run as soon as the player moves on to the pregame screen,
-    // where the loading panel already covers the wait. Everything else
-    // (board, clock, table, audio) installs immediately, one per frame.
+    // The main menu draws exactly three things: the piece meshes, the
+    // wood buttons and text — all of which are in the core preload. None
+    // of the renderer installs (board, clock, table, retro, splat) put a
+    // single pixel on the menu, and every one of them costs multiple
+    // texture decodes or a multi-megabyte unpack. So while MODE_MENU is
+    // up we run *no* renderer install at all: the menu animation stays
+    // smooth and the work happens once the player moves on to the
+    // pregame screen, where the loading panel already covers the wait.
+    //
+    // STEP_AUDIO is the exception — the menu music is a menu feature, so
+    // it's worth its one-off cost there.
     const int CAP = (int)(sizeof(g_steps) / sizeof(g_steps[0]));
     const bool on_menu = (g_app.mode == MODE_MENU);
     int slot = -1;
     for (int i = 0; i < g_step_count; i++) {
         const PendingInstall& c = g_steps[(g_step_head + i) % CAP];
-        bool heavy = (c.step == STEP_RETRO || c.step == STEP_SPLAT);
-        if (on_menu && heavy) continue;      // leave it queued for later
+        if (on_menu && c.step != STEP_AUDIO) continue;   // leave it queued
         slot = i;
         break;
     }
-    if (slot < 0) return;                    // only heavy steps left; wait
+    if (slot < 0) return;                    // nothing runnable this frame
 
     PendingInstall p = g_steps[(g_step_head + slot) % CAP];
     // Close the gap left by taking an out-of-order step.
@@ -596,8 +609,18 @@ static void pump_asset_installs() {
     }
 }
 
+// Start the menu track the first time a gesture has happened and the
+// sounds have arrived — see g_user_gesture.
+static void pump_menu_music() {
+    if (!g_music_pending || !g_user_gesture) return;
+    if (g_app.mode != MODE_MENU) { g_music_pending = false; return; }
+    g_music_pending = false;
+    audio_music_play("intro_music.wav");
+}
+
 static void main_loop_iter() {
     pump_events();
+    pump_menu_music();
     poll_ai_results();
     pump_asset_installs();
     app_tick(g_app);

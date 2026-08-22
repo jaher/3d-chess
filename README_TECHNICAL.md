@@ -751,14 +751,24 @@ actually load unblocks first. The GL upload runs on the main thread and is what 
 the menu stutter — a whole group at once is far too much for one frame
 (the game tier decodes ~15 textures across board/clock/table, the retro
 set ~60, and the splat gunzips 28 MB into 1.9 M splats). So each group is
-broken into steps and at most one step runs per frame, and the two steps
-too big to fit in a frame — the retro set and the splat cloud, neither of
-which the menu draws — are held back while the main menu is up and run
-once the player reaches the pregame screen, where the loading panel
-already covers the wait. The JS side likewise unpacks each package into
-MEMFS in batches (48 files or 2 MB per tick) instead of one blocking
-loop: the puzzle package alone is 1723 `FS.writeFile` calls. A group is
-marked ready only after its last install step lands.
+broken into steps, at most one step runs per frame, and — since the main
+menu draws only the piece meshes, wood buttons and text, all of which are
+in the core preload — **no renderer install runs at all while MODE_MENU is
+up**. Board, clock, table, retro and splat all install once the player
+reaches the pregame screen, where the loading panel already covers the
+wait. A group is marked ready only after its last install step lands.
+
+The JS side is paced the same way: each package is unpacked into MEMFS in
+batches (32 files or 1 MB, whichever comes first) driven by
+`requestAnimationFrame`, not `setTimeout(0)` — a zero timeout floods the
+task queue between frames and competes with the render loop. The download
+buffer is preallocated from the manifest's `remote_package_size` so
+chunks are copied straight into place, avoiding holding the package twice
+and ending with a 20-30 MB memcpy.
+
+The intro music (a 5 MB WAV) is held until the first click or keypress:
+browsers keep the audio context suspended until a user gesture, so
+decoding it earlier is work that cannot be heard.
 
 Pressing **Start** before the packages land doesn't lose the click:
 `app_request_start_game()` holds on the pregame screen behind a progress

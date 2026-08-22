@@ -63,26 +63,37 @@ EM_JS(void, js_fetch_asset_package, (int group, const char* name_ptr), {
             if (!dataResp.ok) throw new Error('data HTTP ' + dataResp.status);
 
             var buf;
-            if (dataResp.body && dataResp.body.getReader) {
+            if (dataResp.body && dataResp.body.getReader && total > 0) {
+                // The manifest tells us the exact payload size, so
+                // allocate once and copy each chunk straight into place.
+                // Accumulating chunks and concatenating afterwards would
+                // hold the package twice over and end with a single
+                // 20-30 MB memcpy — a visible hitch on its own.
+                buf = new Uint8Array(total);
                 var reader = dataResp.body.getReader();
-                var chunks = [], got = 0;
+                var got = 0;
                 for (;;) {
                     var r = await reader.read();
                     if (r.done) break;
-                    chunks.push(r.value);
+                    if (got + r.value.length <= total) {
+                        buf.set(r.value, got);
+                    } else {
+                        // Server disagreed with the manifest — fall back
+                        // to growing rather than truncating the package.
+                        var bigger = new Uint8Array(got + r.value.length);
+                        bigger.set(buf.subarray(0, got), 0);
+                        bigger.set(r.value, got);
+                        buf = bigger;
+                    }
                     got += r.value.length;
                     Module.ccall('on_asset_progress', null,
                                  ['number', 'number', 'number'],
                                  [group, got, total]);
                 }
-                buf = new Uint8Array(got);
-                var off = 0;
-                for (var i = 0; i < chunks.length; i++) {
-                    buf.set(chunks[i], off);
-                    off += chunks[i].length;
-                }
+                if (got < buf.length) buf = buf.subarray(0, got);
             } else {
-                // No streaming body (older Safari): one shot, no progress.
+                // No streaming body (older Safari) or unknown length:
+                // one shot, no progress.
                 buf = new Uint8Array(await dataResp.arrayBuffer());
             }
 
@@ -101,8 +112,16 @@ EM_JS(void, js_fetch_asset_package, (int group, const char* name_ptr), {
                 }
             };
             var fi = 0;
-            var BATCH_FILES = 48;         // caps per-tick work for many small files
-            var BATCH_BYTES = 2 << 20;    // ...and for a few large ones
+            var BATCH_FILES = 32;         // caps per-tick work for many small files
+            var BATCH_BYTES = 1 << 20;    // ...and for a few large ones
+            // Pace with requestAnimationFrame rather than setTimeout(0):
+            // a zero timeout floods the task queue between frames and
+            // competes with the render loop, which is exactly the stutter
+            // we're trying to avoid. One batch per frame is plenty (a
+            // 22 MB package unpacks in well under a second).
+            var nextTick = (typeof requestAnimationFrame === 'function')
+                ? requestAnimationFrame
+                : function (fn) { setTimeout(fn, 16); };
             var writeSome = function () {
                 var bytes = 0, n = 0;
                 while (fi < meta.files.length && n < BATCH_FILES &&
@@ -115,13 +134,13 @@ EM_JS(void, js_fetch_asset_package, (int group, const char* name_ptr), {
                     n++;
                 }
                 if (fi < meta.files.length) {
-                    setTimeout(writeSome, 0);
+                    nextTick(writeSome);
                 } else {
                     Module.ccall('on_asset_done', null, ['number', 'number'],
                                  [group, 1]);
                 }
             };
-            writeSome();
+            nextTick(writeSome);
         } catch (e) {
             if (typeof console !== 'undefined')
                 console.warn('[assets] ' + name + ' failed:', e);
