@@ -61,6 +61,12 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]);
 void renderer_load_game_assets();    // board + clock + table
 void renderer_load_retro_assets();   // retro PC piece set (environment 1)
 
+// One piece of the game asset set at a time. Each part costs several
+// JPEG/PNG decodes plus mesh uploads, so the web build installs them on
+// separate frames rather than freezing the menu animation for the lot.
+// part: 0 = board, 1 = clock, 2 = table.
+void renderer_load_game_asset_part(int part);
+
 // Progress panel drawn over the pregame screen when the player starts a
 // game before its assets have finished downloading. `progress` is 0..1.
 void renderer_draw_asset_loading_overlay(const char* label, float progress);

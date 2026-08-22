@@ -747,8 +747,18 @@ than running the generated `.js`, whose Emscripten run-dependency
 bookkeeping is a startup mechanism and can re-trigger module callbacks
 after the runtime is up. Downloads run one at a time in priority order,
 and the order follows the *saved* environment so the scene the player will
-actually load unblocks first. The GL upload runs on the main thread, one
-group per frame, and a group is marked ready only after it installs.
+actually load unblocks first. The GL upload runs on the main thread and is what would otherwise make
+the menu stutter — a whole group at once is far too much for one frame
+(the game tier decodes ~15 textures across board/clock/table, the retro
+set ~60, and the splat gunzips 28 MB into 1.9 M splats). So each group is
+broken into steps and at most one step runs per frame, and the two steps
+too big to fit in a frame — the retro set and the splat cloud, neither of
+which the menu draws — are held back while the main menu is up and run
+once the player reaches the pregame screen, where the loading panel
+already covers the wait. The JS side likewise unpacks each package into
+MEMFS in batches (48 files or 2 MB per tick) instead of one blocking
+loop: the puzzle package alone is 1723 `FS.writeFile` calls. A group is
+marked ready only after its last install step lands.
 
 Pressing **Start** before the packages land doesn't lose the click:
 `app_request_start_game()` holds on the pregame screen behind a progress

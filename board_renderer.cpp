@@ -2178,19 +2178,24 @@ static void build_label_mesh() {
 // Board + clock + table meshes and textures. Idempotent: the web build
 // calls this when the "game" asset package lands, the desktop build
 // straight from renderer_init.
-void renderer_load_game_assets() {
-    static bool loaded = false;
-    if (loaded) return;
-    loaded = true;
+void renderer_load_game_asset_part(int part) {
+    static bool done[3] = {false, false, false};
+    if (part < 0 || part > 2 || done[part]) return;
+    done[part] = true;
 #ifdef __EMSCRIPTEN__
-    load_board_assets("/models/board");
-    load_clock_assets("/models/clock");
-    load_table_assets("/models/table");
+    const char* dirs[3] = {"/models/board", "/models/clock", "/models/table"};
 #else
-    load_board_assets("models/board");
-    load_clock_assets("models/clock");
-    load_table_assets("models/table");
+    const char* dirs[3] = {"models/board", "models/clock", "models/table"};
 #endif
+    switch (part) {
+        case 0: load_board_assets(dirs[0]); break;
+        case 1: load_clock_assets(dirs[1]); break;
+        case 2: load_table_assets(dirs[2]); break;
+    }
+}
+
+void renderer_load_game_assets() {
+    for (int i = 0; i < 3; i++) renderer_load_game_asset_part(i);
 }
 
 // Retro PC piece set (Cable Room). load_retro_set() already guards on

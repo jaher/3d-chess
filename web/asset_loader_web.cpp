@@ -86,26 +86,42 @@ EM_JS(void, js_fetch_asset_package, (int group, const char* name_ptr), {
                 buf = new Uint8Array(await dataResp.arrayBuffer());
             }
 
-            for (var fi = 0; fi < meta.files.length; fi++) {
-                var f = meta.files[fi];
-                var path = f.filename;
-                var slash = path.lastIndexOf('/');
-                if (slash > 0) {
-                    // mkdir -p, one component at a time. FS.mkdirTree
-                    // isn't guaranteed to be exported, and re-creating an
-                    // existing directory throws rather than no-opping.
-                    var parts = path.substring(0, slash).split('/');
-                    var cur = '';
-                    for (var pi = 0; pi < parts.length; pi++) {
-                        if (!parts[pi].length) continue;
-                        cur += '/' + parts[pi];
-                        try { FS.mkdir(cur); } catch (e) {}
-                    }
+            // Write into MEMFS in slices, yielding to the event loop
+            // between them. Unpacking a whole package in one go blocks
+            // the frame — the puzzle package alone is 1723 FS.writeFile
+            // calls, which is a visible hitch in the menu animation.
+            var mkdirp = function (dir) {
+                var parts = dir.split('/'), cur = '';
+                for (var pi = 0; pi < parts.length; pi++) {
+                    if (!parts[pi].length) continue;
+                    cur += '/' + parts[pi];
+                    // FS.mkdirTree isn't guaranteed to be exported, and
+                    // re-creating an existing directory throws.
+                    try { FS.mkdir(cur); } catch (e) {}
                 }
-                FS.writeFile(path, buf.subarray(f.start, f.end));
-            }
-            Module.ccall('on_asset_done', null, ['number', 'number'],
-                         [group, 1]);
+            };
+            var fi = 0;
+            var BATCH_FILES = 48;         // caps per-tick work for many small files
+            var BATCH_BYTES = 2 << 20;    // ...and for a few large ones
+            var writeSome = function () {
+                var bytes = 0, n = 0;
+                while (fi < meta.files.length && n < BATCH_FILES &&
+                       bytes < BATCH_BYTES) {
+                    var f = meta.files[fi++];
+                    var slash = f.filename.lastIndexOf('/');
+                    if (slash > 0) mkdirp(f.filename.substring(0, slash));
+                    FS.writeFile(f.filename, buf.subarray(f.start, f.end));
+                    bytes += (f.end - f.start);
+                    n++;
+                }
+                if (fi < meta.files.length) {
+                    setTimeout(writeSome, 0);
+                } else {
+                    Module.ccall('on_asset_done', null, ['number', 'number'],
+                                 [group, 1]);
+                }
+            };
+            writeSome();
         } catch (e) {
             if (typeof console !== 'undefined')
                 console.warn('[assets] ' + name + ' failed:', e);

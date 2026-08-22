@@ -471,48 +471,129 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_dump(void) {
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
-// Install one freshly-downloaded asset package per frame. The download
-// itself is async in JS, but the GL upload (mesh VBOs, texture decode,
-// splat packing) has to run on the main thread — doing at most one group
-// per frame keeps a big package from stalling a whole second of
-// animation on the menu.
-static void pump_asset_installs() {
-    assets_web_pump_downloads(static_cast<int>(g_app.environment));
+// Downloading is async in JS, but the *install* — JPEG/PNG decode, mesh
+// VBO upload, splat unpacking — runs on the main thread and is what makes
+// the menu stutter. A whole group at once is far too much for one frame
+// (the game tier alone decodes ~15 textures across board+clock+table, the
+// retro set ~60), so each group is broken into steps and at most one step
+// runs per frame. The group is only marked ready once its last step lands.
+namespace {
 
-    AssetGroup g;
-    if (!assets_web_take_installed(&g)) return;
+enum InstallStep {
+    STEP_BOARD = 0, STEP_CLOCK, STEP_TABLE, STEP_AUDIO,   // ASSET_GAME
+    STEP_RETRO,                                           // ASSET_RETRO
+    STEP_SPLAT,                                           // ASSET_SPLAT_*
+};
 
+struct PendingInstall {
+    AssetGroup group;
+    InstallStep step;
+    bool last;          // marks the group ready once this step completes
+};
+
+PendingInstall g_steps[8];
+int g_step_head = 0, g_step_count = 0;
+
+void push_step(AssetGroup g, InstallStep s, bool last) {
+    if (g_step_count >= (int)(sizeof(g_steps) / sizeof(g_steps[0]))) return;
+    int tail = (g_step_head + g_step_count) % (int)(sizeof(g_steps) / sizeof(g_steps[0]));
+    g_steps[tail] = PendingInstall{g, s, last};
+    g_step_count++;
+}
+
+void queue_steps_for(AssetGroup g) {
     switch (g) {
         case ASSET_GAME:
-            renderer_load_game_assets();
-            // sounds/ rides in this package too, so the WAVs only exist
+            push_step(g, STEP_BOARD, false);
+            push_step(g, STEP_CLOCK, false);
+            push_step(g, STEP_TABLE, false);
+            push_step(g, STEP_AUDIO, true);
+            break;
+        case ASSET_RETRO:
+            push_step(g, STEP_RETRO, true);
+            break;
+        case ASSET_SPLAT_MEDIEVAL:
+        case ASSET_SPLAT_DATACENTER:
+            push_step(g, STEP_SPLAT, true);
+            break;
+        default:
+            // Puzzles are read straight off the filesystem — no GL work.
+            assets_set_state(g, ASSET_READY);
+            break;
+    }
+}
+
+void run_step(const PendingInstall& p) {
+    switch (p.step) {
+        case STEP_BOARD: renderer_load_game_asset_part(0); break;
+        case STEP_CLOCK: renderer_load_game_asset_part(1); break;
+        case STEP_TABLE: renderer_load_game_asset_part(2); break;
+        case STEP_AUDIO:
+            // sounds/ rides in the game package, so the WAVs only exist
             // now — audio_init() ran at startup against an empty
             // directory. Retry the clips and (re)start the menu track;
-            // browser autoplay policy gates the actual sound on a user
-            // gesture anyway, so starting it late costs nothing.
+            // browser autoplay policy gates real sound on a user gesture
+            // anyway, so starting it late costs nothing.
             audio_reload_clips();
             if (g_app.mode == MODE_MENU) audio_music_play("intro_music.wav");
             break;
-        case ASSET_RETRO:
-            renderer_load_retro_assets();
-            break;
-        case ASSET_SPLAT_MEDIEVAL:
-        case ASSET_SPLAT_DATACENTER: {
+        case STEP_RETRO: renderer_load_retro_assets(); break;
+        case STEP_SPLAT: {
             // Upload the cloud only if it belongs to the scene we're
             // actually in; the other environment's SPZ just sits in the
             // filesystem until Options switches to it. This is also where
             // the saved environment first reaches the renderer on the web
             // (renderer_init no longer loads a splat there).
-            int want = (g == ASSET_SPLAT_DATACENTER) ? 1 : 0;
+            int want = (p.group == ASSET_SPLAT_DATACENTER) ? 1 : 0;
             if (static_cast<int>(g_app.environment) == want)
                 renderer_set_environment(want);
             break;
         }
-        default:
-            break;   // puzzles are read straight off the filesystem
     }
-    assets_set_state(g, ASSET_READY);
-    std::fprintf(stderr, "[assets] %s ready\n", assets_group_label(g));
+}
+
+}  // namespace
+
+static void pump_asset_installs() {
+    assets_web_pump_downloads(static_cast<int>(g_app.environment));
+
+    // Move any newly-arrived package into the step queue.
+    AssetGroup g;
+    while (assets_web_take_installed(&g)) queue_steps_for(g);
+
+    if (g_step_count <= 0) return;
+
+    // The retro piece set (~60 texture decodes) and the splat cloud (a
+    // 1.9 M-splat gunzip + sort + upload) are the two steps too big to
+    // fit in a frame, and neither is drawn on the main menu — so hold
+    // them while the menu is up rather than stuttering its animation.
+    // They run as soon as the player moves on to the pregame screen,
+    // where the loading panel already covers the wait. Everything else
+    // (board, clock, table, audio) installs immediately, one per frame.
+    const int CAP = (int)(sizeof(g_steps) / sizeof(g_steps[0]));
+    const bool on_menu = (g_app.mode == MODE_MENU);
+    int slot = -1;
+    for (int i = 0; i < g_step_count; i++) {
+        const PendingInstall& c = g_steps[(g_step_head + i) % CAP];
+        bool heavy = (c.step == STEP_RETRO || c.step == STEP_SPLAT);
+        if (on_menu && heavy) continue;      // leave it queued for later
+        slot = i;
+        break;
+    }
+    if (slot < 0) return;                    // only heavy steps left; wait
+
+    PendingInstall p = g_steps[(g_step_head + slot) % CAP];
+    // Close the gap left by taking an out-of-order step.
+    for (int i = slot; i > 0; i--)
+        g_steps[(g_step_head + i) % CAP] = g_steps[(g_step_head + i - 1) % CAP];
+    g_step_head = (g_step_head + 1) % CAP;
+    g_step_count--;
+
+    run_step(p);
+    if (p.last) {
+        assets_set_state(p.group, ASSET_READY);
+        std::fprintf(stderr, "[assets] %s ready\n", assets_group_label(p.group));
+    }
 }
 
 static void main_loop_iter() {
