@@ -15,15 +15,49 @@ BUILD_HASH := $(shell git -C .. rev-parse --short HEAD 2>/dev/null || date +%s)
 EMFLAGS   := -std=c++17 -O3 -Wall -Wextra -DAI_PLAYER_HELPERS_ONLY -I.. \
     -s USE_SDL=2 -s USE_ZLIB=1
 
-# Optional preload: the 100k splat backdrop. The SPZ is only ~1.2 MB
-# and gives the web build the same Marble-room background the desktop
-# gets, but checking it in is the user's call — without it the web
-# build still compiles and runs (board_renderer falls back to the
-# dark clear when no SPZ loads).
-SPLAT_SPZ_PRELOAD := $(if $(wildcard ../world_labs/medieval_room/splat_full_res.spz),\
-    --preload-file ../world_labs/medieval_room/splat_full_res.spz@/world_labs/medieval_room/splat_full_res.spz,) \
-  $(if $(wildcard ../world_labs/datacenter/splat_500k.spz),\
-    --preload-file ../world_labs/datacenter/splat_full_res.spz@/world_labs/datacenter/splat_full_res.spz,)
+# ---------------------------------------------------------------------
+# Priority-tiered assets
+# ---------------------------------------------------------------------
+# Emscripten downloads --preload-file data *before* main() runs, so
+# anything in chess.data delays the main menu. Only the assets the menu
+# actually draws stay there (the six piece meshes + the two fonts,
+# ~4.5 MB); everything else ships as a separate package that
+# asset_loader fetches in the background once the menu is up — see
+# web/asset_loader_web.cpp and ../asset_loader.h.
+#
+# Each package is built with file_packager --separate-metadata, which
+# emits <name>.data plus a <name>.js.metadata manifest of
+# {filename,start,end} entries. We parse that manifest ourselves and
+# populate MEMFS by hand, so the packages carry no run-dependency
+# machinery and can land at any time after startup.
+# Locate the emscripten tree that owns file_packager.py. em++ may be a
+# thin /usr/bin shim or live inside the SDK itself, so probe both shapes
+# before falling back to the usual distro paths. Override on the command
+# line (EMSCRIPTEN_ROOT=...) for an unusual layout.
+EMSCRIPTEN_ROOT ?= $(shell for d in \
+        "$$(dirname $$(dirname $$(readlink -f $$(which $(EMCC) 2>/dev/null) 2>/dev/null) 2>/dev/null)/.)/share/emscripten" \
+        "$$(dirname $$(readlink -f $$(which $(EMCC) 2>/dev/null) 2>/dev/null) 2>/dev/null)" \
+        /usr/share/emscripten /usr/lib/emscripten; do \
+      [ -f "$$d/tools/file_packager.py" ] && echo "$$d" && break; \
+    done)
+FILE_PACKAGER := $(EMSCRIPTEN_ROOT)/tools/file_packager.py
+PKG_DIR       := assets
+
+# group name : files that go in it (`@` maps host path -> virtual path)
+PKG_GAME_FILES := \
+    ../models/board@/models/board \
+    ../models/clock@/models/clock \
+    ../models/table@/models/table \
+    ../sounds@/sounds
+PKG_RETRO_FILES := ../models-web-packed/retro@/models/retro
+PKG_PUZZLES_FILES := ../puzzles@/puzzles
+PKG_SPLAT_MEDIEVAL_FILES := $(if $(wildcard ../world_labs/medieval_room/splat_full_res.spz),\
+    ../world_labs/medieval_room/splat_full_res.spz@/world_labs/medieval_room/splat_full_res.spz,)
+PKG_SPLAT_DATACENTER_FILES := $(if $(wildcard ../world_labs/datacenter/splat_full_res.spz),\
+    ../world_labs/datacenter/splat_full_res.spz@/world_labs/datacenter/splat_full_res.spz,)
+
+PKG_NAMES := game retro splat-medieval splat-datacenter puzzles
+PKG_DATA  := $(addprefix $(PKG_DIR)/assets-,$(addsuffix .data,$(PKG_NAMES)))
 
 LDFLAGS   := \
     -s USE_SDL=2 \
@@ -34,17 +68,16 @@ LDFLAGS   := \
     -s MINIFY_HTML=0 \
     -s USE_ZLIB=1 \
     -s EXPORTED_RUNTIME_METHODS=ccall,UTF8ToString,FS \
-    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js,_chess_start_network_game,_on_remote_move_from_js,_chess_dbg_dump,_chess_dbg_cable_game,_chess_dbg_animate,_chess_dbg_camera \
-    --preload-file ../models-web-packed@/models \
-    --preload-file ../models/board@/models/board \
-    --preload-file ../models/clock@/models/clock \
-    --preload-file ../models/table@/models/table \
-    --preload-file ../challenges@/challenges \
-    --preload-file ../puzzles@/puzzles \
-    --preload-file ../openings@/openings \
-    --preload-file ../sounds@/sounds \
+    -s EXPORTED_FUNCTIONS=_chess_start,_chess_resize,_on_ai_move_from_js,_on_eval_from_js,_on_voice_utterance_from_js,_on_voice_partial_from_js,_on_voice_error_from_js,_on_chessnut_status_from_js,_on_puzzle_from_js,_chess_start_network_game,_on_remote_move_from_js,_chess_dbg_dump,_chess_dbg_cable_game,_chess_dbg_animate,_chess_dbg_camera,_on_asset_progress,_on_asset_done \
+    --preload-file ../models-web-packed/Bishop.stl@/models/Bishop.stl \
+    --preload-file ../models-web-packed/King.stl@/models/King.stl \
+    --preload-file ../models-web-packed/Knight.stl@/models/Knight.stl \
+    --preload-file ../models-web-packed/Pawn.stl@/models/Pawn.stl \
+    --preload-file ../models-web-packed/Queen.stl@/models/Queen.stl \
+    --preload-file ../models-web-packed/Rook.stl@/models/Rook.stl \
     --preload-file ../fonts@/fonts \
-    $(SPLAT_SPZ_PRELOAD) \
+    --preload-file ../challenges@/challenges \
+    --preload-file ../openings@/openings \
     --shell-file index.html
 
 # Sources compiled from the parent dir (shared with desktop build).
@@ -84,11 +117,12 @@ SHARED_SRCS := \
     ../learner_profile.cpp \
     ../openings_drills.cpp \
     ../splat.cpp \
-    ../packed_splats.cpp
+    ../packed_splats.cpp \
+    ../asset_loader.cpp
 
 # Web-only sources.
 WEB_SRCS := main_web.cpp ai_player_web.cpp font_atlas_stb.cpp \
-    voice_web.cpp voice_tts_web.cpp chessnut_web.cpp
+    voice_web.cpp voice_tts_web.cpp chessnut_web.cpp asset_loader_web.cpp
 
 # Object files live in build/ so `make -jN` can compile each TU in
 # parallel. em++ is clang under the hood — -j20 actually parallelizes
@@ -101,7 +135,46 @@ OBJS        := $(SHARED_OBJS) $(WEB_OBJS)
 
 ARTIFACTS := chess.html chess.js chess.wasm chess.data
 
-all: chess.html
+all: chess.html packages
+
+# ---------------------------------------------------------------------
+# Background asset packages
+# ---------------------------------------------------------------------
+# Built with the same file_packager emcc uses internally;
+# --separate-metadata splits the manifest out so we can populate MEMFS
+# ourselves (see web/asset_loader_web.cpp).
+define package_rule
+$(PKG_DIR)/assets-$(1).data: | $(PKG_DIR)
+	@if [ -z "$$(strip $(2))" ]; then \
+	    echo "  [pkg] $(1): no source files present — skipping"; \
+	    rm -f $$@ $$@.js $$@.js.metadata; \
+	else \
+	    echo "  [pkg] $(1)"; \
+	    python3 $(FILE_PACKAGER) $$@ --preload $(2) \
+	        --separate-metadata --js-output=$(PKG_DIR)/assets-$(1).js >/dev/null; \
+	fi
+endef
+
+$(eval $(call package_rule,game,$(PKG_GAME_FILES)))
+$(eval $(call package_rule,retro,$(PKG_RETRO_FILES)))
+$(eval $(call package_rule,splat-medieval,$(PKG_SPLAT_MEDIEVAL_FILES)))
+$(eval $(call package_rule,splat-datacenter,$(PKG_SPLAT_DATACENTER_FILES)))
+$(eval $(call package_rule,puzzles,$(PKG_PUZZLES_FILES)))
+
+$(PKG_DIR):
+	mkdir -p $(PKG_DIR)
+
+# Force a repack every build: the packages are derived from directory
+# trees, and make can't see individual asset edits through a directory
+# prerequisite. Packing is fast (a concat + a JSON manifest).
+.PHONY: packages
+packages: | chess.html
+	@rm -f $(PKG_DATA)
+	@$(MAKE) --no-print-directory $(PKG_DATA)
+	@echo "  [pkg] core (chess.data) $$(du -h chess.data 2>/dev/null | cut -f1)"
+	@for f in $(PKG_DATA); do \
+	    [ -f $$f ] && echo "  [pkg] $$(basename $$f) $$(du -h $$f | cut -f1)"; \
+	done; true
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -126,7 +199,7 @@ stockfish/stockfish.js:
 
 clean:
 	rm -f $(ARTIFACTS)
-	rm -rf $(OBJ_DIR)
+	rm -rf $(OBJ_DIR) $(PKG_DIR)
 
 # Optional: serve the build locally for testing.
 serve: all

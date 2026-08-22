@@ -32,7 +32,7 @@ SRCS     := main.cpp chess_types.cpp chess_rules.cpp game_state.cpp app_state.cp
             voice_tts.cpp voice_tts_native.cpp \
             chessnut_bridge.cpp phantom_bridge.cpp \
             net_sync.cpp \
-            splat.cpp packed_splats.cpp \
+            splat.cpp packed_splats.cpp asset_loader.cpp \
             gl_raster/gl_rasterizer.cpp
 OBJS     := $(SRCS:.cpp=.o)
 HEADERS  := chess_types.h chess_rules.h game_state.h app_state.h board_renderer.h \

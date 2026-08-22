@@ -17,10 +17,15 @@
 #include <GLES3/gl3.h>
 
 #include "../app_state.h"
+#include "../asset_loader.h"
 #include "../audio.h"
 #include "../board_renderer.h"
 #include "../chess_types.h"
 #include "../stl_model.h"
+
+// Implemented in web/asset_loader_web.cpp.
+void assets_web_pump_downloads(int environment);
+bool assets_web_take_installed(AssetGroup* out);
 
 // ---------------------------------------------------------------------------
 // Bridge into web/ai_player_web.cpp + web/voice_web.cpp
@@ -466,9 +471,54 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_dump(void) {
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
+// Install one freshly-downloaded asset package per frame. The download
+// itself is async in JS, but the GL upload (mesh VBOs, texture decode,
+// splat packing) has to run on the main thread — doing at most one group
+// per frame keeps a big package from stalling a whole second of
+// animation on the menu.
+static void pump_asset_installs() {
+    assets_web_pump_downloads(static_cast<int>(g_app.environment));
+
+    AssetGroup g;
+    if (!assets_web_take_installed(&g)) return;
+
+    switch (g) {
+        case ASSET_GAME:
+            renderer_load_game_assets();
+            // sounds/ rides in this package too, so the WAVs only exist
+            // now — audio_init() ran at startup against an empty
+            // directory. Retry the clips and (re)start the menu track;
+            // browser autoplay policy gates the actual sound on a user
+            // gesture anyway, so starting it late costs nothing.
+            audio_reload_clips();
+            if (g_app.mode == MODE_MENU) audio_music_play("intro_music.wav");
+            break;
+        case ASSET_RETRO:
+            renderer_load_retro_assets();
+            break;
+        case ASSET_SPLAT_MEDIEVAL:
+        case ASSET_SPLAT_DATACENTER: {
+            // Upload the cloud only if it belongs to the scene we're
+            // actually in; the other environment's SPZ just sits in the
+            // filesystem until Options switches to it. This is also where
+            // the saved environment first reaches the renderer on the web
+            // (renderer_init no longer loads a splat there).
+            int want = (g == ASSET_SPLAT_DATACENTER) ? 1 : 0;
+            if (static_cast<int>(g_app.environment) == want)
+                renderer_set_environment(want);
+            break;
+        }
+        default:
+            break;   // puzzles are read straight off the filesystem
+    }
+    assets_set_state(g, ASSET_READY);
+    std::fprintf(stderr, "[assets] %s ready\n", assets_group_label(g));
+}
+
 static void main_loop_iter() {
     pump_events();
     poll_ai_results();
+    pump_asset_installs();
     app_tick(g_app);
 
     glViewport(0, 0, g_width, g_height);
@@ -570,6 +620,13 @@ int chess_start(void) {
     g_app.loaded_models = g_loaded_models;
     voice_web_bind_app(&g_app);
     app_enter_menu(g_app);
+
+    // Everything past the menu (board, clock, table, sounds, retro set,
+    // splat backdrops, puzzles) now downloads in the background — see
+    // web/asset_loader_web.cpp. assets_reset() leaves ASSET_CORE ready
+    // (it rode in with chess.data) and every other group pending; the
+    // frame loop pumps them in priority order for the saved environment.
+    assets_reset();
     js_log("entering main loop");
 
     emscripten_set_main_loop(main_loop_iter, 0, 1);

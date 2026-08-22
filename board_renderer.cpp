@@ -2162,6 +2162,32 @@ static void build_label_mesh() {
     glBindVertexArray(0);
 }
 
+// Board + clock + table meshes and textures. Idempotent: the web build
+// calls this when the "game" asset package lands, the desktop build
+// straight from renderer_init.
+void renderer_load_game_assets() {
+    static bool loaded = false;
+    if (loaded) return;
+    loaded = true;
+#ifdef __EMSCRIPTEN__
+    load_board_assets("/models/board");
+    load_clock_assets("/models/clock");
+    load_table_assets("/models/table");
+#else
+    load_board_assets("models/board");
+    load_clock_assets("models/clock");
+    load_table_assets("models/table");
+#endif
+}
+
+// Retro PC piece set (Cable Room). load_retro_set() already guards on
+// g_retro_loaded; this wrapper also refreshes g_use_retro_pieces so a
+// late-arriving set switches the pieces over on the next frame.
+void renderer_load_retro_assets() {
+    load_retro_set();
+    g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
+}
+
 void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     g_program = create_program(vertex_shader_src, fragment_shader_src);
     g_highlight_program = create_program(highlight_vs_src, highlight_fs_src);
@@ -2244,7 +2270,17 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
         // renderer_init always loads the medieval default (env 0);
         // on_realize swaps in the saved environment afterward if it
         // differs.
+        //
+        // Web: skipped here. The SPZ is a ~29 MB background package and
+        // decoding it costs ~1.9 M splats of work — neither of which the
+        // main menu needs (renderer_draw_menu never samples the cloud).
+        // main_web.cpp calls renderer_set_environment() once the matching
+        // splat package has downloaded.
+#ifndef __EMSCRIPTEN__
         load_splat_from_candidates(splat_paths, n_paths);
+#else
+        (void)splat_paths; (void)n_paths;
+#endif
     }
 #ifndef __EMSCRIPTEN__
     g_skybox_program  = create_program(skybox_vs_src,  skybox_fs_src);
@@ -2345,22 +2381,15 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     for (int i = 0; i < PIECE_COUNT; i++)
         upload_piece(g_pieces[i], loaded_models[i]);
 
-    // Board geometry + walnut textures. Shared across desktop
-    // (loaded from "models/board" relative to cwd) and the web
-    // build (the Emscripten preload-FS mounts the same path at
-    // /models/board — see web/Makefile's --preload-file).
-#ifdef __EMSCRIPTEN__
-    load_board_assets("/models/board");
-    load_clock_assets("/models/clock");
-    load_table_assets("/models/table");
-    load_retro_set();   // retro PC set for the Cable Room (web too)
-    g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
-#else
-    load_board_assets("models/board");
-    load_clock_assets("models/clock");
-    load_table_assets("models/table");
-    load_retro_set();   // textured retro PC set for the Cable Room
-    g_use_retro_pieces = (g_active_environment == 1) && g_retro_loaded;
+    // Board / clock / table geometry and the retro piece set. On the
+    // desktop these are local files, so load them now exactly as before.
+    // On the web they live in the background "game" and "retro" asset
+    // packages and are installed by renderer_load_game_assets() /
+    // renderer_load_retro_assets() once those downloads land — keeping
+    // ~33 MB off the path between page load and the main menu.
+#ifndef __EMSCRIPTEN__
+    renderer_load_game_assets();
+    renderer_load_retro_assets();
 #endif
 
     build_disc_mesh(0.48f, 48, g_disc_vao, g_disc_vbo, g_disc_vertex_count);
@@ -3979,6 +4008,122 @@ void renderer_draw_puzzle_solved_popup() {
     // Subtitle in soft white.
     glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                 0.85f, 0.88f, 0.85f, 0.9f);
+    glDrawArrays(GL_TRIANGLES, title_count, total - title_count);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &tvbo);
+    glDeleteVertexArrays(1, &tvao);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+}
+
+// "Getting the board ready…" panel, shown over the pregame screen when
+// the player hits Start before the background asset packages have all
+// landed. The game auto-starts the moment they do (see app_tick), so
+// this is purely a progress indicator — there is nothing to click.
+void renderer_draw_asset_loading_overlay(const char* label, float progress) {
+    if (progress < 0) progress = 0;
+    if (progress > 1) progress = 1;
+
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    Mat4 id = mat4_identity();
+    glUseProgram(g_highlight_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_highlight_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uInnerRadius"), 0);
+    glUniform1f(glGetUniformLocation(g_highlight_program, "uOuterRadius"), 0);
+    glUniform1i(glGetUniformLocation(g_highlight_program, "uUseGradient"), 0);
+
+    auto draw_quad_rgba = [&](float x0, float y0, float x1, float y1,
+                              float r, float g, float b, float a) {
+        glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
+                    r, g, b, a);
+        std::vector<float> v;
+        push_quad(v, x0, y0, x1, y1);
+        GLuint vao = 0, vbo = 0;
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                              3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(v.size() / 3));
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &vbo);
+        glDeleteVertexArrays(1, &vao);
+    };
+
+    draw_quad_rgba(-1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.55f);
+
+    constexpr float PX0 = -0.46f, PY0 = -0.15f;
+    constexpr float PX1 =  0.46f, PY1 =  0.17f;
+    draw_quad_rgba(PX0 - 0.008f, PY0 - 0.012f, PX1 + 0.008f, PY1 + 0.012f,
+                   0.62f, 0.52f, 0.30f, 0.95f);
+    draw_quad_rgba(PX0, PY0, PX1, PY1, 0.10f, 0.10f, 0.13f, 0.97f);
+
+    // Progress bar: unfilled track, then the filled portion.
+    constexpr float BX0 = -0.36f, BX1 = 0.36f;
+    constexpr float BY0 = -0.075f, BY1 = -0.035f;
+    draw_quad_rgba(BX0, BY0, BX1, BY1, 0.22f, 0.22f, 0.26f, 1.0f);
+    if (progress > 0.0f)
+        draw_quad_rgba(BX0, BY0, BX0 + (BX1 - BX0) * progress, BY1,
+                       0.85f, 0.72f, 0.40f, 1.0f);
+
+    glUseProgram(g_text_program);
+    glUniformMatrix4fv(glGetUniformLocation(g_text_program, "uMVP"),
+                       1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_font_tex);
+    glUniform1i(glGetUniformLocation(g_text_program, "uFontTex"), 0);
+
+    std::vector<float> tv;
+    {
+        float cw = 0.034f, ch = 0.052f;
+        std::string title = "Getting the board ready…";
+        float tw = title.size() * cw * 0.7f;
+        add_screen_string(tv, -tw * 0.5f, 0.075f, cw, ch, title);
+    }
+    int title_count = static_cast<int>(tv.size() / 5);
+    {
+        // "<what we're waiting on> · NN%"
+        float cw = 0.020f, ch = 0.030f;
+        std::string sub = label ? label : "Assets";
+        int pct = static_cast<int>(progress * 100.0f + 0.5f);
+        sub += "  ";
+        sub += std::to_string(pct);
+        sub += "%";
+        float tw = sub.size() * cw * 0.7f;
+        add_screen_string(tv, -tw * 0.5f, -0.125f, cw, ch, sub);
+    }
+    int total = static_cast<int>(tv.size() / 5);
+
+    GLuint tvao = 0, tvbo = 0;
+    glGenVertexArrays(1, &tvao);
+    glGenBuffers(1, &tvbo);
+    glBindVertexArray(tvao);
+    glBindBuffer(GL_ARRAY_BUFFER, tvbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(tv.size() * sizeof(float)),
+                 tv.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+                          5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.94f, 0.90f, 0.82f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_count);
+    glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
+                0.80f, 0.78f, 0.74f, 0.9f);
     glDrawArrays(GL_TRIANGLES, title_count, total - title_count);
 
     glBindVertexArray(0);

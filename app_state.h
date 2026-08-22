@@ -516,6 +516,13 @@ struct AppState {
     };
     Environment environment = Environment::MedievalRoom;
 
+    // Set when the player hits Start before the background asset
+    // packages this environment needs have finished downloading. The
+    // pregame screen keeps drawing with a progress panel over it, and
+    // app_tick starts the game the moment everything lands — so the
+    // click is never lost. Always false on desktop (assets are local).
+    bool waiting_for_assets = false;
+
 #ifndef __EMSCRIPTEN__
     // Voice input (push-to-talk on SPACE). Lazy init on first use so
     // we don't pay the model-load cost or prompt for mic permission
@@ -712,6 +719,12 @@ void app_init(AppState& a, const AppPlatform* platform);
 void app_enter_menu(AppState& a);
 void app_enter_pregame(AppState& a);
 void app_enter_game(AppState& a);
+
+// Start a game as soon as it is playable. Enters immediately when the
+// assets this environment needs are already in hand; otherwise arms
+// AppState::waiting_for_assets so the pregame screen shows progress and
+// app_tick enters the game the moment the downloads finish.
+void app_request_start_game(AppState& a);
 void app_enter_challenge_select(AppState& a);
 void app_enter_options(AppState& a);
 void app_enter_challenge(AppState& a, int index);

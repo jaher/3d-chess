@@ -19,7 +19,8 @@ SHARED_SRCS := \
     ../move_quality.cpp \
     ../move_reason.cpp \
     ../learner_profile.cpp \
-    ../openings_drills.cpp
+    ../openings_drills.cpp \
+    ../asset_loader.cpp
 
 TEST_SRCS := \
     doctest_main.cpp \
@@ -34,7 +35,8 @@ TEST_SRCS := \
     move_reason_test.cpp \
     learner_profile_test.cpp \
     openings_drills_test.cpp \
-    phantom_encode_test.cpp
+    phantom_encode_test.cpp \
+    asset_loader_test.cpp
 
 HEADERS := doctest.h helpers.h
 

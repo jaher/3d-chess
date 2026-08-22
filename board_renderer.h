@@ -45,8 +45,25 @@ struct PieceGPU {
     int num_vertices = 0;
 };
 
-// Initialize GL resources (call from on_realize)
+// Initialize GL resources (call from on_realize).
+//
+// On the web this loads only what the main menu draws (piece meshes,
+// fonts, shaders); the board/clock/table meshes, the retro piece set and
+// the splat backdrops arrive later through the renderer_load_* calls
+// below as their asset packages download. On desktop everything is on
+// local disk, so renderer_init still loads the lot up front.
 void renderer_init(StlModel loaded_models[PIECE_COUNT]);
+
+// Deferred asset installs. Each is idempotent and safe to call once the
+// matching files exist in the filesystem; until then the renderer simply
+// draws without them (empty meshes are skipped, missing textures read as
+// 0, a missing splat cloud falls back to the plain clear).
+void renderer_load_game_assets();    // board + clock + table
+void renderer_load_retro_assets();   // retro PC piece set (environment 1)
+
+// Progress panel drawn over the pregame screen when the player starts a
+// game before its assets have finished downloading. `progress` is 0..1.
+void renderer_draw_asset_loading_overlay(const char* label, float progress);
 
 // Main render function (call from on_render).
 // human_plays_white flips the score graph so the human's color is

@@ -45,6 +45,7 @@
 #endif
 
 #include "ai_player.h"
+#include "asset_loader.h"
 #include "audio.h"
 #include "chess_rules.h"
 #include "openings.h"
@@ -1024,6 +1025,9 @@ static void handle_board_click(AppState& a, double mx, double my,
 // Mode transitions
 // ===========================================================================
 void app_enter_menu(AppState& a) {
+    // Backing out of pregame abandons any start that was waiting on
+    // downloads (the downloads themselves carry on in the background).
+    a.waiting_for_assets = false;
     // Exit analysis mode if we're in it, so the next game starts
     // clean even if the user clicked Back to Menu mid-analysis.
     if (cur_gs(a).analysis_mode) game_exit_analysis(cur_gs(a));
@@ -1129,6 +1133,27 @@ static int slider_px_to_elo(double mx, int width) {
     if (t > 1.0f) t = 1.0f;
     return APP_ELO_MIN + static_cast<int>(
         std::round(t * (APP_ELO_MAX - APP_ELO_MIN)));
+}
+
+void app_request_start_game(AppState& a) {
+    if (assets_ready_for_game(static_cast<int>(a.environment),
+                              a.splats_enabled)) {
+        a.waiting_for_assets = false;
+        app_enter_game(a);
+        return;
+    }
+    // Not everything this scene needs has landed. Hold on the pregame
+    // screen with a progress panel; app_tick starts the game the instant
+    // the last package installs. Downloads are already running (the web
+    // frame loop pumps them), so there is nothing extra to kick here.
+    if (!a.waiting_for_assets) {
+        AssetGroup g = assets_first_pending_for_game(
+            static_cast<int>(a.environment), a.splats_enabled);
+        std::fprintf(stderr, "[app] start held: waiting on %s\n",
+                     assets_group_label(g));
+    }
+    a.waiting_for_assets = true;
+    queue_redraw(a);
 }
 
 void app_enter_game(AppState& a) {
@@ -1654,7 +1679,7 @@ static void release_pregame(AppState& a, double mx, double my,
         return;
     }
     if (btn == 1) {           // Start
-        app_enter_game(a);
+        app_request_start_game(a);
     } else if (btn == 2) {    // Back
         app_enter_menu(a);
     } else if (btn == 3) {    // Toggle side
@@ -3675,6 +3700,20 @@ void app_tick(AppState& a) {
     // Safe in every mode; no-op when no track is playing.
     audio_music_tick();
 
+    // The player pressed Start while assets were still downloading —
+    // begin the moment the last one this scene needs has installed. A
+    // failed download counts as settled, so a dead package degrades the
+    // scene (STL pieces, no backdrop) instead of stranding the player.
+    if (a.waiting_for_assets) {
+        if (assets_ready_for_game(static_cast<int>(a.environment),
+                                  a.splats_enabled)) {
+            a.waiting_for_assets = false;
+            app_enter_game(a);
+        } else {
+            queue_redraw(a);   // keep the progress bar moving
+        }
+    }
+
     tick_menu_physics(a, now);
     tick_ai_animation(a, now);
 
@@ -3737,6 +3776,15 @@ static void render_pregame(AppState& a, int width, int height) {
                           a.pregame_game_count_hover,
                           hide_game_count,
                           width, height, a.pregame_hover);
+
+    // Start was pressed before this scene's assets finished downloading.
+    if (a.waiting_for_assets) {
+        const int env = static_cast<int>(a.environment);
+        AssetGroup g = assets_first_pending_for_game(env, a.splats_enabled);
+        renderer_draw_asset_loading_overlay(
+            assets_group_label(g),
+            static_cast<float>(assets_game_progress(env, a.splats_enabled)));
+    }
 }
 
 static void render_challenge_select(AppState& a, int width, int height) {
@@ -5813,6 +5861,13 @@ void app_init(AppState& a, const AppPlatform* platform) {
     a.platform = platform;
     game_reset(cur_gs(a));
     app_settings_load(a);
+#ifndef __EMSCRIPTEN__
+    // Desktop reads every asset straight off local disk in
+    // renderer_init, so no group is ever outstanding. The web build
+    // instead calls assets_reset() and lets the download pump fill
+    // groups in — see web/main_web.cpp.
+    assets_mark_all_ready();
+#endif
 }
 
 // ===========================================================================

@@ -13,6 +13,12 @@ enum class SoundEffect {
 };
 
 bool audio_init();
+
+// Retry loading any sound effect whose WAV wasn't on the filesystem
+// when audio_init() ran. The web build ships sounds/ in a background
+// asset package, so the clips only exist a few seconds in; load_clip
+// skips anything already loaded, making this a cheap idempotent pass.
+void audio_reload_clips();
 void audio_shutdown();
 void audio_play(SoundEffect effect);
 

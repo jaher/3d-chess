@@ -254,6 +254,11 @@ bool audio_init() {
     return true;
 }
 
+void audio_reload_clips() {
+    for (size_t i = 0; i < g_clips.size(); ++i)
+        load_clip(static_cast<SoundEffect>(i));
+}
+
 void audio_shutdown() {
     audio_music_stop();
     if (g_device) {

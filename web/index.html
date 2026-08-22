@@ -254,7 +254,11 @@
           var m = text.match(/\((\d+)\/(\d+)\)/);
           if (m) {
             var pct = Math.round(100 * parseInt(m[1], 10) / parseInt(m[2], 10));
-            setLoadingStatus('Downloading data… ' + pct + '%');
+            // Only the menu-critical assets gate startup now (~4.8 MB of
+            // piece meshes, fonts, openings and challenges). The board,
+            // clock, table, sounds, retro set and splat backdrops stream
+            // in afterwards — see web/asset_loader_web.cpp.
+            setLoadingStatus('Loading menu… ' + pct + '%');
           } else {
             setLoadingStatus(text);
           }

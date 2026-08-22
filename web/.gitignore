@@ -2,3 +2,6 @@ chess.html
 chess.js
 chess.wasm
 chess.data
+
+# Background asset packages built by `make packages` (file_packager).
+assets/
