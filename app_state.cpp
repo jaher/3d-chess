@@ -1823,10 +1823,25 @@ static void release_options(AppState& a, double mx, double my,
         // value so the label keeps matching reality.
         const int n_env = renderer_environment_count();
         const int next  = (static_cast<int>(a.environment) + 1) % n_env;
+        const AssetGroup need = (next == 1) ? ASSET_SPLAT_DATACENTER
+                                            : ASSET_SPLAT_MEDIEVAL;
         if (renderer_set_environment(next)) {
             a.environment = static_cast<AppState::Environment>(next);
             std::string msg = "Environment: ";
             msg += renderer_environment_label(next);
+            set_status(a, msg.c_str());
+            app_settings_save(a);
+        } else if (assets_state(need) != ASSET_READY) {
+            // Not a failure — this scene's backdrop simply hasn't
+            // finished downloading yet (the web build streams the two
+            // ~29 MB clouds in the background). Accept the switch so the
+            // label, the saved setting and the download priority all move
+            // to the new scene; the frame loop calls
+            // renderer_set_environment again when the package lands, and
+            // the backdrop appears then.
+            a.environment = static_cast<AppState::Environment>(next);
+            std::string msg = renderer_environment_label(next);
+            msg += ": backdrop still downloading…";
             set_status(a, msg.c_str());
             app_settings_save(a);
         } else {
