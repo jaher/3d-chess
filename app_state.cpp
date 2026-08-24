@@ -2633,14 +2633,15 @@ static void start_ai_animation(AppState& a, int fc, int fr, int tc, int tr) {
     gs.ai_to_col   = tc;
     gs.ai_to_row   = tr;
     // The retro pieces play part animations while they slide (fan spin,
-    // sways, keycap press), and a 0.5 s hop is too quick for any of it to
-    // read — so datacenter moves get a little longer. They used to run at
-    // 1.4 s, which showed the animation off nicely the first few times and
-    // then just felt like waiting on the opponent; 0.8 s still reads (the
-    // part animations are normalised to this duration, so they simply play
-    // proportionally faster) without stalling the game.
+    // sways, keycap press), so datacenter moves run slightly longer than
+    // the medieval room's 0.5 s hop to give those a moment to read. This
+    // started at 1.4 s, which showed the animation off nicely the first
+    // few times and then just felt like waiting on the opponent. 0.6 s
+    // keeps a touch of that character while staying responsive — the part
+    // animations are normalised to this duration, so they simply play
+    // proportionally faster rather than desyncing or clipping.
     gs.ai_anim_duration =
-        (a.environment == AppState::Environment::DataCenter) ? 0.8f : 0.5f;
+        (a.environment == AppState::Environment::DataCenter) ? 0.6f : 0.5f;
     gs.ai_animating = true;
     a.ai_anim_start_us = now_us(a);
     gs.ai_anim_start = a.ai_anim_start_us;
