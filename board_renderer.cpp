@@ -1026,6 +1026,43 @@ build_buffer_from_stl_world(const StlModel& m, float crease_deg) {
 // uses the trilinear chain so triplanar projection at varying
 // distances doesn't shimmer. Wrap is REPEAT so the seamless
 // walnut tiles cleanly across world coordinates.
+// Anisotropic filtering. Trilinear mipmapping alone blurs badly on
+// surfaces viewed at a shallow angle — which is exactly how the board and
+// table are seen — because the mip level is chosen from the *widest* axis
+// of the footprint. Anisotropy samples along the elongated axis instead
+// and is the single biggest win for grazing-angle sharpness, at no cost
+// in download size.
+//
+// Core in GL 4.6 and available essentially everywhere as
+// EXT_texture_filter_anisotropic (WebGL 2 included, where Emscripten
+// auto-enables extensions). Enum values are the EXT ones; declared here
+// because neither GLES3/gl3.h nor epoxy necessarily exposes them. Query
+// first and no-op when unsupported.
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#endif
+#ifndef GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+static void apply_anisotropy() {
+    static float s_max = -1.0f;      // queried once; -1 = not yet probed
+    if (s_max < 0.0f) {
+        s_max = 0.0f;
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &s_max);
+        // Clear the error an unsupported enum leaves behind so the next
+        // real GL call isn't blamed for it.
+        while (glGetError() != GL_NO_ERROR) {}
+        if (!(s_max > 1.0f)) s_max = 0.0f;
+        std::fprintf(stderr, "[tex] max anisotropy: %.0f%s\n",
+                     s_max, s_max > 1.0f ? "" : " (unsupported)");
+    }
+    if (s_max <= 1.0f) return;
+    // 8x captures nearly all of the visible gain; 16x is rarely
+    // distinguishable and costs more bandwidth on weaker GPUs.
+    float want = s_max < 8.0f ? s_max : 8.0f;
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, want);
+}
+
 static GLuint gl_load_texture(const std::string& path) {
     int w = 0, h = 0, ch = 0;
     unsigned char* pixels =
@@ -1049,6 +1086,7 @@ static GLuint gl_load_texture(const std::string& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    apply_anisotropy();
     glBindTexture(GL_TEXTURE_2D, 0);
     std::fprintf(stderr,
         "[board] loaded texture %s — %dx%d (orig %d ch)\n",
