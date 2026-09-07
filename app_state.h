@@ -306,6 +306,10 @@ struct AppState {
 
     // Mode machine + menu
     GameMode mode = MODE_MENU;
+    bool jelly_pieces = false;
+    int jelly_grabbed_piece = -1;
+    bool jelly_pick_checked = false;
+    int64_t jelly_last_update_us = 0;
     std::vector<PhysicsPiece> menu_pieces;
     int64_t menu_start_time_us = 0;
     int64_t menu_last_update_us = 0;

@@ -29,14 +29,17 @@
 // ---------------------------------------------------------------------------
 // Shadow depth shaders
 // ---------------------------------------------------------------------------
+#include "jelly_shader.h"
 const char* shadow_vs_src = GLSL_VERSION R"(
 layout(location = 1) in vec3 aPos;
 
 uniform mat4 uLightSpaceMatrix;
 uniform mat4 uModel;
 
+)" JELLY_SKIN R"(
+
 void main() {
-    gl_Position = uLightSpaceMatrix * uModel * vec4(aPos, 1.0);
+    gl_Position = uLightSpaceMatrix * uModel * vec4(jellyPosition(aPos), 1.0);
 }
 )";
 
@@ -70,11 +73,18 @@ out vec3 vWorldPos;
 out vec4 vLightSpacePos;
 out vec2 vTexCoord;
 
+)" JELLY_SKIN R"(
+
 void main() {
-    vec4 worldPos = uModel * vec4(aPos, 1.0);
+    mat3 J;
+    vec4 worldPos = uModel * vec4(jellyDeform(aPos,J), 1.0);
     vFragPos = worldPos.xyz;
     vWorldPos = worldPos.xyz;
-    vNormal = normalize(uNormalMat * aNormal);
+    vec3 normal = aNormal;
+    if (uJelly.w > 0.5) {
+        normal = mat3(cross(J[1],J[2]),cross(J[2],J[0]),cross(J[0],J[1])) * normal;
+    }
+    vNormal = normalize(uNormalMat * normal);
     vLightSpacePos = uLightSpaceMatrix * worldPos;
     vTexCoord = aTexCoord;
     gl_Position = uProjection * uView * worldPos;
@@ -93,6 +103,7 @@ out vec4 FragColor;
 uniform vec3 uLightPositions[4];
 uniform vec3 uLightColors[4];
 uniform vec3 uViewPos;
+uniform vec4 uJelly;
 
 // Shadow map
 uniform sampler2D uShadowMap;

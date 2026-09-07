@@ -142,6 +142,10 @@ static GLuint    g_king_noise[KING_NOISE_FRAMES] = {0};
 static float     g_retro_board_scale = 1.0f;  // bbox→board fit, set on load
 static bool      g_retro_loaded = false;
 static bool      g_use_retro_pieces = false;
+static bool g_jelly_pieces = false;
+void renderer_set_jelly_pieces(bool enabled) { g_jelly_pieces = enabled; }
+static void jelly_uniform(GLuint program, const JellyMotion* motion, bool enabled);
+static void jelly_material(bool white);
 
 // Per-piece animated attachment (rook fan spins, bishop joystick sways, …).
 // A piece opts in by shipping <Piece>_base.uvmesh (the static remainder) +
@@ -1761,6 +1765,8 @@ static void load_table_assets(const std::string& dir) {
     }
 }
 
+#include "jelly_render.h"
+
 static void upload_piece(PieceGPU& gpu, const StlModel& model) {
     // Always smooth per-vertex normals via build_vertex_buffer's
     // angle-weighted average. The pieces are still visibly faceted
@@ -1772,6 +1778,7 @@ static void upload_piece(PieceGPU& gpu, const StlModel& model) {
     // crease_angle 60° preserves intentionally sharp edges (e.g.
     // base/collar transitions) while smoothing curved regions.
     std::vector<float> buf = model.build_vertex_buffer(60.0f);
+    jelly::cages[&gpu-g_pieces].build(buf);
     gpu.num_vertices = static_cast<int>(buf.size() / 6);
     glGenVertexArrays(1, &gpu.vao); glGenBuffers(1, &gpu.vbo);
     glBindVertexArray(gpu.vao);
@@ -2023,8 +2030,16 @@ static void draw_king_noise(const Mat4& pm, int64_t now) {
     glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
 }
 
+static void jelly_material(bool white) {
+    if (white) set_material(g_program, .86f,.86f,.86f, 0,.08f,1,0);
+    else set_material(g_program, .012f,.012f,.012f, 0,.08f,1,0);
+}
 static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
-                               int file = -1, const Mat4* moving = nullptr) {
+                               int file = -1, const Mat4* moving = nullptr,
+                               const JellyMotion* jelly = nullptr) {
+    if(g_jelly_pieces&&!g_use_retro_pieces) {
+        jelly_draws.push_back({type,pm,is_white,jelly});return;
+    }
     float pnm[9]; mat4_normal_matrix(pm, pnm);
     glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, pm.m);
     glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, pnm);
@@ -2133,11 +2148,14 @@ static void draw_piece_skinned(int type, const Mat4& pm, bool is_white,
         glUniform1i(glGetUniformLocation(g_program, "uClockTextureMode"), 0);
         glUniform1i(glGetUniformLocation(g_program, "uClockPbrMapsMode"), 0);
     } else {
+        jelly_uniform(g_program, jelly, g_jelly_pieces);
         if (is_white) set_material(g_program, 0.97f, 0.95f, 0.90f, 0, 0.28f, 1, 0);
         else          set_material(g_program, 0.02f, 0.02f, 0.02f, 0, 0.35f, 1, 0);
+        if (g_jelly_pieces) jelly_material(is_white);
         glBindVertexArray(g_pieces[type].vao);
         glDrawArrays(GL_TRIANGLES, 0, g_pieces[type].num_vertices);
         glBindVertexArray(0);
+        jelly_uniform(g_program, nullptr, false);
     }
 }
 
@@ -2434,6 +2452,9 @@ void renderer_init(StlModel loaded_models[PIECE_COUNT]) {
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    glUseProgram(g_program);jelly_uniform(g_program,nullptr,false);
+    glUseProgram(g_shadow_program);jelly_uniform(g_shadow_program,nullptr,false);
+    glUseProgram(g_program);
     for (int i = 0; i < PIECE_COUNT; i++)
         upload_piece(g_pieces[i], loaded_models[i]);
 
@@ -4412,7 +4433,8 @@ void renderer_draw(GameState& gs,
     // the canvas's RGBA8/DEPTH24_STENCIL8). Web renders directly
     // into the default FB.
 #ifdef __EMSCRIPTEN__
-    const GLuint main_pass_fbo = static_cast<GLuint>(default_fbo);
+    if(g_jelly_pieces&&!g_use_retro_pieces)ensure_jelly_targets(width,height);
+    const GLuint main_pass_fbo = g_jelly_pieces&&!g_use_retro_pieces?jelly_main.fbo:static_cast<GLuint>(default_fbo);
 #else
     ensure_scene_ms_fbo(width, height);
     const GLuint main_pass_fbo = g_scene_ms_fbo;
@@ -4495,6 +4517,7 @@ void renderer_draw(GameState& gs,
         float s = BASE_PIECE_SCALE * piece_scale[bp.type];
         Mat4 pm = piece_model_matrix(wx, wz, s, bp.is_white, active_piece_rot(rot_z_to_y));
         glUniformMatrix4fv(smod, 1, GL_FALSE, pm.m);
+        jelly_uniform(g_shadow_program, &bp.jelly, g_jelly_pieces && !g_use_retro_pieces);
         GLuint vao = g_use_retro_pieces ? g_retro_pieces[bp.type].vao
                                         : g_pieces[bp.type].vao;
         int cnt = g_use_retro_pieces ? g_retro_pieces[bp.type].count
@@ -4510,6 +4533,7 @@ void renderer_draw(GameState& gs,
     // depth map; the splat floor receives the table's shadow via
     // a polygon-projection test in the splat vertex shader.)
 
+    jelly_uniform(g_shadow_program, nullptr, false);
     glDisable(GL_POLYGON_OFFSET_FILL);
 
     // ----- Planar-reflection pass -----
@@ -4607,9 +4631,12 @@ void renderer_draw(GameState& gs,
                                1, GL_FALSE, pnm);
             if (bp.is_white) set_material(g_program, 0.97f, 0.95f, 0.90f, 0, 0.28f, 1, 0);
             else             set_material(g_program, 0.02f, 0.02f, 0.02f, 0, 0.35f, 1, 0);
+            jelly_uniform(g_program, &bp.jelly, g_jelly_pieces && !g_use_retro_pieces);
+            if (g_jelly_pieces && !g_use_retro_pieces) jelly_material(bp.is_white);
             glBindVertexArray(g_pieces[bp.type].vao);
             glDrawArrays(GL_TRIANGLES, 0, g_pieces[bp.type].num_vertices);
             glBindVertexArray(0);
+            jelly_uniform(g_program, nullptr, false);
         }
         reflection_ready = true;
 
@@ -5643,9 +5670,9 @@ void renderer_draw(GameState& gs,
                     ? retro_part_angle_t(bp.type, t * 0.35f)
                     : ra.amp * std::sin(raw * 2.0f * 2.0f * static_cast<float>(M_PI));
                 Mat4 mv = retro_part_xform(bp.type, ang);
-                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv);
+                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv, &bp.jelly);
             } else {
-                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+                draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, nullptr, &bp.jelly);
             }
             // The king's monitor shows its white-noise static while it moves.
             if (g_use_retro_pieces && bp.type == KING)
@@ -5664,9 +5691,9 @@ void renderer_draw(GameState& gs,
         if (g_retro_anim[bp.type].has) {
             Mat4 mv = retro_part_xform(bp.type,
                 retro_part_angle(gs, bp.col, bp.row, press_now, bp.type));
-            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv);
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, &mv, &bp.jelly);
         } else {
-            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, nullptr, &bp.jelly);
         }
         // White-noise (static) on the king's monitor only while it's selected
         // (g_dbg_anim_type==KING forces it on for the headless GIF harness).
@@ -5828,10 +5855,12 @@ void renderer_draw(GameState& gs,
             // Drop the piece so its bottom rests on the table.
             pm = mat4_multiply(
                 mat4_translate(0.0f, TABLE_TOP_Y - BOARD_Y, 0.0f), pm);
-            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col);
+            draw_piece_skinned(bp.type, pm, bp.is_white, bp.col, nullptr, &bp.jelly);
             cnt++;
         }
     }
+
+    jelly_flush(view,proj,width,height);
 
     // --- AI arrow ---
     if (gs.ai_animating) {
@@ -6044,6 +6073,7 @@ void renderer_draw(GameState& gs,
 #ifdef __EMSCRIPTEN__
     // Web wrote straight into the default FB at
     // (sub_x, sub_y, width, height) — nothing to resolve.
+    if(main_pass_fbo==jelly_main.fbo)jelly_present(default_fbo,sub_x,sub_y,width,height);
 #else
     resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
                         sub_x, sub_y,
@@ -6101,6 +6131,8 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
 #ifndef __EMSCRIPTEN__
     ensure_scene_ms_fbo(width, height);
     glBindFramebuffer(GL_FRAMEBUFFER, g_scene_ms_fbo);
+#else
+    if(g_jelly_pieces){ensure_jelly_targets(width,height);glBindFramebuffer(GL_FRAMEBUFFER,jelly_main.fbo);}
 #endif
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -6147,14 +6179,20 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
         float nm[9]; mat4_normal_matrix(pm, nm);
         glUniformMatrix4fv(glGetUniformLocation(g_program, "uModel"), 1, GL_FALSE, pm.m);
         glUniformMatrix3fv(glGetUniformLocation(g_program, "uNormalMat"), 1, GL_FALSE, nm);
-        glBindVertexArray(g_pieces[p.type].vao);
-        glDrawArrays(GL_TRIANGLES, 0, g_pieces[p.type].num_vertices);
-        glBindVertexArray(0);
+        if(g_jelly_pieces)jelly_draws.push_back({p.type,pm,is_white,&p.jelly});
+        else {
+            jelly_uniform(g_program,nullptr,false);
+            glBindVertexArray(g_pieces[p.type].vao);
+            glDrawArrays(GL_TRIANGLES,0,g_pieces[p.type].num_vertices);glBindVertexArray(0);
+        }
     }
 
+    jelly_flush(view,proj,width,height);
 #ifndef __EMSCRIPTEN__
     resolve_scene_ms_to(static_cast<GLuint>(default_fbo),
                         0, 0, width, height, /*include_depth=*/false);
+#else
+    if(g_jelly_pieces)jelly_present(default_fbo,0,0,width,height);
 #endif
 
     // --- UI overlay ---
@@ -6305,5 +6343,3 @@ void renderer_draw_menu(const std::vector<PhysicsPiece>& pieces,
     glBindVertexArray(0); glDeleteBuffers(1, &uvbo); glDeleteVertexArrays(1, &uvao);
     glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
 }
-
-

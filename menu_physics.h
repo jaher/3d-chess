@@ -16,6 +16,7 @@ struct PhysicsPiece {
     float rot_x, rot_y, rot_z;
     float spin_x, spin_y, spin_z;
     float scale;
+    JellyMotion jelly{};
 };
 
 // Spawn the 12 pieces that rain down on the menu. Seeded from the

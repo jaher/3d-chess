@@ -36,9 +36,10 @@ TEST_SRCS := \
     learner_profile_test.cpp \
     openings_drills_test.cpp \
     phantom_encode_test.cpp \
-    asset_loader_test.cpp
+    asset_loader_test.cpp \
+    jelly_test.cpp
 
-HEADERS := doctest.h helpers.h
+HEADERS := doctest.h helpers.h ../jelly.h
 
 run_tests: $(SHARED_SRCS) $(TEST_SRCS) $(HEADERS)
 	$(CXX) $(PURE_FLAGS) $(SHARED_SRCS) $(TEST_SRCS) -o $@ -lm

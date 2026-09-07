@@ -182,10 +182,10 @@ packages: | chess.html
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-$(OBJ_DIR)/shared_%.o: ../%.cpp | $(OBJ_DIR)
+$(OBJ_DIR)/shared_%.o: ../%.cpp $(wildcard ../*.h) | $(OBJ_DIR)
 	$(EMCC) $(EMFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/web_%.o: %.cpp | $(OBJ_DIR)
+$(OBJ_DIR)/web_%.o: %.cpp $(wildcard ../*.h) | $(OBJ_DIR)
 	$(EMCC) $(EMFLAGS) -c $< -o $@
 
 chess.html: $(OBJS) stockfish-bridge.js index.html stockfish/stockfish.js

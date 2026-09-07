@@ -503,6 +503,8 @@ static void on_realize(GtkGLArea* area) {
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area) != nullptr) return;
     renderer_init(g_loaded_models);
+    // Preview overrides never write the user's saved Options settings.
+    if(const char* jelly=std::getenv("CHESS_JELLY"))g_app.jelly_pieces=std::atoi(jelly)!=0;
     if (std::getenv("CHESS_DUMP_REQ") || std::getenv("CHESS_AUTOSTART"))
         g_timeout_add(80, force_tick_cb, nullptr);
 

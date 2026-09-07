@@ -388,6 +388,7 @@ VoiceCommand parse_voice_command(const std::string& utterance,
         break;
 
     case MODE_OPTIONS:
+        if (match_any(s, {"jelly", "jelly pieces", "toggle jelly", "piece style", "classic pieces"})) return VoiceCommand::ToggleJelly;
         if (is_back_phrase(s)) return VoiceCommand::BackToMenu;
         if (match_any(s, {"gaussian splats", "splats", "splat",
                           "splat backdrop", "gaussian splat",

@@ -124,10 +124,20 @@ instant.
 
 ## Controls
 
+Choose **Options → Classic pieces: JELLY** for transparent white and smoky-black
+pieces with refraction, volumetric stretching, and collision-driven menu wobble. The setting is
+remembered on desktop and web. Retro hardware pieces in the datacenter stay
+unchanged. Say **“jelly pieces”** or **“toggle jelly”** in Options to switch styles.
+
+With jelly enabled, **drag a piece to stretch it**, then release to watch it
+spring back. It stays on its square and remains selected if it is your piece;
+**click the destination square to move**. Drag empty space to orbit the camera.
+Menu pieces can still be flung into one another and squash on impact.
+
 | Control | Action |
 |---------|--------|
 | **Left click** | Select a piece, move to a highlighted square, or click a button |
-| **Left drag** | Rotate the camera around the board |
+| **Left drag** | Stretch jelly pieces, or rotate the camera when dragging empty space |
 | **Scroll wheel** | Zoom in and out |
 | **Click the withdraw flag** (bottom-right) | Resign the current game |
 | **Hold SPACE** (your turn) | Speak your move, then release to play it |
@@ -154,6 +164,18 @@ instant.
 8. To resign, click the **withdraw flag** in the bottom-right corner and confirm.
 
 ## Credits & license
+
+The jelly interaction is inspired by [Jelly-Baby](https://github.com/scottstts/Jelly-Baby).
+The shared native/WebGL implementation uses tetrahedral, stable neo-Hookean
+XPBD finite elements, barycentric surface grabs, volume preservation, and
+inversion protection. White pieces are lightly scattering clear jelly; black
+pieces use neutral absorption with transparent thin edges. Refraction uses
+entry/exit surfaces, Snell's law, Fresnel reflection, and Beer–Lambert absorption.
+This is real-time **screen-space** refraction, not a path tracer: off-screen
+geometry, multiple internal bounces, and physically traced caustics are not
+simulated. Menu contacts use the existing rigid collision proxies to excite
+the deformable volume. The cage is voxel-fitted, not an exact tetrahedralization
+of every STL detail. No reference assets or source code are bundled.
 
 3D Chess is open source under the **MIT** license. It bundles the
 [Stockfish](https://stockfishchess.org/) chess engine and a few third-party

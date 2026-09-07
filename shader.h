@@ -29,6 +29,8 @@ extern const char* vertex_shader_src;
 extern const char* fragment_shader_src;
 extern const char* shadow_vs_src;
 extern const char* shadow_fs_src;
+extern const char* jelly_exit_fs_src;
+extern const char* jelly_glass_fs_src;
 extern const char* highlight_vs_src;
 extern const char* highlight_fs_src;
 extern const char* text_vs_src;

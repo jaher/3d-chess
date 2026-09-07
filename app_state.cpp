@@ -481,7 +481,7 @@ static bool ray_aabb_hit(const float ro[3], const float rd[3],
 // unnormalised inverse direction preserves the world-space metric,
 // so the t values are directly comparable across pieces.
 static int pick_piece(const AppState& a, double mx, double my,
-                      int width, int height) {
+                      int width, int height, Vertex* grab_rest=nullptr) {
     if (!a.loaded_models) return -1;
 
     float ro[3], rd[3];
@@ -533,23 +533,51 @@ static int pick_piece(const AppState& a, double mx, double my,
         float rd_obj[3] = { rd_obj4.x, rd_obj4.y, rd_obj4.z };
 
         // AABB early-reject against the raw-STL bounding box.
-        if (!ray_aabb_hit(ro_obj, rd_obj, bb.min, bb.max)) continue;
+        bool jelly=a.jelly_pieces && a.environment!=AppState::Environment::DataCenter && bp.jelly.awake;
+        Vertex lo=bb.min, hi=bb.max;
+        if (jelly) {
+            for(const auto& p:bp.jelly.x) {
+                lo.x=std::min(lo.x,p.x/norm_scale+center.x);hi.x=std::max(hi.x,p.x/norm_scale+center.x);
+                lo.y=std::min(lo.y,p.y/norm_scale+center.y);hi.y=std::max(hi.y,p.y/norm_scale+center.y);
+                lo.z=std::min(lo.z,p.z/norm_scale+center.z);hi.z=std::max(hi.z,p.z/norm_scale+center.z);
+            }
+        }
+        if (!ray_aabb_hit(ro_obj, rd_obj, lo, hi)) continue;
+        auto deformed=[&](Vertex v) {
+            if (!jelly) return v;
+            auto p=jelly_position(bp.jelly,(v.x-center.x)*norm_scale,
+                                  (v.y-center.y)*norm_scale,(v.z-center.z)*norm_scale);
+            return Vertex{p[0]/norm_scale+center.x,p[1]/norm_scale+center.y,p[2]/norm_scale+center.z};
+        };
 
         float piece_t = 1e30f;
         bool piece_hit = false;
+        Vertex rest_hit{};
         const auto& tris = model.triangles();
         for (const auto& tri : tris) {
             float t;
-            if (ray_triangle_hit(ro_obj, rd_obj, tri.v0, tri.v1, tri.v2, t)) {
+            Vertex v0=deformed(tri.v0),v1=deformed(tri.v1),v2=deformed(tri.v2);
+            if (ray_triangle_hit(ro_obj, rd_obj, v0,v1,v2, t)) {
                 if (t < piece_t) {
                     piece_t = t;
                     piece_hit = true;
+                    if(grab_rest) {
+                        jelly::V e1{v1.x-v0.x,v1.y-v0.y,v1.z-v0.z},e2{v2.x-v0.x,v2.y-v0.y,v2.z-v0.z};
+                        jelly::V q{ro_obj[0]+t*rd_obj[0]-v0.x,ro_obj[1]+t*rd_obj[1]-v0.y,ro_obj[2]+t*rd_obj[2]-v0.z};
+                        float aa=jelly::dot(e1,e1),bb2=jelly::dot(e2,e2),ab=jelly::dot(e1,e2),den=aa*bb2-ab*ab;
+                        float b=den>1e-15f?(jelly::dot(q,e1)*bb2-jelly::dot(q,e2)*ab)/den:0;
+                        float c=den>1e-15f?(jelly::dot(q,e2)*aa-jelly::dot(q,e1)*ab)/den:0;
+                        rest_hit={(tri.v0.x*(1-b-c)+tri.v1.x*b+tri.v2.x*c-center.x)*norm_scale,
+                                  (tri.v0.y*(1-b-c)+tri.v1.y*b+tri.v2.y*c-center.y)*norm_scale,
+                                  (tri.v0.z*(1-b-c)+tri.v1.z*b+tri.v2.z*c-center.z)*norm_scale};
+                    }
                 }
             }
         }
         if (piece_hit && piece_t < best_t) {
             best_t = piece_t;
             best_idx = static_cast<int>(i);
+            if(grab_rest)*grab_rest=rest_hit;
         }
     }
 
@@ -1546,6 +1574,9 @@ void app_puzzle_ready(AppState& a, const char* json_body, bool daily) {
 // Input
 // ===========================================================================
 void app_press(AppState& a, double mx, double my) {
+    for (auto& gi:a.games) for (auto& p:gi.game.pieces) p.jelly.release();
+    for (auto& p:a.menu_pieces) p.jelly.release();
+    a.jelly_grabbed_piece=-1; a.jelly_pick_checked=false;
     a.dragging = true;
     a.last_mouse_x = a.press_x = mx;
     a.last_mouse_y = a.press_y = my;
@@ -1777,6 +1808,11 @@ static void release_options(AppState& a, double mx, double my,
         queue_redraw(a);
     } else if (btn == 8 && voice_supported) {
         app_voice_toggle_speak_moves_request(a);
+    } else if (btn == 12) {
+        a.jelly_pieces = !a.jelly_pieces;
+        app_settings_save(a);
+        set_status(a, a.jelly_pieces ? "Jelly pieces: drag to stretch; click a destination to move. Retro pieces stay solid." : "Solid pieces selected");
+        queue_redraw(a);
     } else if (btn == 10) {
         a.splats_enabled = !a.splats_enabled;
         set_status(a, a.splats_enabled
@@ -2139,6 +2175,11 @@ static void release_playing(AppState& a, double mx, double my,
 
 void app_release(AppState& a, double mx, double my, int width, int height) {
     a.dragging = false;
+    bool stretched=false;
+    for (auto& gi:a.games) for (auto& p:gi.game.pieces) { stretched |= p.jelly.held; p.jelly.release(); }
+    for (auto& p:a.menu_pieces) p.jelly.release();
+    a.jelly_grabbed_piece=-1;
+    if (stretched) { queue_redraw(a); return; }
     switch (a.mode) {
         case MODE_MENU:             release_menu(a, mx, my, width, height); return;
         case MODE_PREGAME:          release_pregame(a, mx, my, width, height); return;
@@ -2211,12 +2252,43 @@ static void motion_menu(AppState& a, double mx, double my, int width, int height
     // First motion after press is our earliest chance to hit-test
     // (app_press has no viewport size). Once a piece is grabbed
     // the index stays until release.
+    if (menu_hit_test(a.press_x,a.press_y,width,height,a.chessnut_connected)!=0) return;
     if (a.menu_grabbed_piece < 0) {
         float t_s = static_cast<float>(
             static_cast<double>(now_us(a) - a.menu_start_time_us) / 1e6);
         a.menu_grabbed_piece = menu_piece_hit_test(
             a.menu_pieces, a.press_x, a.press_y, width, height, t_s);
         if (a.menu_grabbed_piece >= 0) queue_redraw(a);
+    }
+    if (a.jelly_pieces && a.menu_grabbed_piece>=0) {
+        auto& p=a.menu_pieces[a.menu_grabbed_piece];
+        float t=static_cast<float>(now_us(a)-a.menu_start_time_us)/1e6f;
+        float rad=static_cast<float>(M_PI)/180.f;
+        Mat4 view=mat4_multiply(mat4_rotate_x(25*rad),mat4_rotate_y(t*15*rad));
+        Vec4 world=mat4_mul_vec4(mat4_inverse(view),{static_cast<float>(mx-a.press_x)*10.f/height,static_cast<float>(a.press_y-my)*10.f/height,0,0});
+        Mat4 rot=mat4_multiply(mat4_rotate_z(p.rot_z*rad),mat4_multiply(mat4_rotate_y(p.rot_y*rad),mat4_rotate_x(p.rot_x*rad)));
+        Vec4 local=mat4_mul_vec4(mat4_inverse(rot),world);
+        float scale=BASE_PIECE_SCALE*piece_scale[p.type]*p.scale/.35f;
+        p.jelly.configure(p.type,false);
+        if(!p.jelly.held) {
+            // Pick the nearest projected material node on the menu body's
+            // volume. The board uses exact surface-triangle barycentrics.
+            Mat4 camera=mat4_multiply(mat4_translate(0,0,-12),view);
+            Mat4 projection=mat4_perspective(45*rad,float(width)/height,.1f,1500.f);
+            Mat4 model=mat4_multiply(mat4_translate(p.x,p.y,p.z),mat4_multiply(mat4_scale(scale,scale,scale),rot));
+            Mat4 mvp=mat4_multiply(projection,mat4_multiply(camera,model));
+            const auto& cage=jelly::cage(p.type);float best=1e30f;jelly::V point{0,0,1};
+            for(int i=0;i<jelly::NN;++i) {
+                if(cage.mass[i]<=0)continue;
+                auto v=p.jelly.position(cage.rest[i]);Vec4 q=mat4_mul_vec4(mvp,{v.x,v.y,v.z,1});if(q.w<=0)continue;
+                float dx=(q.x/q.w+1)*width*.5f-a.press_x,dy=(1-q.y/q.w)*height*.5f-a.press_y;
+                float score=dx*dx+dy*dy+q.w*.1f;
+                if(score<best){best=score;point=cage.rest[i];}
+            }
+            p.jelly.begin_grab(point.x,point.y,point.z);
+        }
+        p.jelly.pull(local.x/scale,local.y/scale,local.z/scale);
+        queue_redraw(a);
     }
     // Advance the fling reference only after a minimum gap (~60 ms)
     // so release velocity reflects the last leg of the drag, not
@@ -2405,7 +2477,60 @@ static void motion_playing(AppState& a, double mx, double my,
     apply_camera_drag(a, mx, my);
 }
 
+// A held piece is a visual spring, never a drag-and-drop chess move.
+static bool motion_jelly_board(AppState& a, double mx, double my, int width, int height) {
+    if (!a.dragging || !a.jelly_pieces ||
+        a.environment == AppState::Environment::DataCenter ||
+        (a.mode != MODE_PLAYING && a.mode != MODE_PUZZLE && a.mode != MODE_CHALLENGE) ||
+        a.withdraw_confirm_open || a.chessnut_missing_modal_open ||
+        (a.mode==MODE_CHALLENGE && a.challenge_show_summary)) return false;
+    GameState& gs=cur_gs(a);
+    if (gs.ai_animating || gs.analysis_mode || gs.game_over) return false;
+    int sx=0,sy=0,sw=width,sh=height;
+    if (a.mode==MODE_PLAYING) viewport_for_game(a.active_game, static_cast<int>(a.games.size()), width,height,sx,sy,sw,sh);
+    int top=height-sy-sh;
+    double px=a.press_x-sx, py=a.press_y-top;
+    if (sw<=0 || sh<=0 || px<0 || py<0 || px>=sw || py>=sh) return false;
+    if (!a.jelly_pick_checked) {
+        a.jelly_pick_checked=true;
+        Vertex hit{};
+        a.jelly_grabbed_piece=pick_piece(a,px,py,sw,sh,&hit);
+        if(a.jelly_grabbed_piece>=0) {
+            auto& p=gs.pieces[a.jelly_grabbed_piece];p.jelly.configure(p.type);
+            p.jelly.begin_grab(hit.x,hit.y,hit.z);
+        }
+    }
+    int i=a.jelly_grabbed_piece;
+    if (i<0 || i>=static_cast<int>(gs.pieces.size())) return false;
+    BoardPiece& p=gs.pieces[i];
+    if (!p.alive) return false;
+    double dx=mx-a.press_x,dy=my-a.press_y;
+    // A tiny cursor tremor is still a click, not a grab.
+    if (!p.jelly.held && dx*dx+dy*dy<25) return true;
+    if (!p.jelly.held && p.is_white==gs.white_turn &&
+        (gs.selected_col!=p.col || gs.selected_row!=p.row)) {
+        handle_board_click(a,px,py,sw,sh);
+    }
+    float ro[3],rd[3],ro2[3],rd2[3];
+    if (!screen_ray(a,px,py,sw,sh,ro,rd) ||
+        !screen_ray(a,mx-sx,my-top,sw,sh,ro2,rd2)) return true;
+    float s=BASE_PIECE_SCALE*piece_scale[p.type], wx,wz;
+    square_center(p.col,p.row,wx,wz);
+    float depth=(wx-ro[0])*rd[0]+(BOARD_Y+s-ro[1])*rd[1]+(wz-ro[2])*rd[2];
+    Vec4 delta={(ro2[0]+rd2[0]*depth-ro[0]-rd[0]*depth)/s,
+                (ro2[1]+rd2[1]*depth-ro[1]-rd[1]*depth)/s,
+                (ro2[2]+rd2[2]*depth-ro[2]-rd[2]*depth)/s,0};
+    Mat4 orient=mat4_rotate_x(-static_cast<float>(M_PI)*.5f);
+    if (!p.is_white) orient=mat4_multiply(mat4_rotate_y(static_cast<float>(M_PI)),orient);
+    Vec4 local=mat4_mul_vec4(mat4_inverse(orient),delta);
+    p.jelly.pull(local.x,local.y,local.z);
+    a.last_mouse_x=mx; a.last_mouse_y=my;
+    queue_redraw(a);
+    return true;
+}
+
 void app_motion(AppState& a, double mx, double my, int width, int height) {
+    if (motion_jelly_board(a,mx,my,width,height)) return;
     switch (a.mode) {
         case MODE_MENU:             motion_menu(a, mx, my, width, height); return;
         case MODE_PREGAME:          motion_pregame(a, mx, my, width, height); return;
@@ -3354,7 +3479,23 @@ static void tick_menu_physics(AppState& a, int64_t now) {
     a.menu_last_update_us = now;
     if (dt < 0.0f)  dt = 0.0f;
     if (dt > 0.05f) dt = 0.05f;
+    auto before=a.menu_pieces;
     menu_update_physics(a.menu_pieces, dt);
+    for (size_t i=0;i<a.menu_pieces.size();++i) {
+        auto& p=a.menu_pieces[i]; const auto& old=before[i];
+        if (p.jelly.held) { p.x=old.x; p.y=old.y; p.z=old.z; p.vx=p.vy=p.vz=0; p.rot_x=old.rot_x; p.rot_y=old.rot_y; p.rot_z=old.rot_z; }
+        if (a.jelly_pieces) {
+            p.jelly.configure(p.type,false);
+            float impact=std::sqrt((p.vx-old.vx)*(p.vx-old.vx)+(p.vy-old.vy)*(p.vy-old.vy)+(p.vz-old.vz)*(p.vz-old.vz));
+            if (impact>.7f) {
+                float rad=static_cast<float>(M_PI)/180.f;
+                Mat4 rot=mat4_multiply(mat4_rotate_z(p.rot_z*rad),mat4_multiply(mat4_rotate_y(p.rot_y*rad),mat4_rotate_x(p.rot_x*rad)));
+                Vec4 dv=mat4_mul_vec4(mat4_inverse(rot),{p.vx-old.vx,p.vy-old.vy,p.vz-old.vz,0});
+                p.jelly.impulse(dv.x*.35f,dv.y*.35f,dv.z*.35f);
+            }
+            p.jelly.step(dt);
+        }
+    }
     queue_redraw(a);
 }
 
@@ -3717,6 +3858,13 @@ static void glasses_relay_pump(AppState& a) {
 
 void app_tick(AppState& a) {
     int64_t now = now_us(a);
+    float jelly_dt=a.jelly_last_update_us ? static_cast<float>(now-a.jelly_last_update_us)/1e6f : 0;
+    a.jelly_last_update_us=now;
+    for (auto& gi:a.games) for (auto& p:gi.game.pieces) {
+        p.jelly.configure(p.type);
+        if (!a.dragging || !a.jelly_pieces || a.environment==AppState::Environment::DataCenter) p.jelly.release();
+        if (p.jelly.step(jelly_dt) && a.jelly_pieces) queue_redraw(a);
+    }
     // Safe in every mode; no-op when no track is playing.
     audio_music_tick();
 
@@ -3842,7 +3990,7 @@ static void render_options(AppState& a, int width, int height) {
     for (const auto& d : a.chessnut_devices) {
         devs.push_back({d.address.c_str(), d.name.c_str()});
     }
-    renderer_draw_options(a.splats_enabled,
+    renderer_draw_options(a.jelly_pieces, a.splats_enabled,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
@@ -4131,6 +4279,7 @@ void app_render(AppState& a, int width, int height) {
     // texture — every board shares the same camera, and the room is
     // shake-immune by design.
     renderer_begin_frame();
+    renderer_set_jelly_pieces(a.jelly_pieces);
 
     if (a.mode == MODE_MENU)             { render_menu(a, width, height, now); return; }
     if (a.mode == MODE_PREGAME)          { render_pregame(a, width, height);   return; }
@@ -4314,6 +4463,12 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
     }
     case VoiceCommand::TryAgain:
         app_reset_challenge_puzzle(a);
+        break;
+    case VoiceCommand::ToggleJelly:
+        a.jelly_pieces = !a.jelly_pieces;
+        app_settings_save(a);
+        set_status(a, a.jelly_pieces ? "Jelly pieces selected" : "Solid pieces selected");
+        queue_redraw(a);
         break;
     case VoiceCommand::ToggleSplats:
         a.splats_enabled = !a.splats_enabled;
@@ -5910,7 +6065,9 @@ bool parse_bool(const std::string& v) {
 // Fold one "key=value" pair into the AppState. Unknown keys are ignored
 // so a newer build's blob degrades gracefully on an older one.
 void apply_setting(AppState& a, const std::string& key, const std::string& val) {
-    if (key == "splats_enabled") {
+    if (key == "jelly_pieces") {
+        a.jelly_pieces = parse_bool(val);
+    } else if (key == "splats_enabled") {
         a.splats_enabled = parse_bool(val);
     } else if (key == "best_streak") {
         int v = std::atoi(val.c_str());
@@ -5977,6 +6134,7 @@ std::string serialize_settings(const AppState& a) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
         "# 3d_chess user settings — auto-generated\n"
+        "jelly_pieces=%d\n"
         "splats_enabled=%d\n"
         "best_streak=%d\n"
         "learner_rating=%d\n"
@@ -5985,6 +6143,7 @@ std::string serialize_settings(const AppState& a) {
         "learner_pin_solved=%d\nlearner_pin_missed=%d\n"
         "chessnut_enabled=%d\n"
         "environment=%s\n",
+        a.jelly_pieces ? 1 : 0,
         a.splats_enabled ? 1 : 0,
         a.challenge_best_streak,
         a.learner.rating,

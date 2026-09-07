@@ -22,6 +22,7 @@
 #include "../board_renderer.h"
 #include "../chess_types.h"
 #include "../stl_model.h"
+#include "../mat.h"
 
 // Implemented in web/asset_loader_web.cpp.
 void assets_web_pump_downloads(int environment);
@@ -423,6 +424,50 @@ static void poll_ai_results() {
 // Debug hooks (for headless inspection via CDP): jump straight into a
 // cable-room game, and dump the current framebuffer to /dump.ppm.
 // ---------------------------------------------------------------------------
+// Jelly regression harness: uses the same shared app input/render paths.
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_jelly(int scene, int enabled) {
+    g_app.jelly_pieces=enabled!=0;
+    g_app.splats_enabled=false;
+    g_app.environment=AppState::Environment::MedievalRoom;
+    renderer_set_environment(0);
+    if (scene==0) app_enter_menu(g_app);
+    else if (scene==2) app_enter_options(g_app);
+    else {
+        g_app.two_player_mode=true; g_app.clock_enabled=false;
+        app_enter_game(g_app);
+        g_app.rot_x=45; g_app.rot_y=180; g_app.zoom=12;
+    }
+}
+extern "C" EMSCRIPTEN_KEEPALIVE float chess_dbg_jelly_probe(int what) {
+    if(what==10)return glGetError();
+    if (what==0) return static_cast<int>(g_app.mode);
+    if (what==7) return g_app.jelly_pieces;
+    if (what==6) return g_app.rot_y;
+    if (what==9) { float v=0; for(const auto& p:g_app.menu_pieces) for(float x:p.jelly.offset) v=std::max(v,std::abs(x)); return v; }
+    if (g_app.games.empty()) return -1;
+    const auto& gs=g_app.games[g_app.active_game].game;
+    if(what==11){float j=1;for(const auto& p:gs.pieces)j=std::min(j,p.jelly.minimum_jacobian());return j;}
+    if(what==12){float e=0;for(const auto& p:gs.pieces)e=std::max(e,std::abs(p.jelly.volume_ratio()-1));return e;}
+    if (what==1) return gs.selected_col;
+    if (what==2) return gs.selected_row;
+    if (what==3) return gs.move_history.size();
+    float v=0;
+    for(const auto& p:gs.pieces) {
+        if (what==5 && p.jelly.held) return 1;
+        for(float x:p.jelly.offset) v=std::max(v,std::abs(x));
+    }
+    return what==5 ? 0 : v;
+}
+extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_jelly_optics(float ior){renderer_dbg_jelly_ior(ior);}
+extern "C" EMSCRIPTEN_KEEPALIVE float chess_dbg_square(int col,int row,float lift,int axis) {
+    float x,z; square_center(col,row,x,z);
+    float rad=3.14159265358979323846f/180.f;
+    Mat4 view=mat4_multiply(mat4_translate(0,0,-g_app.zoom),mat4_multiply(mat4_rotate_x(g_app.rot_x*rad),mat4_multiply(mat4_rotate_y(g_app.rot_y*rad),mat4_translate(0,-BOARD_Y,0))));
+    Mat4 proj=mat4_perspective(45*rad,static_cast<float>(g_width)/g_height,.1f,100.f);
+    Vec4 p=mat4_mul_vec4(mat4_multiply(proj,view),{x,BOARD_Y+lift,z,1});
+    return axis==0 ? (p.x/p.w+1)*.5f*g_width : (1-p.y/p.w)*.5f*g_height;
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_cable_game(void) {
     // Mirror the real user flow: enter a normal game first, then cycle
     // the environment mid-game (the btn==11 path in app_state.cpp) —

@@ -402,6 +402,29 @@ Stockfish only; ignored in two-player mode and during challenges.
 
 #### Voice UI commands
 
+Jelly regression checks: run `make -C tests test` for tetrahedral volume,
+positive Jacobians, surface bindings, settling, fixed-step consistency,
+copy isolation, and voice routing. After building the web target,
+`python3 tests/jelly_browser_test.py /tmp/chess-jelly-review` checks the saved
+Options toggle, real pointer selection/stretch/release, destination-square
+movement, volume drift, WebGL errors, rendered-scene coverage, IOR-dependent
+refraction, and menu collision wobble in headless Chrome, saving framebuffer
+screenshots. It needs Chrome, Python Pillow/websockets, and free localhost
+ports 8110 and 9241. The solver uses a 6×6×12 voxel-fitted volume (up to 637
+nodes / 2592 tetrahedra), stable neo-Hookean block XPBD at 120 Hz, and positive
+Jacobian backtracking. The STL skin shares its barycentric binding with picking
+and shadow rendering. Idle volumes sleep. Catch-up is capped at 30 substeps.
+Transmission draws depth-sorted objects with per-object exit normals/depth,
+scene color/depth, IOR 1.36, neutral absorption, and screen-space ray marching.
+The browser uses a single-sample scene target and fullscreen presentation;
+native resolves its multisample target. Contact proxies remain rigid, and
+screen-space optics cannot trace off-screen geometry or physical caustics.
+`CHESS_JELLY=1 CHESS_AUTOSTART=1 CHESS_ENV=0 ./chess` previews native jelly
+without changing the saved material option.
+
+In Options, **“jelly pieces”**, **“toggle jelly”**, or **“piece style”** toggles
+the saved classic-piece material (solid/jelly); retro pieces are unaffected.
+
 In addition to chess moves, the same speech engine recognises spoken
 button labels for the screen you're on. Examples:
 
@@ -868,6 +891,9 @@ walkthrough live in the user guide — see
   render_internal.h        -- Shared GL globals + text helpers that the
                               per-screen render modules link against
   menu_physics.h/cpp       -- Menu piece tumble + sub-box OBB collision
+  jelly.h                 -- Voxel-fitted tetrahedral XPBD volume solver and skin bindings
+  jelly_shader.h          -- Shared GPU volume skinning, exit surfaces, and refraction shaders
+  jelly_render.h          -- Renderer-private depth/normal targets and sorted transmission passes
   menu_input.h/cpp         -- Menu ray-pick + drag-to-fling gesture
   pregame_ui.h/cpp         -- Pregame screen (slider, dropdown, Start)
   challenge_ui.h/cpp       -- Challenge select / overlay / next / try-again

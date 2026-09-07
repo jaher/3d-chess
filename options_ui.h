@@ -1,8 +1,7 @@
 #pragma once
 
-// Options screen: reached from the main menu, currently exposes a
-// single toggle for the cartoon-outline post-process used by
-// gameplay. Future settings would live here too.
+// Options screen: voice, hints, backdrop, robotic board, environment,
+// and the persisted classic-piece solid/jelly style.
 
 // One scanned BLE device, rendered as a clickable row in the
 // Chessnut picker.
@@ -23,6 +22,7 @@ struct OptionsScannedDevice {
 //   11 = "Environment" cycle — click steps through the registered
 //        splat backdrops (e.g. Medieval room → …),
 //   100+i = picker row #i.
+//   12 = classic-piece style (solid/jelly; retro models stay unchanged).
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
 // changing — toggles still render and can be clicked.
@@ -33,7 +33,7 @@ struct OptionsScannedDevice {
 // caller is responsible for the lookup (board_renderer's
 // renderer_environment_label / current value of
 // AppState::environment).
-void renderer_draw_options(bool splats_enabled,
+void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,

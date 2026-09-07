@@ -1,4 +1,5 @@
 #pragma once
+#include "jelly.h"
 
 #include <cstdint>
 #include <string>
@@ -57,6 +58,7 @@ struct BoardPiece {
     bool is_white = false;
     int col = 0, row = 0;
     bool alive = true;
+    JellyMotion jelly{};
 };
 
 struct CastlingRights {

@@ -99,6 +99,8 @@ void renderer_draw_asset_loading_overlay(const char* label, float progress);
 // board shares the same camera (rot_x/rot_y/zoom) and the room is
 // shake-immune by design.
 extern "C" void renderer_begin_frame();
+void renderer_set_jelly_pieces(bool enabled);
+void renderer_dbg_jelly_ior(float ior);
 
 // Switch the active Gaussian-splat environment behind the chessboard.
 // Re-reads the SPZ from disk, re-uploads the packed splat textures,
