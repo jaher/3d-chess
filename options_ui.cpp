@@ -34,7 +34,7 @@ constexpr float OPT_ROW3_Y      = -0.12f;   // Move hints
 constexpr float OPT_ROW4_Y      = -0.26f;   // Gaussian splats
 constexpr float OPT_ROW5_Y      = -0.40f;   // Robotic board (Chessnut / Phantom)
 constexpr float OPT_ROW6_Y      = -0.54f;   // BLE verbose log
-constexpr float OPT_ROW7_Y      = -0.68f;   // Environment cycle
+constexpr float OPT_ROW7_Y      = -0.68f;   // Combined piece-style cycle
 
 // Convenience aliases — name each row by its role so the rest of
 // the file reads as "the voice toggle" / "the splats toggle"
@@ -45,8 +45,7 @@ constexpr float OPT_TOG_HINTS_Y   = OPT_ROW3_Y;
 constexpr float OPT_TOG_SPLATS_Y  = OPT_ROW4_Y;
 constexpr float OPT_TOG_BOARD_Y   = OPT_ROW5_Y;
 constexpr float OPT_TOG_BLE_Y     = OPT_ROW6_Y;
-constexpr float OPT_TOG_ENV_Y     = OPT_ROW7_Y;
-constexpr float OPT_TOG_JELLY_Y   = -0.82f;
+constexpr float OPT_TOG_STYLE_Y   = OPT_ROW7_Y;
 
 // Chessnut Move BLE-device picker. Sits below the toggles when
 // `picker_open` is true. The header (cancel/rescan) is one row;
@@ -97,8 +96,7 @@ int options_hit_test(double mx, double my, int width, int height,
         hit(OPT_TOG_BOARD_Y))                                 return 4;  // row 5
     if (chessnut_supported && !picker_open &&
         hit(OPT_TOG_BLE_Y))                                   return 7;  // row 6
-    if (!picker_open && hit(OPT_TOG_ENV_Y))                   return 11; // row 7
-    if (!picker_open && hit(OPT_TOG_JELLY_Y))                 return 12;
+    if (!picker_open && hit(OPT_TOG_STYLE_Y))                 return 11; // row 7
     if (picker_open) {
         // Header row: cancel/rescan.
         if (ndc_x >= PICK_HDR_X && ndc_x <= PICK_HDR_X + PICK_HDR_W &&
@@ -123,7 +121,7 @@ int options_hit_test(double mx, double my, int width, int height,
     return 0;
 }
 
-void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
+void renderer_draw_options(PieceStyle style, bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,
@@ -131,7 +129,6 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,
-                           const char* environment_label,
                            bool picker_open,
                            bool picker_scanning,
                            const OptionsScannedDevice* picker_devices,
@@ -181,8 +178,7 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
         add_quad(OPT_TOG_X, OPT_TOG_BLE_Y,   OPT_TOG_W, OPT_TOG_H); // row 6
     }
     if (!picker_open) {
-        add_quad(OPT_TOG_X, OPT_TOG_ENV_Y, OPT_TOG_W, OPT_TOG_H);   // row 7
-        add_quad(OPT_TOG_X, OPT_TOG_JELLY_Y, OPT_TOG_W, OPT_TOG_H);
+        add_quad(OPT_TOG_X, OPT_TOG_STYLE_Y, OPT_TOG_W, OPT_TOG_H); // row 7
     }
     int picker_visible = 0;
     if (picker_open) {
@@ -258,7 +254,7 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
         draw_toggle(ble_verbose_log_enabled, 7, next_offset);
         next_offset += 6;
     }
-    // Row 7: Environment cycle (hidden behind picker). Cool blue
+    // Row 7: Piece-style cycle (hidden behind picker). Cool blue
     // tint distinguishes it from the binary toggles around it — it
     // isn't an on/off switch, it's a cycle through a list.
     if (!picker_open) {
@@ -267,7 +263,6 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
         glDrawArrays(GL_TRIANGLES, next_offset, 6);
         next_offset += 6;
     }
-    if (!picker_open) { draw_toggle(jelly_pieces, 12, next_offset); next_offset += 6; }
     if (picker_open) {
         // Header (cancel/rescan) — neutral grey, brighter on hover.
         glUniform4f(glGetUniformLocation(g_highlight_program, "uColor"),
@@ -377,20 +372,14 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
             OPT_TOG_BLE_Y);
         row6_end = static_cast<int>(text_verts.size() / 5);
     }
-    // Row 7 — Environment cycle
+    // Row 7 — Combined piece-style cycle
     int row7_end = row6_end;
     if (!picker_open) {
-        const char* env_text = environment_label && *environment_label
-                                ? environment_label : "—";
-        add_toggle_label(
-            std::string("Environment: ") + env_text,
-            OPT_TOG_ENV_Y);
+        add_toggle_label(piece_style_label(style), OPT_TOG_STYLE_Y);
         row7_end = static_cast<int>(text_verts.size() / 5);
     }
-    if (!picker_open) add_toggle_label(jelly_pieces ? "Classic pieces: JELLY" : "Classic pieces: SOLID", OPT_TOG_JELLY_Y);
-    int row8_end = static_cast<int>(text_verts.size() / 5);
-    int picker_text_start = row8_end;
-    int picker_text_end   = row8_end;
+    int picker_text_start = row7_end;
+    int picker_text_end   = row7_end;
     if (picker_open) {
         // Header text — "Scanning…" while the scan is live, then a
         // hint plus an explicit "Cancel" affordance once it ends.
@@ -488,7 +477,6 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
     draw_label_span(4,  row4_end,  row5_end);
     draw_label_span(7,  row5_end,  row6_end);
     draw_label_span(11, row6_end,  row7_end);
-    draw_label_span(12, row7_end, row8_end);
     if (picker_open && picker_text_end > picker_text_start) {
         glUniform4f(glGetUniformLocation(g_text_program, "uColor"),
                     0.96f, 0.96f, 0.92f, 1.0f);

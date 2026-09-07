@@ -106,7 +106,10 @@ enum class VoiceCommand {
     NextPuzzle,           // Challenge "Next" after solve
     TryAgain,             // Challenge "Try Again" after mistake
     ToggleSplats,         // Marble medieval-room Gaussian-splat backdrop
-    ToggleJelly,
+    CyclePieceStyle,
+    ClassicSolid,
+    ClassicJelly,
+    Datacenter,
     ToggleContinuousVoice,
     ToggleChessnut,       // Chessnut Move physical-board mirroring
     ToggleBleVerbose,     // Surface raw BLE notify frames in the

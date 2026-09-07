@@ -406,7 +406,8 @@ Jelly regression checks: run `make -C tests test` for tetrahedral volume,
 positive Jacobians, surface bindings, settling, fixed-step consistency,
 copy isolation, and voice routing. After building the web target,
 `python3 tests/jelly_browser_test.py /tmp/chess-jelly-review` checks the saved
-Options toggle, real pointer selection/stretch/release, destination-square
+three-state Options cycle, removed-button hit region, saved choices, real
+pointer selection/stretch/release, destination-square
 movement, volume drift, WebGL errors, rendered-scene coverage, IOR-dependent
 refraction, and menu collision wobble in headless Chrome, saving framebuffer
 screenshots. It needs Chrome, Python Pillow/websockets, and free localhost
@@ -422,8 +423,12 @@ screen-space optics cannot trace off-screen geometry or physical caustics.
 `CHESS_JELLY=1 CHESS_AUTOSTART=1 CHESS_ENV=0 ./chess` previews native jelly
 without changing the saved material option.
 
-In Options, **“jelly pieces”**, **“toggle jelly”**, or **“piece style”** toggles
-the saved classic-piece material (solid/jelly); retro pieces are unaffected.
+In Options, **“piece style”**, **“next style”**, or **“toggle jelly”** cycles the
+single style button: **Classic: Solid → Classic: Jelly → Datacenter**.
+**“classic solid”**, **“classic jelly”** (also **“jelly pieces”**), and
+**“datacenter”** select a style directly. Mouse and voice share the same handler.
+The existing `environment` and `jelly_pieces` settings remain compatible;
+Datacenter uses solid retro pieces, and either classic choice uses the medieval room.
 
 In addition to chess moves, the same speech engine recognises spoken
 button labels for the screen you're on. Examples:

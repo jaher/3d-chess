@@ -440,6 +440,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void chess_dbg_jelly(int scene, int enabled) {
 }
 extern "C" EMSCRIPTEN_KEEPALIVE float chess_dbg_jelly_probe(int what) {
     if(what==10)return glGetError();
+    if(what==13)return static_cast<int>(g_app.environment);
     if (what==0) return static_cast<int>(g_app.mode);
     if (what==7) return g_app.jelly_pieces;
     if (what==6) return g_app.rot_y;

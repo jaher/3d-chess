@@ -1,7 +1,21 @@
 #pragma once
 
-// Options screen: voice, hints, backdrop, robotic board, environment,
-// and the persisted classic-piece solid/jelly style.
+// Options screen: voice, hints, backdrop, robotic board, and one style cycle.
+enum class PieceStyle { ClassicSolid, ClassicJelly, Datacenter };
+inline PieceStyle piece_style(bool datacenter, bool jelly) {
+    return datacenter ? PieceStyle::Datacenter : jelly ? PieceStyle::ClassicJelly : PieceStyle::ClassicSolid;
+}
+inline PieceStyle next_piece_style(PieceStyle style) {
+    return static_cast<PieceStyle>((static_cast<int>(style)+1)%3);
+}
+inline const char* piece_style_label(PieceStyle style) {
+    switch(style) {
+    case PieceStyle::ClassicSolid: return "Classic: Solid";
+    case PieceStyle::ClassicJelly: return "Classic: Jelly";
+    case PieceStyle::Datacenter: return "Datacenter";
+    }
+    return "Classic: Solid";
+}
 
 // One scanned BLE device, rendered as a clickable row in the
 // Chessnut picker.
@@ -19,21 +33,16 @@ struct OptionsScannedDevice {
 //   9 = "Move hints" tri-state cycle (Off / Auto / OnDemand),
 //   10 = "Gaussian splats" backdrop toggle (Marble medieval-room
 //        splat cloud behind the chess board),
-//   11 = "Environment" cycle — click steps through the registered
-//        splat backdrops (e.g. Medieval room → …),
+//   11 = style cycle: Classic: Solid → Classic: Jelly → Datacenter,
 //   100+i = picker row #i.
-//   12 = classic-piece style (solid/jelly; retro models stay unchanged).
 // When `picker_open` is true, the renderer draws the picker
 // underneath the toggles instead of the chessnut row label
 // changing — toggles still render and can be clicked.
 //
 // `hint_mode`: 0 = Off (grey), 1 = Auto (green), 2 = OnDemand
 // (amber, distinct from the binary on/off toggles around it).
-// `environment_label`: text shown after "Environment: " on row 7;
-// caller is responsible for the lookup (board_renderer's
-// renderer_environment_label / current value of
-// AppState::environment).
-void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
+// `style`: combined piece material / environment shown on row 7.
+void renderer_draw_options(PieceStyle style, bool splats_enabled,
                            bool voice_continuous_enabled,
                            bool continuous_voice_supported,
                            bool voice_tts_enabled,
@@ -41,7 +50,6 @@ void renderer_draw_options(bool jelly_pieces, bool splats_enabled,
                            bool chessnut_enabled,
                            bool chessnut_supported,
                            bool ble_verbose_log_enabled,
-                           const char* environment_label,
                            bool picker_open,
                            bool picker_scanning,
                            const OptionsScannedDevice* picker_devices,

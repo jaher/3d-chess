@@ -124,10 +124,12 @@ instant.
 
 ## Controls
 
-Choose **Options → Classic pieces: JELLY** for transparent white and smoky-black
+The single style button in **Options** cycles through **Classic: Solid →
+Classic: Jelly → Datacenter**. Choose **Classic: Jelly** for transparent white and smoky-black
 pieces with refraction, volumetric stretching, and collision-driven menu wobble. The setting is
 remembered on desktop and web. Retro hardware pieces in the datacenter stay
-unchanged. Say **“jelly pieces”** or **“toggle jelly”** in Options to switch styles.
+unchanged. In Options, say **“piece style”** to cycle, or **“classic solid”**,
+**“classic jelly”**, or **“datacenter”** to select one directly.
 
 With jelly enabled, **drag a piece to stretch it**, then release to watch it
 spring back. It stays on its square and remains selected if it is your piece;

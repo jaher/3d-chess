@@ -1782,6 +1782,37 @@ static void release_challenge_select(AppState& a, double mx, double my,
     }
 }
 
+static PieceStyle current_piece_style(const AppState& a) {
+    return piece_style(a.environment==AppState::Environment::DataCenter,a.jelly_pieces);
+}
+
+// Shared by the single Options button and all style voice commands. Keep
+// legacy saved environment/jelly keys compatible; change them together.
+static void select_piece_style(AppState& a, PieceStyle style) {
+    const auto env=style==PieceStyle::Datacenter ? AppState::Environment::DataCenter : AppState::Environment::MedievalRoom;
+    bool downloading=false;
+    if(env!=a.environment) {
+        const AssetGroup need=env==AppState::Environment::DataCenter ? ASSET_SPLAT_DATACENTER : ASSET_SPLAT_MEDIEVAL;
+        if(!renderer_set_environment(static_cast<int>(env))) {
+            if(assets_state(need)==ASSET_READY) {
+                set_status(a,"Style switch failed — keeping previous style");queue_redraw(a);return;
+            }
+            // Web backdrops stream asynchronously. Accept the choice as
+            // before; the asset-completion callback installs the scene.
+            downloading=true;
+        }
+    }
+    a.environment=env;
+    a.jelly_pieces=style==PieceStyle::ClassicJelly;
+    renderer_set_jelly_pieces(a.jelly_pieces);
+    for(auto& gi:a.games)for(auto& p:gi.game.pieces)p.jelly.release();
+    for(auto& p:a.menu_pieces)p.jelly.release();
+    app_settings_save(a);
+    std::string msg=piece_style_label(style);
+    if(downloading)msg+=" — backdrop still downloading…";
+    set_status(a,msg.c_str());queue_redraw(a);
+}
+
 static void release_options(AppState& a, double mx, double my,
                             int width, int height) {
     bool voice_supported    = app_voice_continuous_supported();
@@ -1808,11 +1839,6 @@ static void release_options(AppState& a, double mx, double my,
         queue_redraw(a);
     } else if (btn == 8 && voice_supported) {
         app_voice_toggle_speak_moves_request(a);
-    } else if (btn == 12) {
-        a.jelly_pieces = !a.jelly_pieces;
-        app_settings_save(a);
-        set_status(a, a.jelly_pieces ? "Jelly pieces: drag to stretch; click a destination to move. Retro pieces stay solid." : "Solid pieces selected");
-        queue_redraw(a);
     } else if (btn == 10) {
         a.splats_enabled = !a.splats_enabled;
         set_status(a, a.splats_enabled
@@ -1850,40 +1876,7 @@ static void release_options(AppState& a, double mx, double my,
         cur(a).hint_confirm_pending = false;
         queue_redraw(a);
     } else if (btn == 11) {
-        // Cycle to the next environment in the registered list.
-        // renderer_set_environment reloads the SPZ (and the
-        // matching panorama on desktop), recomputes the bbox, and
-        // invalidates the per-frame splat-bg cache so the new
-        // scene renders on the next frame. If the load fails (e.g.
-        // missing asset in a packaging) we revert the AppState
-        // value so the label keeps matching reality.
-        const int n_env = renderer_environment_count();
-        const int next  = (static_cast<int>(a.environment) + 1) % n_env;
-        const AssetGroup need = (next == 1) ? ASSET_SPLAT_DATACENTER
-                                            : ASSET_SPLAT_MEDIEVAL;
-        if (renderer_set_environment(next)) {
-            a.environment = static_cast<AppState::Environment>(next);
-            std::string msg = "Environment: ";
-            msg += renderer_environment_label(next);
-            set_status(a, msg.c_str());
-            app_settings_save(a);
-        } else if (assets_state(need) != ASSET_READY) {
-            // Not a failure — this scene's backdrop simply hasn't
-            // finished downloading yet (the web build streams the two
-            // ~29 MB clouds in the background). Accept the switch so the
-            // label, the saved setting and the download priority all move
-            // to the new scene; the frame loop calls
-            // renderer_set_environment again when the package lands, and
-            // the backdrop appears then.
-            a.environment = static_cast<AppState::Environment>(next);
-            std::string msg = renderer_environment_label(next);
-            msg += ": backdrop still downloading…";
-            set_status(a, msg.c_str());
-            app_settings_save(a);
-        } else {
-            set_status(a, "Environment switch failed — keeping previous scene");
-        }
-        queue_redraw(a);
+        select_piece_style(a,next_piece_style(current_piece_style(a)));
     } else if (btn >= 100 && a.chessnut_picker_open) {
         int idx = btn - 100;
         if (idx >= 0 &&
@@ -3990,7 +3983,7 @@ static void render_options(AppState& a, int width, int height) {
     for (const auto& d : a.chessnut_devices) {
         devs.push_back({d.address.c_str(), d.name.c_str()});
     }
-    renderer_draw_options(a.jelly_pieces, a.splats_enabled,
+    renderer_draw_options(current_piece_style(a), a.splats_enabled,
                           voice_supported && a.voice_continuous_enabled,
                           voice_supported,
                           voice_supported && a.voice_tts_enabled,
@@ -3998,8 +3991,6 @@ static void render_options(AppState& a, int width, int height) {
                           chessnut_supported && a.chessnut_enabled,
                           chessnut_supported,
                           a.ble_verbose_log,
-                          renderer_environment_label(
-                              static_cast<int>(a.environment)),
                           a.chessnut_picker_open,
                           a.chessnut_picker_scanning,
                           devs.data(),
@@ -4464,12 +4455,14 @@ bool try_voice_command(AppState& a, const std::string& utterance) {
     case VoiceCommand::TryAgain:
         app_reset_challenge_puzzle(a);
         break;
-    case VoiceCommand::ToggleJelly:
-        a.jelly_pieces = !a.jelly_pieces;
-        app_settings_save(a);
-        set_status(a, a.jelly_pieces ? "Jelly pieces selected" : "Solid pieces selected");
-        queue_redraw(a);
-        break;
+    case VoiceCommand::CyclePieceStyle:
+        select_piece_style(a,next_piece_style(current_piece_style(a)));break;
+    case VoiceCommand::ClassicSolid:
+        select_piece_style(a,PieceStyle::ClassicSolid);break;
+    case VoiceCommand::ClassicJelly:
+        select_piece_style(a,PieceStyle::ClassicJelly);break;
+    case VoiceCommand::Datacenter:
+        select_piece_style(a,PieceStyle::Datacenter);break;
     case VoiceCommand::ToggleSplats:
         a.splats_enabled = !a.splats_enabled;
         set_status(a, a.splats_enabled
@@ -6122,6 +6115,9 @@ void parse_settings_blob(AppState& a, const std::string& text) {
         if (eq == std::string::npos) continue;
         apply_setting(a, s.substr(0, eq), s.substr(eq + 1));
     }
+    // Older releases allowed both independent toggles to be enabled.
+    // Datacenter is now its own solid-retro choice, irrespective of key order.
+    if(a.environment==AppState::Environment::DataCenter)a.jelly_pieces=false;
 }
 
 // Serialize the persisted settings to INI text (used on every platform).

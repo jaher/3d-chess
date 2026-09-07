@@ -39,7 +39,7 @@ TEST_SRCS := \
     asset_loader_test.cpp \
     jelly_test.cpp
 
-HEADERS := doctest.h helpers.h ../jelly.h
+HEADERS := doctest.h helpers.h ../jelly.h ../options_ui.h
 
 run_tests: $(SHARED_SRCS) $(TEST_SRCS) $(HEADERS)
 	$(CXX) $(PURE_FLAGS) $(SHARED_SRCS) $(TEST_SRCS) -o $@ -lm

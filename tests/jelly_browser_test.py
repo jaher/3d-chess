@@ -69,10 +69,23 @@ async def main():
                 await capture('jelly-options-before')
                 size=await ev("(()=>{let c=document.querySelector('canvas');return [c.width,c.height]})()")
                 await click([size[0]*.5,size[1]*.935])
+                assert await probe(7)==0, 'Removed jelly-button hit region is still active'
+                style_button=[size[0]*.5,size[1]*.865]
+                await click(style_button)
                 assert await probe(7)==1, 'Options toggle did not enable jelly'
                 assert await ev("(localStorage.getItem('3d_chess_settings')||'').includes('jelly_pieces=1')"), 'Jelly option was not persisted'
                 await capture('jelly-options')
-                print('PASS options toggle',flush=True)
+                await click(style_button)
+                assert (await probe(13),await probe(7))==(1,0), 'Jelly did not cycle to Datacenter'
+                assert await ev("(localStorage.getItem('3d_chess_settings')||'').includes('environment=datacenter')"), 'Datacenter choice not saved'
+                await capture('options-datacenter')
+                await click(style_button)
+                assert (await probe(13),await probe(7))==(0,0), 'Datacenter did not wrap to Classic: Solid'
+                assert await ev("(localStorage.getItem('3d_chess_settings')||'').includes('environment=medieval')"), 'Classic choice not saved'
+                await capture('options-classic-solid')
+                await click(style_button)
+                assert (await probe(13),await probe(7))==(0,1)
+                print('PASS single style button, three-state cycle, removed hit region, persisted choices',flush=True)
                 await ev('Module._chess_dbg_jelly(1,1)'); await asyncio.sleep(3)
                 await capture('jelly-board-before-selection')
                 p=await point(3,1,.20)

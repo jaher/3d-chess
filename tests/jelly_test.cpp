@@ -1,14 +1,34 @@
 #include "doctest.h"
 #include "../jelly.h"
 #include "../voice_input.h"
+#include "../options_ui.h"
 #include <limits>
 
 TEST_CASE("jelly: option voice commands are mode-aware") {
     VoiceCommandContext c; c.mode=MODE_OPTIONS;
-    CHECK(parse_voice_command("jelly pieces",c)==VoiceCommand::ToggleJelly);
-    CHECK(parse_voice_command("toggle jelly",c)==VoiceCommand::ToggleJelly);
+    CHECK(parse_voice_command("jelly pieces",c)==VoiceCommand::ClassicJelly);
+    CHECK(parse_voice_command("toggle jelly",c)==VoiceCommand::CyclePieceStyle);
+    CHECK(parse_voice_command("piece style",c)==VoiceCommand::CyclePieceStyle);
+    CHECK(parse_voice_command("classic solid",c)==VoiceCommand::ClassicSolid);
+    CHECK(parse_voice_command("classic: jelly",c)==VoiceCommand::ClassicJelly);
+    CHECK(parse_voice_command("datacenter",c)==VoiceCommand::Datacenter);
+    CHECK(parse_voice_command("data center",c)==VoiceCommand::Datacenter);
     c.mode=MODE_PLAYING;
     CHECK(parse_voice_command("jelly pieces",c)==VoiceCommand::None);
+    CHECK(parse_voice_command("datacenter",c)==VoiceCommand::None);
+}
+
+TEST_CASE("options: one style cycle covers solid jelly and datacenter") {
+    CHECK(next_piece_style(PieceStyle::ClassicSolid)==PieceStyle::ClassicJelly);
+    CHECK(next_piece_style(PieceStyle::ClassicJelly)==PieceStyle::Datacenter);
+    CHECK(next_piece_style(PieceStyle::Datacenter)==PieceStyle::ClassicSolid);
+    CHECK(piece_style(false,false)==PieceStyle::ClassicSolid);
+    CHECK(piece_style(false,true)==PieceStyle::ClassicJelly);
+    CHECK(piece_style(true,false)==PieceStyle::Datacenter);
+    CHECK(piece_style(true,true)==PieceStyle::Datacenter); // legacy settings
+    CHECK(std::string(piece_style_label(PieceStyle::ClassicSolid))=="Classic: Solid");
+    CHECK(std::string(piece_style_label(PieceStyle::ClassicJelly))=="Classic: Jelly");
+    CHECK(std::string(piece_style_label(PieceStyle::Datacenter))=="Datacenter");
 }
 
 TEST_CASE("jelly: resting shape stays unchanged") {
